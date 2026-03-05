@@ -6,6 +6,14 @@ class MovieModel extends Movie {
     required super.name,
     required super.imagePath,
     super.categoryId,
+    super.description,
+    super.detailsUrl,
+    super.backdrop,
+    super.backdropUrl,
+    super.views = 0,
+    super.rating = 0.0,
+    super.year,
+    super.duration,
     required super.createdAt,
   });
 
@@ -15,6 +23,14 @@ class MovieModel extends Movie {
       name: map['name'],
       imagePath: map['imagePath'],
       categoryId: map['categoryId'],
+      description: map['description'],
+      detailsUrl: map['detailsUrl'],
+      backdrop: map['backdrop'],
+      backdropUrl: map['backdropUrl'],
+      views: map['views'] ?? 0,
+      rating: (map['rating'] ?? 0.0).toDouble(),
+      year: map['year'],
+      duration: map['duration'],
       createdAt: DateTime.parse(map['createdAt']),
     );
   }
@@ -25,6 +41,14 @@ class MovieModel extends Movie {
       'name': name,
       'imagePath': imagePath,
       'categoryId': categoryId,
+      'description': description,
+      'detailsUrl': detailsUrl,
+      'backdrop': backdrop,
+      'backdropUrl': backdropUrl,
+      'views': views,
+      'rating': rating,
+      'year': year,
+      'duration': duration,
       'createdAt': createdAt.toIso8601String(),
     };
   }

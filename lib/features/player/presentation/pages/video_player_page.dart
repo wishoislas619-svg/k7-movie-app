@@ -1,120 +1,140 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
+import '../../../movies/domain/entities/movie.dart';
+import '../../data/datasources/video_service.dart';
 import 'package:video_player/video_player.dart';
 
-class MinimalVideoPlayer extends StatefulWidget {
-  final String videoUrl;
+class VideoPlayerPage extends StatefulWidget {
+  final String movieName;
+  final List<VideoOption> videoOptions;
 
-  const MinimalVideoPlayer({super.key, required this.videoUrl});
+  const VideoPlayerPage({
+    super.key, 
+    required this.movieName, 
+    required this.videoOptions
+  });
 
   @override
-  State<MinimalVideoPlayer> createState() => _MinimalVideoPlayerState();
+  State<VideoPlayerPage> createState() => _VideoPlayerPageState();
 }
 
-class _MinimalVideoPlayerState extends State<MinimalVideoPlayer> {
-  late VideoPlayerController _controller;
-  bool _showControls = true;
-  Timer? _hideTimer;
+class _VideoPlayerPageState extends State<VideoPlayerPage> {
+  VideoPlayerController? _controller;
+  bool _isLoading = true;
+  String? _errorMessage;
+  late VideoOption _currentOption;
 
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl))
-      ..initialize().then((_) {
-        setState(() {});
-        _controller.play();
-        _startHideTimer();
-      });
+    _currentOption = widget.videoOptions.first;
+    _initializePlayer();
   }
 
-  void _startHideTimer() {
-    _hideTimer?.cancel();
-    _hideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) {
-        setState(() => _showControls = false);
-      }
-    });
-  }
-
-  void _toggleControls() {
+  Future<void> _initializePlayer() async {
     setState(() {
-      _showControls = !_showControls;
+      _isLoading = true;
+      _errorMessage = null;
     });
-    if (_showControls) {
-      _startHideTimer();
+
+    try {
+      final directUrl = await VideoService.findDirectVideoUrl(_currentOption.videoUrl);
+      if (directUrl == null) {
+        throw Exception('No se pudo encontrar un enlace directo de video.');
+      }
+
+      _controller?.dispose();
+      _controller = VideoPlayerController.networkUrl(Uri.parse(directUrl))
+        ..initialize().then((_) {
+          setState(() => _isLoading = false);
+          _controller?.play();
+        });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = e.toString();
+      });
     }
   }
 
   @override
   void dispose() {
-    _hideTimer?.cancel();
-    _controller.dispose();
+    _controller?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_controller.value.isInitialized) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
     return Scaffold(
       backgroundColor: Colors.black,
-      body: GestureDetector(
-        onTap: _toggleControls,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            Center(
-              child: AspectRatio(
-                aspectRatio: _controller.value.aspectRatio,
-                child: VideoPlayer(_controller),
-              ),
-            ),
-            if (_showControls) ...[
-              Container(color: Colors.black26),
-              Positioned(
-                bottom: 40,
-                left: 20,
-                right: 20,
-                child: Column(
-                  children: [
-                    VideoProgressIndicator(
-                      _controller,
-                      allowScrubbing: true,
-                      padding: const EdgeInsets.symmetric(vertical: 20),
-                      colors: const VideoProgressColors(
-                        playedColor: Colors.red,
-                        bufferedColor: Colors.grey,
-                        backgroundColor: Colors.white24,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        title: Text(widget.movieName),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _showResolutionDialog,
+          ),
+        ],
+      ),
+      body: Center(
+        child: _isLoading
+            ? const CircularProgressIndicator()
+            : _errorMessage != null
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.error, color: Colors.red, size: 60),
+                      const SizedBox(height: 20),
+                      Text(_errorMessage!, style: const TextStyle(color: Colors.white)),
+                      const SizedBox(height: 20),
+                      ElevatedButton(
+                        onPressed: _initializePlayer,
+                        child: const Text('Reintentar'),
                       ),
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                    ],
+                  )
+                : AspectRatio(
+                    aspectRatio: _controller!.value.aspectRatio,
+                    child: Stack(
+                      alignment: Alignment.bottomCenter,
                       children: [
-                        IconButton(
-                          iconSize: 50,
-                          icon: Icon(
-                            _controller.value.isPlaying ? Icons.pause : Icons.play_arrow,
-                            color: Colors.white,
+                        VideoPlayer(_controller!),
+                        VideoProgressIndicator(
+                          _controller!,
+                          allowScrubbing: true,
+                          colors: const VideoProgressColors(
+                            playedColor: Color(0xFF00D1FF),
+                            bufferedColor: Colors.white24,
+                            backgroundColor: Colors.black26,
                           ),
-                          onPressed: () {
-                            setState(() {
-                              _controller.value.isPlaying ? _controller.pause() : _controller.play();
-                            });
-                            _startHideTimer();
-                          },
                         ),
                       ],
                     ),
-                  ],
-                ),
-              ),
-            ],
-          ],
+                  ),
+      ),
+    );
+  }
+
+  void _showResolutionDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Seleccionar Resolución'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: widget.videoOptions.map((opt) {
+            return ListTile(
+              title: Text(opt.resolution),
+              leading: Image.network(opt.serverImagePath, width: 30, height: 30, errorBuilder: (_, __, ___) => const Icon(Icons.dns)),
+              onTap: () {
+                Navigator.pop(context);
+                if (_currentOption != opt) {
+                  setState(() => _currentOption = opt);
+                  _initializePlayer();
+                }
+              },
+            );
+          }).toList(),
         ),
       ),
     );

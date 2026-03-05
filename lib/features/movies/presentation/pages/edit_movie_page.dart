@@ -16,6 +16,8 @@ class EditMoviePage extends ConsumerStatefulWidget {
 class _EditMoviePageState extends ConsumerState<EditMoviePage> {
   late TextEditingController _nameController;
   late TextEditingController _imageController;
+  late TextEditingController _detailsUrlController;
+  late TextEditingController _backdropUrlController;
   String? _selectedCategoryId;
   List<VideoOption> _options = [];
 
@@ -24,6 +26,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     super.initState();
     _nameController = TextEditingController(text: widget.movie?.name ?? '');
     _imageController = TextEditingController(text: widget.movie?.imagePath ?? '');
+    _detailsUrlController = TextEditingController(text: widget.movie?.detailsUrl ?? '');
+    _backdropUrlController = TextEditingController(text: widget.movie?.backdropUrl ?? '');
     _selectedCategoryId = widget.movie?.categoryId;
     if (widget.movie != null) {
       _loadOptions();
@@ -41,6 +45,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         _nameController.text, 
         _imageController.text,
         categoryId: _selectedCategoryId,
+        detailsUrl: _detailsUrlController.text,
+        backdropUrl: _backdropUrlController.text,
       );
     } else {
       final updatedMovie = Movie(
@@ -48,6 +54,14 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         name: _nameController.text,
         imagePath: _imageController.text,
         categoryId: _selectedCategoryId,
+        detailsUrl: _detailsUrlController.text,
+        backdropUrl: _backdropUrlController.text,
+        description: widget.movie!.description,
+        views: widget.movie!.views,
+        rating: widget.movie!.rating,
+        year: widget.movie!.year,
+        duration: widget.movie!.duration,
+        backdrop: widget.movie!.backdrop,
         createdAt: widget.movie!.createdAt,
       );
       await ref.read(moviesProvider.notifier).updateMovie(updatedMovie);
@@ -125,7 +139,11 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextField(controller: _imageController, decoration: const InputDecoration(labelText: 'URL Imagen Película')),
+            TextField(controller: _imageController, decoration: const InputDecoration(labelText: 'URL Imagen Película (Poster)')),
+            const SizedBox(height: 16),
+            TextField(controller: _detailsUrlController, decoration: const InputDecoration(labelText: 'URL detalles de la película (HTML para escanear)')),
+            const SizedBox(height: 16),
+            TextField(controller: _backdropUrlController, decoration: const InputDecoration(labelText: 'link Imagen Portada (Fondo detalles)')),
             const SizedBox(height: 16),
             categoriesAsync.when(
               data: (categories) {
@@ -180,12 +198,12 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                   ElevatedButton(
                     onPressed: _deleteMovie,
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-                    child: const Text('Eliminar Película'),
+                    child: const Text('Eliminar'),
                   ),
                 ElevatedButton(
                   onPressed: _saveMovie,
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-                  child: const Text('Guardar Cambios'),
+                  child: const Text('Guardar'),
                 ),
               ],
             ),

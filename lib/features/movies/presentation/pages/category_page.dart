@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../domain/entities/movie.dart';
 import '../../domain/entities/category.dart';
-import 'movie_options_page.dart';
+import 'movie_details_page.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 
@@ -34,7 +34,7 @@ class CategoryPage extends StatelessWidget {
             onTap: () {
               Navigator.push(
                 context, 
-                MaterialPageRoute(builder: (_) => MovieOptionsPage(movie: movie))
+                MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie))
               );
             },
             child: Column(

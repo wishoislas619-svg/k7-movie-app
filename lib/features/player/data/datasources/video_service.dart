@@ -97,4 +97,179 @@ class VideoService {
     }
     return cleanUrl;
   }
+
+  /// Scrapes description and rating from the movie's main page or video page.
+  static Future<Map<String, dynamic>> scrapeMetadata(String url) async {
+    print('-----------------------------------------');
+    print('SCRAPING METADATA FROM: $url');
+    print('-----------------------------------------');
+    try {
+      // Use EXACT headers from findDirectVideoUrl which are known to work
+      final response = await http.get(Uri.parse(url), headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+      }).timeout(const Duration(seconds: 10));
+
+      print('DEBUG SCRAPE: HTTP Response Status: ${response.statusCode}');
+      if (response.statusCode != 200) {
+        return {};
+      }
+
+      final body = response.body; 
+      final document = html_parser.parse(body);
+      final baseUrl = Uri.parse(url).origin;
+
+      String? resolveUrl(String? path) {
+        if (path == null || path.isEmpty) return null;
+        var cleanPath = path.replaceAll(r'\', ''); // Clean JSON escapes
+        if (cleanPath.startsWith('http')) return cleanPath;
+        if (cleanPath.startsWith('//')) return 'https:$cleanPath';
+        return '$baseUrl${cleanPath.startsWith('/') ? '' : '/'}$cleanPath';
+      }
+
+      String? description;
+      String? year;
+      String? duration;
+      double rating = 0.0;
+
+      // 0.1 Scrape Year
+      final yearRegex = RegExp(r'\(?([12][0-9]{3})\)?');
+      final titleText = document.querySelector('title')?.text ?? "";
+      final yearMatch = yearRegex.firstMatch(titleText) ?? yearRegex.firstMatch(response.body);
+      if (yearMatch != null) {
+        year = yearMatch.group(1);
+      }
+
+      // 0.2 Scrape Duration
+      final durationRegex = RegExp(r'(\d+\s*h[r]?)?\s*(\d+\s*min[s]?)');
+      final durationMatch = durationRegex.firstMatch(response.body);
+      if (durationMatch != null) {
+        duration = durationMatch.group(0);
+      }
+
+      // 1. Scrape Description
+      final metaDescription = document.querySelector('meta[name="description"]')?.attributes['content'] ??
+                             document.querySelector('meta[property="og:description"]')?.attributes['content'];
+
+      if (metaDescription != null && metaDescription.length > 10) {
+        description = metaDescription;
+      } else {
+        // Try Regex search (similar to how we find video URLs)
+        final descRegexes = [
+          RegExp(r'"description"\s*:\s*"([^"]+)"'),
+          RegExp(r'"overview"\s*:\s*"([^"]+)"'),
+          RegExp(r'"synopsis"\s*:\s*"([^"]+)"'),
+          RegExp(r'description\s*=\s*"([^"]+)"'),
+        ];
+        for (var regex in descRegexes) {
+          final match = regex.firstMatch(body);
+          if (match != null && (match.group(1)?.length ?? 0) > 20) {
+            description = match.group(1);
+            break;
+          }
+        }
+        
+        if (description == null) {
+          // Search for keywords in text
+          final bodyText = document.body?.text ?? "";
+          final descriptionKeywords = ['introducción', 'descripción', 'detalles', 'sinopsis', 'resumen'];
+          
+          for (var keyword in descriptionKeywords) {
+            // Look for headers (h1-h6) that contain the keyword
+            final headers = document.querySelectorAll('h1, h2, h3, h4, h5, h6, strong, b');
+            for (var header in headers) {
+              if (header.text.toLowerCase().contains(keyword)) {
+                // Try to get the next sibling or parent's next sibling that is a paragraph or div
+                var sibling = header.nextElementSibling;
+                if (sibling == null && header.parent != null) {
+                  sibling = header.parent!.nextElementSibling;
+                }
+                
+                if (sibling != null && sibling.text.trim().length > 20) {
+                  description = sibling.text.trim();
+                  break;
+                }
+              }
+            }
+            if (description != null) break;
+
+            // Fallback: search for elements where the text starts with the keyword
+            final elements = document.querySelectorAll('p, div, span');
+            for (var element in elements) {
+              final text = element.text.trim();
+              if (text.toLowerCase().startsWith(keyword) && text.length > keyword.length + 10) {
+                description = text.substring(keyword.length).replaceFirst(RegExp(r'^[:\s]+'), '').trim();
+                break;
+              }
+            }
+            if (description != null) break;
+          }
+        }
+      }
+
+      // 2. Scrape Rating
+      // Try Regex search in raw body first
+      final ratRegexes = [
+        RegExp(r'"ratingValue"\s*:\s*"([^"]+)"'),
+        RegExp(r'"ratingValue"\s*:\s*(\d+(\.\d+)?)'),
+        RegExp(r'"score"\s*:\s*(\d+(\.\d+)?)'),
+      ];
+      for (var regex in ratRegexes) {
+        final match = regex.firstMatch(body);
+        if (match != null) {
+          final val = match.group(1);
+          if (val != null) {
+            double raw = double.tryParse(val) ?? 0.0;
+            if (raw > 10) raw = raw / 10.0; // handle 85/100
+            rating = raw > 5 ? raw / 2.0 : raw;
+            break;
+          }
+        }
+      }
+
+      if (rating == 0) {
+        // Look for patterns like "7.8/10", "Rating: 4.5" or just a number inside rating classes
+        final ratingRegex = RegExp(r'(\d+(\.\d+)?)\s*/\s*10');
+        final match = ratingRegex.firstMatch(body);
+        if (match != null) {
+          double rawRating = double.tryParse(match.group(1) ?? "0") ?? 0.0;
+          rating = rawRating / 2.0;
+        } else {
+          // Look for alternate patterns
+          final altRatingRegex = RegExp(r'[Rr]ating:\s*(\d+(\.\d+)?)');
+          final altMatch = altRatingRegex.firstMatch(body);
+          if (altMatch != null) {
+            rating = double.tryParse(altMatch.group(1) ?? "0") ?? 0.0;
+          } else {
+            // Look inside elements with rating classes
+            final ratingElement = document.querySelector('.rating, .score, .vote-average');
+            if (ratingElement != null) {
+              final raw = double.tryParse(ratingElement.text.trim().replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0.0;
+              if (raw > 5)
+                rating = raw / 2.0;
+              else if (raw > 0) rating = raw;
+            }
+          }
+        }
+      }
+
+      // Round rating as requested:
+      if (rating > 0) {
+        rating = (rating * 2).roundToDouble() / 2.0;
+      }
+
+      print('DEBUG SCRAPE: Descripcion encontrada: ${description != null ? (description!.length > 30 ? description!.substring(0, 30) : description) : "NULL"}');
+      print('DEBUG SCRAPE: Poster encontrado: NULL');
+      print('DEBUG SCRAPE: Backdrop encontrado: NULL');
+
+      return {
+        'description': description,
+        'rating': rating,
+        'year': year,
+        'duration': duration,
+      };
+    } catch (e) {
+      print('DEBUG: Error scraping metadata: $e');
+      return {};
+    }
+  }
 }

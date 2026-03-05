@@ -24,6 +24,14 @@ class MovieRepositorySqliteImpl implements MovieRepository {
       name: movie.name,
       imagePath: movie.imagePath,
       categoryId: movie.categoryId,
+      description: movie.description,
+      detailsUrl: movie.detailsUrl,
+      backdrop: movie.backdrop,
+      backdropUrl: movie.backdropUrl,
+      views: movie.views,
+      rating: movie.rating,
+      year: movie.year,
+      duration: movie.duration,
       createdAt: movie.createdAt,
     );
     await db.insert('movies', model.toMap());
@@ -37,6 +45,14 @@ class MovieRepositorySqliteImpl implements MovieRepository {
       name: movie.name,
       imagePath: movie.imagePath,
       categoryId: movie.categoryId,
+      description: movie.description,
+      detailsUrl: movie.detailsUrl,
+      backdrop: movie.backdrop,
+      backdropUrl: movie.backdropUrl,
+      views: movie.views,
+      rating: movie.rating,
+      year: movie.year,
+      duration: movie.duration,
       createdAt: movie.createdAt,
     );
     await db.update(
@@ -51,6 +67,15 @@ class MovieRepositorySqliteImpl implements MovieRepository {
   Future<void> deleteMovie(String id) async {
     final db = await _sqliteService.database;
     await db.delete('movies', where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> incrementViews(String id) async {
+    final db = await _sqliteService.database;
+    await db.execute(
+      'UPDATE movies SET views = views + 1 WHERE id = ?',
+      [id],
+    );
   }
 
   @override

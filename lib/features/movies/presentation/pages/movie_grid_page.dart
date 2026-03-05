@@ -4,11 +4,10 @@ import '../providers/movie_provider.dart';
 import '../providers/category_provider.dart';
 import '../../domain/entities/movie.dart';
 import '../../domain/entities/category.dart';
-import 'movie_options_page.dart';
+import 'movie_details_page.dart';
 import 'category_page.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
-
 import '../../../../shared/widgets/marquee_text.dart';
 
 class MovieGridPage extends ConsumerWidget {
@@ -105,7 +104,7 @@ class MovieGridPage extends ConsumerWidget {
                   onTap: () {
                     Navigator.push(
                       context, 
-                      MaterialPageRoute(builder: (_) => MovieOptionsPage(movie: movie))
+                      MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie))
                     );
                   },
                   child: Column(

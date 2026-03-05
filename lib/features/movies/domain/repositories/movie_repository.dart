@@ -5,6 +5,7 @@ abstract class MovieRepository {
   Future<void> addMovie(Movie movie);
   Future<void> updateMovie(Movie movie);
   Future<void> deleteMovie(String id);
+  Future<void> incrementViews(String id);
   
   Future<List<VideoOption>> getVideoOptions(String movieId);
   Future<void> addVideoOption(VideoOption option);

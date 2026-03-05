@@ -25,12 +25,14 @@ class MovieController extends StateNotifier<AsyncValue<List<Movie>>> {
     }
   }
 
-  Future<void> addMovie(String name, String imagePath, {String? categoryId}) async {
+  Future<void> addMovie(String name, String imagePath, {String? categoryId, String? detailsUrl, String? backdropUrl}) async {
     final movie = Movie(
       id: '',
       name: name,
       imagePath: imagePath,
       categoryId: categoryId,
+      detailsUrl: detailsUrl,
+      backdropUrl: backdropUrl,
       createdAt: DateTime.now(),
     );
     await _repository.addMovie(movie);
@@ -44,6 +46,11 @@ class MovieController extends StateNotifier<AsyncValue<List<Movie>>> {
 
   Future<void> deleteMovie(String id) async {
     await _repository.deleteMovie(id);
+    loadMovies();
+  }
+
+  Future<void> incrementViews(String id) async {
+    await _repository.incrementViews(id);
     loadMovies();
   }
 }

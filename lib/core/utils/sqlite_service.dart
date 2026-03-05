@@ -15,7 +15,7 @@ class SqliteService {
     String path = join(await getDatabasesPath(), 'movie_app.db');
     return await openDatabase(
       path,
-      version: 3,
+      version: 8,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -33,6 +33,24 @@ class SqliteService {
         )
       ''');
       await db.execute('ALTER TABLE movies ADD COLUMN categoryId TEXT');
+    }
+    if (oldVersion < 4) {
+      await db.execute('ALTER TABLE movies ADD COLUMN description TEXT');
+      await db.execute('ALTER TABLE movies ADD COLUMN views INTEGER DEFAULT 0');
+      await db.execute('ALTER TABLE movies ADD COLUMN rating REAL DEFAULT 0.0');
+    }
+    if (oldVersion < 5) {
+      await db.execute('ALTER TABLE movies ADD COLUMN year TEXT');
+      await db.execute('ALTER TABLE movies ADD COLUMN duration TEXT');
+    }
+    if (oldVersion < 6) {
+      await db.execute('ALTER TABLE movies ADD COLUMN detailsUrl TEXT');
+    }
+    if (oldVersion < 7) {
+      await db.execute('ALTER TABLE movies ADD COLUMN backdrop TEXT');
+    }
+    if (oldVersion < 8) {
+      await db.execute('ALTER TABLE movies ADD COLUMN backdropUrl TEXT');
     }
   }
 
@@ -62,6 +80,14 @@ class SqliteService {
         name TEXT,
         imagePath TEXT,
         categoryId TEXT,
+        description TEXT,
+        detailsUrl TEXT,
+        backdrop TEXT,
+        backdropUrl TEXT,
+        views INTEGER DEFAULT 0,
+        rating REAL DEFAULT 0.0,
+        year TEXT,
+        duration TEXT,
         createdAt TEXT,
         FOREIGN KEY (categoryId) REFERENCES categories (id) ON DELETE SET NULL
       )

@@ -3,6 +3,14 @@ class Movie {
   final String name;
   final String imagePath;
   final String? categoryId;
+  final String? description;
+  final String? detailsUrl;
+  final int views;
+  final double rating;
+  final String? year;
+  final String? duration;
+  final String? backdrop;
+  final String? backdropUrl;
   final DateTime createdAt;
 
   Movie({
@@ -10,6 +18,14 @@ class Movie {
     required this.name,
     required this.imagePath,
     this.categoryId,
+    this.description,
+    this.detailsUrl,
+    this.backdrop,
+    this.backdropUrl,
+    this.views = 0,
+    this.rating = 0.0,
+    this.year,
+    this.duration,
     required this.createdAt,
   });
 }
