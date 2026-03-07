@@ -1,5 +1,6 @@
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' as html_parser;
+import '../../../movies/domain/entities/movie.dart';
 
 class VideoService {
   /// Simulates Seekee logic: fetches a URL, parses HTML, and finds the direct video link.
@@ -81,6 +82,53 @@ class VideoService {
       print('DEBUG: Error durante la detección: $e');
       return null;
     }
+  }
+
+  /// Parses an .m3u8 master playlist to find available resolutions.
+  static Future<List<VideoQuality>> getHlsQualities(String masterUrl) async {
+    List<VideoQuality> qualities = [];
+    try {
+      final response = await http.get(Uri.parse(masterUrl)).timeout(const Duration(seconds: 5));
+      if (response.statusCode != 200) return qualities;
+
+      final lines = response.body.split('\n');
+      String? currentRes;
+      
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i].trim();
+        if (line.startsWith('#EXT-X-STREAM-INF')) {
+          final resMatch = RegExp(r'RESOLUTION=(\d+x\d+)').firstMatch(line);
+          if (resMatch != null) {
+            currentRes = resMatch.group(1);
+          }
+        } else if (line.isNotEmpty && !line.startsWith('#') && currentRes != null) {
+          String qualityUrl = line;
+          if (!qualityUrl.startsWith('http')) {
+            final uri = Uri.parse(masterUrl);
+            final pathSegments = List<String>.from(uri.pathSegments);
+            pathSegments.removeLast();
+            qualityUrl = '${uri.scheme}://${uri.host}/${pathSegments.join('/')}/$line';
+          }
+          
+          qualities.add(VideoQuality(
+            resolution: _formatResolution(currentRes),
+            url: qualityUrl,
+          ));
+          currentRes = null;
+        }
+      }
+    } catch (e) {
+      print('DEBUG: Error parsing HLS qualities: $e');
+    }
+    return qualities;
+  }
+
+  static String _formatResolution(String res) {
+    if (res.contains('x')) {
+      final height = res.split('x').last;
+      return '${height}p';
+    }
+    return res;
   }
 
   static bool _isProbablyVideo(String url) {

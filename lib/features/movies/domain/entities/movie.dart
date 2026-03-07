@@ -45,3 +45,12 @@ class VideoOption {
     required this.videoUrl,
   });
 }
+class VideoQuality {
+  final String resolution;
+  final String url;
+
+  VideoQuality({
+    required this.resolution,
+    required this.url,
+  });
+}

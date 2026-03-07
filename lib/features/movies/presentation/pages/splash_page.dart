@@ -63,144 +63,158 @@ class _SplashPageState extends State<SplashPage> {
             ],
           ),
         ),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // Center Logo Area
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    const Text(
-                      'K',
-                      style: TextStyle(
-                        fontSize: 85,
-                        fontWeight: FontWeight.w900,
-                        color: Color(0xFF4A90FF), // Bright Blue
-                        letterSpacing: -2,
-                      ),
-                    ),
-                    const SizedBox(width: 5),
-                    CustomPaint(
-                      size: const Size(60, 60),
-                      painter: K7LogoPainter(),
-                    ),
-                    const SizedBox(width: 15),
-                    const Text(
-                      'MOVIE',
-                      style: TextStyle(
-                        fontSize: 48,
-                        fontWeight: FontWeight.w300,
-                        letterSpacing: 8,
-                        color: Color(0xFF6DE8FF), // Cyan
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'CINEMATIC EXCELLENCE',
-                  style: TextStyle(
-                    color: Colors.white38,
-                    fontSize: 14,
-                    letterSpacing: 6,
-                    fontWeight: FontWeight.w400,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Container(
-                  width: 40,
-                  height: 1,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Colors.transparent, Colors.cyan.withOpacity(0.5), Colors.transparent],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            // Loading Section
-            Positioned(
-              bottom: 120,
-              left: 50,
-              right: 50,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            bool isLandscape = constraints.maxWidth > constraints.maxHeight;
+            
+            return SafeArea(
               child: Column(
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  // Spacer to push logo towards center
+                   const Spacer(flex: 2),
+                  
+                  // 1. Logo Area
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Text(
-                        'INITIALIZING SYSTEM',
-                        style: TextStyle(
-                          color: Colors.white54,
-                          fontSize: 11,
-                          letterSpacing: 2,
-                        ),
-                      ),
-                      Text(
-                        '${(_progress * 100).toInt()}%',
-                        style: const TextStyle(
-                          color: Color(0xFF00E5FF),
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  // Progress Bar
-                  Stack(
-                    children: [
-                      Container(
-                        height: 3,
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: Colors.white10,
-                          borderRadius: BorderRadius.circular(5),
-                        ),
-                      ),
-                      FractionallySizedBox(
-                        widthFactor: _progress,
-                        child: Container(
-                          height: 3,
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)],
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'K',
+                            style: TextStyle(
+                              fontSize: 85,
+                              fontWeight: FontWeight.w900,
+                              color: Color(0xFF4A90FF),
+                              letterSpacing: -2,
                             ),
-                            borderRadius: BorderRadius.circular(5),
-                            boxShadow: [
-                              BoxShadow(
-                                color: const Color(0xFF4A90FF).withOpacity(0.5),
-                                blurRadius: 4,
-                                spreadRadius: 1,
-                              ),
-                            ],
+                          ),
+                          const SizedBox(width: 5),
+                          CustomPaint(
+                            size: const Size(60, 60),
+                            painter: K7LogoPainter(),
+                          ),
+                          const SizedBox(width: 15),
+                          const Text(
+                            'MOVIE',
+                            style: TextStyle(
+                              fontSize: 48,
+                              fontWeight: FontWeight.w300,
+                              letterSpacing: 8,
+                              color: Color(0xFF6DE8FF),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'CINEMATIC EXCELLENCE',
+                        style: TextStyle(
+                          color: Colors.white38,
+                          fontSize: 14,
+                          letterSpacing: 6,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Container(
+                        width: 40,
+                        height: 1,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [Colors.transparent, Colors.cyan.withOpacity(0.5), Colors.transparent],
                           ),
                         ),
                       ),
                     ],
                   ),
+
+                  // Spacer between logo and loading
+                  const Spacer(),
+
+                  // 2. Loading Section
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 50),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'INITIALIZING SYSTEM',
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 14,
+                                letterSpacing: 2,
+                              ),
+                            ),
+                            Text(
+                              '${(_progress * 100).toInt()}%',
+                              style: const TextStyle(
+                                color: Color(0xFF00E5FF),
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Stack(
+                          children: [
+                            Container(
+                              height: 3,
+                              width: double.infinity,
+                              decoration: BoxDecoration(
+                                color: Colors.white10,
+                                borderRadius: BorderRadius.circular(5),
+                              ),
+                            ),
+                            FractionallySizedBox(
+                              widthFactor: _progress,
+                              child: Container(
+                                height: 3,
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)],
+                                  ),
+                                  borderRadius: BorderRadius.circular(5),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: const Color(0xFF4A90FF).withOpacity(0.5),
+                                      blurRadius: 4,
+                                      spreadRadius: 1,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Spacer before footer
+                  const Spacer(),
+
+                  // 3. Footer
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 10),
+                    child: Text(
+                      '© 2026 K7 Studios. All Rights Reserved.',
+                      style: TextStyle(
+                        color: Colors.white24,
+                        fontSize: 12,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
                 ],
               ),
-            ),
-
-            // Footer
-            const Positioned(
-              bottom: 40,
-              child: Text(
-                '© 2024 K7 Studios. All Rights Reserved.',
-                style: TextStyle(
-                  color: Colors.white24,
-                  fontSize: 10,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-          ],
+            );
+          },
         ),
       ),
     );
