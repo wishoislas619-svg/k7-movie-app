@@ -5,6 +5,7 @@
 import FlutterMacOS
 import Foundation
 
+import flutter_inappwebview_macos
 import screen_brightness_macos
 import shared_preferences_foundation
 import sqflite_darwin
@@ -12,6 +13,7 @@ import video_player_avfoundation
 import volume_controller
 
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
+  InAppWebViewFlutterPlugin.register(with: registry.registrar(forPlugin: "InAppWebViewFlutterPlugin"))
   ScreenBrightnessMacosPlugin.register(with: registry.registrar(forPlugin: "ScreenBrightnessMacosPlugin"))
   SharedPreferencesPlugin.register(with: registry.registrar(forPlugin: "SharedPreferencesPlugin"))
   SqflitePlugin.register(with: registry.registrar(forPlugin: "SqflitePlugin"))

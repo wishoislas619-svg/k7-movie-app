@@ -11,6 +11,8 @@ class Movie {
   final String? duration;
   final String? backdrop;
   final String? backdropUrl;
+  final String? subtitleUrl;
+  final bool isPopular;
   final DateTime createdAt;
 
   Movie({
@@ -26,6 +28,8 @@ class Movie {
     this.rating = 0.0,
     this.year,
     this.duration,
+    this.subtitleUrl,
+    this.isPopular = false,
     required this.createdAt,
   });
 }

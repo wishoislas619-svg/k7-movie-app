@@ -46,44 +46,68 @@ class AdminCategoriesPage extends ConsumerWidget {
     final categoriesAsync = ref.watch(categoriesProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Gestionar Categorías')),
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0A0A),
+        elevation: 0,
+        title: const Text(
+          'CATEGORÍAS',
+          style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16),
+        ),
+      ),
       body: categoriesAsync.when(
         data: (categories) => ListView.builder(
+          padding: const EdgeInsets.only(bottom: 120),
           itemCount: categories.length,
           itemBuilder: (context, index) {
             final category = categories[index];
-            return ListTile(
-              title: Text(category.name),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.edit, color: Colors.blue),
-                    onPressed: () => _showCategoryDialog(context, ref, category),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () {
-                      showDialog(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          title: const Text('Eliminar Categoría'),
-                          content: const Text('¿Estás seguro? Las películas de esta categoría se quedarán sin categoría, pero NO se borrarán.'),
-                          actions: [
-                            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-                            TextButton(
-                              onPressed: () {
-                                ref.read(categoriesProvider.notifier).deleteCategory(category.id);
-                                Navigator.pop(context);
-                              },
-                              child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+            return Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.03),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withOpacity(0.05)),
+              ),
+              child: ListTile(
+                title: Text(category.name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(color: Colors.white.withOpacity(0.1), shape: BoxShape.circle),
+                      child: IconButton(
+                        icon: const Icon(Icons.edit, color: Colors.blueAccent, size: 20),
+                        onPressed: () => _showCategoryDialog(context, ref, category),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      decoration: BoxDecoration(color: Colors.red.withOpacity(0.1), shape: BoxShape.circle),
+                      child: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.redAccent, size: 20),
+                        onPressed: () {
+                          showDialog(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              title: const Text('Eliminar Categoría'),
+                              content: const Text('¿Estás seguro? Las películas de esta categoría se quedarán sin categoría, pero NO se borrarán.'),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+                                TextButton(
+                                  onPressed: () {
+                                    ref.read(categoriesProvider.notifier).deleteCategory(category.id);
+                                    Navigator.pop(context);
+                                  },
+                                  child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+                                ),
+                              ],
                             ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-                ],
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
               ),
             );
           },
@@ -91,9 +115,32 @@ class AdminCategoriesPage extends ConsumerWidget {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, s) => Center(child: Text('Error: $e')),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _showCategoryDialog(context, ref),
-        child: const Icon(Icons.add),
+      floatingActionButton: Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: Container(
+          decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(30),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF00A3FF).withOpacity(0.3),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: FloatingActionButton(
+          onPressed: () => _showCategoryDialog(context, ref),
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          foregroundColor: Colors.white,
+          child: const Icon(Icons.add),
+        ),
+        ),
       ),
     );
   }

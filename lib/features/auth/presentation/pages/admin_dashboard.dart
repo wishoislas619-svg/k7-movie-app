@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../../../features/movies/presentation/pages/admin_movie_page.dart';
 import '../../../../features/auth/presentation/pages/admin_users_page.dart';
 import '../../../../features/movies/presentation/pages/admin_categories_page.dart';
+import '../../../../features/movies/presentation/pages/admin_popular_movies_page.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -16,33 +17,53 @@ class _AdminDashboardState extends State<AdminDashboard> {
   final List<Widget> _pages = [
     const AdminMoviePage(),
     const AdminCategoriesPage(),
+    const AdminPopularMoviesPage(),
     const AdminUsersPage(),
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       body: _pages[_selectedIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: (index) => setState(() => _selectedIndex = index),
-        selectedItemColor: Colors.purpleAccent,
-        unselectedItemColor: Colors.white60,
-        type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.movie),
-            label: 'Películas',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.category),
-            label: 'Categorías',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.people),
-            label: 'Usuarios',
-          ),
-        ],
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.9),
+          border: const Border(top: BorderSide(color: Colors.white10, width: 0.5)),
+        ),
+        child: BottomNavigationBar(
+          currentIndex: _selectedIndex,
+          onTap: (index) => setState(() => _selectedIndex = index),
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          selectedItemColor: const Color(0xFF00A3FF),
+          unselectedItemColor: Colors.white38,
+          selectedFontSize: 10,
+          unselectedFontSize: 10,
+          type: BottomNavigationBarType.fixed,
+          items: const [
+            BottomNavigationBarItem(
+              icon: Icon(Icons.movie_creation_outlined),
+              activeIcon: Icon(Icons.movie_creation),
+              label: 'PELÍCULAS',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.category_outlined),
+              activeIcon: Icon(Icons.category),
+              label: 'CATEGORÍAS',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.star_outline),
+              activeIcon: Icon(Icons.star),
+              label: 'POPULARES',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.people_outline),
+              activeIcon: Icon(Icons.people),
+              label: 'USUARIOS',
+            ),
+          ],
+        ),
       ),
     );
   }

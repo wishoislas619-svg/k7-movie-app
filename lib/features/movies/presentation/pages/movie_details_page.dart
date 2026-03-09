@@ -85,6 +85,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
           rating: currentMovie.rating > 0 ? currentMovie.rating : (_scrapedRating ?? 0.0),
           year: currentMovie.year ?? _scrapedYear,
           duration: currentMovie.duration ?? _scrapedDuration,
+          subtitleUrl: currentMovie.subtitleUrl,
           createdAt: currentMovie.createdAt,
         );
         ref.read(moviesProvider.notifier).updateMovie(updatedMovie);
@@ -128,7 +129,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
             Stack(
               children: [
                 Container(
-                  height: 300,
+                  height: 300, // Increased height for better visibility
                   width: double.infinity,
                   decoration: BoxDecoration(
                     image: DecorationImage(
@@ -148,14 +149,43 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                       colors: [
-                        Colors.black.withOpacity(0.3),
+                        Colors.black.withOpacity(0.2),
                         Colors.transparent,
-                        Colors.black.withOpacity(0.8),
-                        Colors.black,
+                        Colors.black.withOpacity(0.6),
+                        Colors.black.withOpacity(0.9),
                       ],
+                      stops: const [0.0, 0.4, 0.8, 1.0],
                     ),
                   ),
                 ),
+                
+                // Movie Title on top of image
+                Positioned(
+                  bottom: 25,
+                  left: 20,
+                  right: 20,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        currentMovie.name,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 34,
+                          fontWeight: FontWeight.bold,
+                          shadows: [
+                            Shadow(
+                              color: Colors.black45,
+                              offset: Offset(0, 2),
+                              blurRadius: 10,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
                 // Top Buttons
                 SafeArea(
                   child: Padding(
@@ -172,21 +202,13 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
               ],
             ),
 
-            // 2. Movie Info
+            // 2. Movie Info (Meta & Content)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20.0),
+              padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 0.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                   Text(
-                    currentMovie.name,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 34,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
+                  // Title was here, moved to Stack above
                   
                   // Metadata row
                   Row(

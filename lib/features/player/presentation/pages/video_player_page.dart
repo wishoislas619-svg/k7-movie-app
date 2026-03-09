@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
-import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../../../movies/domain/entities/movie.dart';
 import '../../data/datasources/video_service.dart';
 import 'package:video_player/video_player.dart';
@@ -15,11 +15,13 @@ import 'package:path_provider/path_provider.dart';
 class VideoPlayerPage extends StatefulWidget {
   final String movieName;
   final List<VideoOption> videoOptions;
+  final String? subtitleUrl;
 
   const VideoPlayerPage({
     super.key, 
     required this.movieName, 
-    required this.videoOptions
+    required this.videoOptions,
+    this.subtitleUrl,
   });
 
   @override
@@ -51,12 +53,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   List<SubtitleInfo> _internalSubtitles = [];
   SubtitleInfo? _currentSubtitle;
 
-  late WebViewController _webViewController;
+  InAppWebViewController? _webViewController;
   bool _isWebViewExtracting = true;
   List<String> _extractedQualities = [];
   String? _extractedVideoUrl;
 
   bool _isSwitchingStream = false;
+  bool _isScrapingSubtitles = false;
   final ValueNotifier<bool> _isFetchingSubtitlesNotifier = ValueNotifier<bool>(false);
   final ValueNotifier<List<String>> _extractedSubtitlesNotifier = ValueNotifier<List<String>>([]);
   final ValueNotifier<ClosedCaptionFile?> _captionNotifier = ValueNotifier<ClosedCaptionFile?>(null);
@@ -75,20 +78,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
+
+    _checkSavedSubtitle();
   }
 
   void _initWebViewController() {
-    _webViewController = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1")
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageFinished: (String url) {
-             _runScraper();
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse(_currentOption.videoUrl));
+    // No specific initialization needed for InAppWebView controller as it's provided in onWebViewCreated
   }
 
   Future<void> _runScraper() async {
@@ -136,43 +131,46 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     ''';
     
     try {
-      final jsResult = await _webViewController.runJavaScriptReturningResult(jsCode);
-      if (jsResult is String) {
-        String cleanedJsonStr = jsResult;
-        if (cleanedJsonStr.startsWith('"') && cleanedJsonStr.endsWith('"')) {
-          cleanedJsonStr = cleanedJsonStr.substring(1, cleanedJsonStr.length - 1).replaceAll(r'\"', '"');
+      final dynamic jsResult = await _webViewController?.evaluateJavascript(source: jsCode);
+      if (jsResult != null) {
+        Map<String, dynamic> data;
+        
+        if (jsResult is String) {
+          String cleanedJsonStr = jsResult;
+          if (cleanedJsonStr.startsWith('"') && cleanedJsonStr.endsWith('"')) {
+            cleanedJsonStr = cleanedJsonStr.substring(1, cleanedJsonStr.length - 1).replaceAll(r'\"', '"');
+          }
+          data = jsonDecode(cleanedJsonStr);
+        } else if (jsResult is Map) {
+          data = Map<String, dynamic>.from(jsResult);
+        } else {
+          return;
         }
-        final data = jsonDecode(cleanedJsonStr);
+
         final url = data['videoUrl'] as String?;
-        final qs = List<String>.from(data['qualities'] ?? []);
-        final subs = List<String>.from(data['subtitles'] ?? []);
         final hq = data['highestQuality'] as String?;
         
-        // Auto-select highest quality if first time and it exists
         if (_currentQualityLabel == null && hq != null && _isWebViewExtracting) {
             _onQualitySelected(hq);
-            return; // onQualitySelected will call _runScraper again
+            return; 
         }
 
         if (mounted) {
           setState(() {
-            _extractedQualities = qs;
-            _extractedSubtitlesNotifier.value = subs;
+            _extractedQualities = List<String>.from(data['qualities'] ?? []);
+            _extractedSubtitlesNotifier.value = List<String>.from(data['subtitles'] ?? []);
             
-            if (url != null && url != _extractedVideoUrl) {
-                _extractedVideoUrl = url;
+            if (url != null && url.isNotEmpty) {
+                print("Scraper successfully found direct URL: $url");
                 _isWebViewExtracting = false;
-                _initializeVideoPlayer(_extractedVideoUrl!);
-            } else {
                 _isSwitchingStream = false;
-                _isWebViewExtracting = false;
+                _initializeVideoPlayer(url);
             }
           });
         }
       }
     } catch (e) {
       if (mounted) setState(() => _isSwitchingStream = false);
-      print("JS Eval Error: \$e");
     }
   }
 
@@ -230,7 +228,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
        _captionNotifier.value = null; // Clear external when choosing web
        _controller?.setClosedCaptionFile(null);
      });
-     await _webViewController.runJavaScript(jsCode);
+     await _webViewController?.evaluateJavascript(source: jsCode);
      await Future.delayed(const Duration(seconds: 2));
      _runScraper();
   }
@@ -254,7 +252,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
        _isSwitchingStream = true; 
        _currentQualityLabel = label;
      });
-     await _webViewController.runJavaScript(jsCode);
+     await _webViewController?.evaluateJavascript(source: jsCode);
      await Future.delayed(const Duration(seconds: 2));
      _runScraper();
   }
@@ -422,19 +420,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         child: Stack(
           alignment: Alignment.center,
           children: [
-            // Hidden Webview for HTML extraction
-            Positioned(
-              width: 50,
-              height: 50,
-              left: -100,
-              child: Opacity(
-                opacity: 0.01,
-                child: IgnorePointer(
-                  child: WebViewWidget(controller: _webViewController),
-                ),
-              ),
-            ),
-            
             // Video Player
             if (_errorMessage == null && _controller != null && _controller!.value.isInitialized)
               Center(
@@ -477,14 +462,118 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                 ),
               ),
 
-            // Loading / Error
-            if (_isLoading || _isWebViewExtracting || _isSwitchingStream)
-              const CircularProgressIndicator(color: Color(0xFF00A3FF))
+            // The InAppWebView: Hidden by default, visible ONLY for subtitle scraping or if manually requested
+            Offstage(
+              offstage: !_isScrapingSubtitles && !_isSwitchingStream,
+              child: Positioned.fill(
+                child: Container(
+                  color: Colors.black,
+                  child: SafeArea(
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          color: const Color(0xFF00A3FF),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Row(
+                                children: [
+                                  SizedBox(
+                                    width: 20, height: 20,
+                                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                  ),
+                                  SizedBox(width: 15),
+                                  Text("Acción Manual / Navegador", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                ],
+                              ),
+                              Row(
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.refresh, color: Colors.white),
+                                    onPressed: () => _webViewController?.reload(),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.close, color: Colors.white),
+                                    onPressed: () {
+                                      setState(() {
+                                        _isScrapingSubtitles = false;
+                                        _isSwitchingStream = false;
+                                        _controller?.play();
+                                      });
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: InAppWebView(
+                            initialUrlRequest: URLRequest(url: WebUri(_currentOption.videoUrl)),
+                            initialSettings: InAppWebViewSettings(
+                              javaScriptEnabled: true,
+                              domStorageEnabled: true,
+                              useOnDownloadStart: true,
+                              supportMultipleWindows: true,
+                              javaScriptCanOpenWindowsAutomatically: true,
+                              userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                            ),
+                            onWebViewCreated: (controller) => _webViewController = controller,
+                            onLoadStop: (controller, url) async {
+                              // Automatically extract video source if we need it
+                              if (_isWebViewExtracting || _isSwitchingStream) {
+                                _runScraper();
+                              }
+                            },
+                            onDownloadStartRequest: (controller, downloadRequest) async {
+                              final url = downloadRequest.url.toString();
+                              if (url.contains(".srt") || url.contains(".vtt") || url.contains("/download/")) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Descarga detectada...")));
+                                try {
+                                  final response = await http.get(Uri.parse(url), headers: {
+                                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                                  }).timeout(const Duration(seconds: 20));
+
+                                  if (response.statusCode == 200) {
+                                    await _saveAndLoadLocalSubtitle(response.bodyBytes);
+                                    _closeScraperSuccess();
+                                  }
+                                } catch (e) {
+                                  print("Download error: $e");
+                                }
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // Loading / Error Overlay
+            if ((_isLoading || _isWebViewExtracting) && !_isSwitchingStream)
+              Container(
+                color: Colors.black,
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const CircularProgressIndicator(color: Color(0xFF00A3FF)),
+                      const SizedBox(height: 20),
+                      Text(_isWebViewExtracting ? "Analizando origen de video..." : "Cargando video...", 
+                          style: const TextStyle(color: Colors.white70)),
+                    ],
+                  ),
+                ),
+              )
             else if (_errorMessage != null)
               _buildErrorContent(),
 
             // Skip Forward/Backward Buttons (ONLY if not locked)
-            if (!_isLocked && _showControls && _errorMessage == null && !(_isLoading || _isWebViewExtracting || _isSwitchingStream))
+            if (!_isLocked && _showControls && _errorMessage == null && !(_isLoading || _isWebViewExtracting || _isScrapingSubtitles))
               _buildSkipOverlay(),
 
             // Gesture Indicators (Volume / Brightness)
@@ -516,7 +605,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             ),
 
             // Play/Pause Sync
-            if (!_isLocked && _showControls && _errorMessage == null && !(_isLoading || _isWebViewExtracting || _isSwitchingStream))
+            if (!_isLocked && _showControls && _errorMessage == null && !(_isLoading || _isWebViewExtracting || _isScrapingSubtitles))
               Center(
                 child: IconButton(
                   iconSize: 80,
@@ -558,78 +647,82 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   Widget _buildGestureIndicators() {
     return Stack(
       children: [
-        if (_showVolumeLabel)
-          _buildSliderOverlay(Icons.volume_up, '${(_volume * 20).toInt()}', _volume, true),
-        if (_showBrightnessLabel)
-          _buildSliderOverlay(Icons.brightness_medium, '${(_brightness * 100).toInt()}%', _brightness, false),
+        // Volume Slider (Left)
+        Positioned(
+          left: 60,
+          top: MediaQuery.of(context).size.height / 2 - 80,
+          child: AnimatedOpacity(
+            opacity: (_showVolumeLabel || (_showControls && !_isLocked)) ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 300),
+            child: _buildSliderOverlay(Icons.volume_up, '${(_volume * 15).toInt()}', _volume, true),
+          ),
+        ),
+        // Brightness Slider (Right)
+        Positioned(
+          right: 60,
+          top: MediaQuery.of(context).size.height / 2 - 80,
+          child: AnimatedOpacity(
+            opacity: (_showBrightnessLabel || (_showControls && !_isLocked)) ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 300),
+            child: _buildSliderOverlay(Icons.brightness_medium, '${(_brightness * 100).toInt()}%', _brightness, false),
+          ),
+        ),
       ],
     );
   }
 
   Widget _buildSliderOverlay(IconData icon, String label, double value, bool isLeft) {
-    return Positioned(
-      left: isLeft ? 40 : null,
-      right: isLeft ? null : 40,
-      top: MediaQuery.of(context).size.height / 2 - 100,
-      child: SizedBox(
-        width: 60, // Fixed width to prevent "vibration" shift
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Icon(icon, color: Colors.white, size: 30),
-            const SizedBox(height: 10),
-            Stack(
-              alignment: Alignment.bottomCenter,
-              children: [
-                // Track background
-                Container(
-                  height: 150,
-                  width: 6,
-                  decoration: BoxDecoration(
-                    color: Colors.white12,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-                // Iridescent fill
-                Container(
-                  height: 150 * value.clamp(0.0, 1.0),
-                  width: 6,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
-                      begin: Alignment.bottomCenter,
-                      end: Alignment.topCenter,
-                    ),
-                    borderRadius: BorderRadius.circular(10),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF00A3FF).withOpacity(0.3),
-                        blurRadius: 4,
-                        offset: const Offset(0, 0),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            // Fixed width for text to avoid layout jumps
-            SizedBox(
-              width: 60,
-              child: Text(
-                label,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
+    return SizedBox(
+      width: 50, 
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: Colors.white, size: 24),
+          const SizedBox(height: 8),
+          Stack(
+            alignment: Alignment.bottomCenter,
+            children: [
+              // Track background
+              Container(
+                height: 100,
+                width: 5,
+                decoration: BoxDecoration(
+                  color: Colors.white12,
+                  borderRadius: BorderRadius.circular(10),
                 ),
               ),
+              // Gradient fill
+              Container(
+                height: 100 * value.clamp(0.0, 1.0),
+                width: 5,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                  ),
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF00A3FF).withOpacity(0.3),
+                      blurRadius: 4,
+                      offset: const Offset(0, 0),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -706,6 +799,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                     child: Stack(
                       alignment: Alignment.centerLeft,
                       children: [
+                        // Background Bar (Thick gray part)
+                        Container(
+                          height: 7.0,
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            color: Colors.white24,
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                        ),
+                        // Invisible indicator for scrubbing logic
                         VideoProgressIndicator(
                           _controller!,
                           allowScrubbing: true,
@@ -713,9 +816,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                           colors: const VideoProgressColors(
                             playedColor: Colors.transparent,
                             bufferedColor: Colors.white24,
-                            backgroundColor: Colors.white24,
+                            backgroundColor: Colors.transparent,
                           ),
                         ),
+                        // Iridescent Progress Bar
                         ValueListenableBuilder(
                           valueListenable: _controller!,
                           builder: (context, VideoPlayerValue value, child) {
@@ -841,7 +945,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           ),
           onPressed: () {
             setState(() { _isWebViewExtracting = true; _errorMessage = null; });
-            _webViewController.reload();
+            _webViewController?.reload();
           },
           child: const Text('Reintentar'),
         ),
@@ -903,7 +1007,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     
     _showSubtitlesDialog();
 
-    // PROFESSIONAL SCRAPER: Uses Player APIs (JWPlayer/VideoJS) + DOM clicking
+    // PROFESSIONAL SCRAPER (Browser extraction)
     const jsCode = '''
       (async function() {
          var results = [];
@@ -982,8 +1086,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     ''';
 
     try {
-      final jsResult = await _webViewController.runJavaScriptReturningResult(jsCode);
-      String cleaned = jsResult.toString();
+      final dynamic jsResult = await _webViewController?.evaluateJavascript(source: jsCode);
+      String cleaned = jsResult?.toString() ?? "[]";
       if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
         cleaned = cleaned.substring(1, cleaned.length - 1).replaceAll(r'\"', '"');
       }
@@ -1115,157 +1219,178 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     return Column(
       children: [
         _buildSubtitleAction(
-          icon: Icons.auto_awesome, 
-          title: "Generar con IA (Beta)", 
-          subtitle: "Transcripción automática fluida",
+          icon: Icons.cloud_download, 
+          title: "Descargar Subtítulos (Web)", 
+          subtitle: "Procesar desde la URL configurada",
           onTap: () {
             Navigator.pop(context);
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text("Función Premium: Generando subtítulos por IA..."))
-            );
-          }
-        ),
-        const SizedBox(height: 10),
-        _buildSubtitleAction(
-          icon: Icons.search, 
-          title: "Buscador OpenSubtitles", 
-          subtitle: "Encuentra subtítulos para '${widget.movieName}'",
-          onTap: () {
-            Navigator.pop(context);
-            _showSearchOpenSubtitlesDialog();
+            _manualScrapeSubtitles();
           }
         ),
       ],
     );
   }
 
-  void _showSearchOpenSubtitlesDialog() {
-    final TextEditingController searchCtrl = TextEditingController(text: widget.movieName);
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF151515),
-        title: const Text("Buscar Subtítulos", style: TextStyle(color: Colors.white)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: searchCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                hintText: "Nombre de la película...",
-                hintStyle: TextStyle(color: Colors.grey),
-                enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-              ),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF)),
-              onPressed: () {
-                 _searchAndDownloadSub(searchCtrl.text);
-                 Navigator.pop(context);
-              },
-              child: const Text("Buscar"),
-            )
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _searchAndDownloadSub(String query) async {
-    // OpenSubtitles API Key (placeholder)
-    const String apiKey = "W2n6O4T5g6vS7n8o9p0q1r2s3t4u5v6w"; // Example structure
-    
-    try {
+  Future<void> _manualScrapeSubtitles() async {
+    if (widget.subtitleUrl == null || widget.subtitleUrl!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Buscando subtítulos para: $query..."))
+        const SnackBar(content: Text("No hay una URL de subtítulos configurada."))
       );
+      return;
+    }
 
-      final response = await http.get(
-        Uri.parse('https://api.opensubtitles.com/api/v1/subtitles?query=$query&languages=es'),
-        headers: {
-          'Api-Key': apiKey,
-          'User-Agent': 'AntigravityMovieApp v1',
-        },
+    setState(() {
+      _isScrapingSubtitles = true;
+      _controller?.pause();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Iniciando descarga manual..."))
+    );
+
+    try {
+      print("Manual Scrape: loading ${widget.subtitleUrl}");
+      
+      // Clear before loading to ensure a fresh session
+      await _webViewController?.loadUrl(
+        urlRequest: URLRequest(
+          url: WebUri(widget.subtitleUrl!),
+          headers: {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+          }
+        )
       );
+      
+      // Wait for the user to solve captcha or the page to load
+      await Future.delayed(const Duration(seconds: 12));
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final List results = data['data'] ?? [];
-        
-        if (results.isEmpty) {
-          if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("No se encontraron subtítulos en OpenSubtitles.")));
-          return;
-        }
+      // Try several times every 5 seconds if not found
+      for (int i=0; i<3; i++) {
+        print("Scraper attempt ${i+1}...");
+        const jsTrigger = '''
+          (async function() {
+             function findByText(text, selector = '*') {
+               const items = document.querySelectorAll(selector);
+               for(let i=0; i<items.length; i++) {
+                 let elText = items[i].textContent.trim().toUpperCase();
+                 if(elText === text.toUpperCase() || elText.includes(text.toUpperCase())) return items[i];
+               }
+               return null;
+             }
 
-        _showSubtitleResults(results, apiKey);
-      } else {
-        throw "Error API ${response.statusCode}";
+             const mfBtn = document.querySelector('#downloadButton') || 
+                          document.querySelector('.download_link') || 
+                          findByText('Download', 'a, div, button');
+             
+             if (mfBtn) {
+               mfBtn.scrollIntoView();
+               mfBtn.click();
+               return "CLICKED";
+             }
+             return "NOT_FOUND";
+          })();
+        ''';
+
+        final result = await _webViewController?.evaluateJavascript(source: jsTrigger);
+        print("JS Trigger Result: $result");
+        if (result == "CLICKED") break;
+        await Future.delayed(const Duration(seconds: 8));
       }
+      
+      // Keep it open to allow manual interaction if JS trigger fails
+      await Future.delayed(const Duration(seconds: 15));
+      
     } catch (e) {
-      print("Error Search: $e");
-      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error al buscar en OpenSubtitles: $e")));
+      print("Scrape error: $e");
     }
   }
 
-  void _showSubtitleResults(List results, String apiKey) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1C1C1C),
-        title: const Text("Resultados Online", style: TextStyle(color: Colors.white)),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: results.length,
-            itemBuilder: (context, index) {
-              final sub = results[index]['attributes'];
-              final label = sub['release'] ?? sub['language'];
-              return ListTile(
-                title: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 13)),
-                subtitle: Text("${sub['language']} | ${sub['format']}", style: const TextStyle(color: Colors.grey, fontSize: 11)),
-                onTap: () {
-                  Navigator.pop(context);
-                  _downloadAndLoadSub(results[index]['attributes']['files'][0]['file_id'], apiKey);
-                },
-              );
-            },
-          ),
-        ),
-      ),
-    );
+  void _closeScraperSuccess() {
+    if(mounted) {
+      setState(() {
+        _isScrapingSubtitles = false;
+        _controller?.play();
+      });
+      _webViewController?.loadUrl(
+        urlRequest: URLRequest(url: WebUri(_currentOption.videoUrl))
+      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Subtítulos descargados con éxito.")));
+    }
   }
 
-  Future<void> _downloadAndLoadSub(int fileId, String apiKey) async {
+  Future<void> _saveAndLoadLocalSubtitle(dynamic content) async {
     try {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Descargando subtítulo...")));
-      
-      final response = await http.post(
-        Uri.parse('https://api.opensubtitles.com/api/v1/download'),
-        headers: {
-          'Api-Key': apiKey,
-          'User-Agent': 'AntigravityMovieApp v1',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({"file_id": fileId}),
-      );
+      String decodedContent;
+      if (content is List<int>) {
+        decodedContent = _decodeSubtitleBytes(content);
+      } else {
+        decodedContent = content.toString();
+      }
 
-      if (response.statusCode == 200) {
-        final downloadData = jsonDecode(response.body);
-        final String link = downloadData['link'];
+      // Remove BOM if present (Fixes the "A with arrow" at the start)
+      if (decodedContent.startsWith('\uFEFF')) {
+        decodedContent = decodedContent.substring(1);
+      }
+
+      final directory = await getApplicationDocumentsDirectory();
+      final fileName = "sub_${widget.movieName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}.srt";
+      final file = File('${directory.path}/$fileName');
+      
+      await file.writeAsString(decodedContent);
+      _loadExternalSubtitleFromContent(decodedContent);
+      
+      if(mounted) {
+        if (!_internalSubtitles.any((s) => s.url == "local_file")) {
+          setState(() {
+            _internalSubtitles.add(SubtitleInfo(language: "Subtítulo Guardado", url: "local_file"));
+          });
+        }
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Subtítulo guardado y aplicado correctamente.")));
+      }
+    } catch (e) {
+      print("Save error: $e");
+    }
+  }
+
+  String _decodeSubtitleBytes(List<int> bytes) {
+    try {
+      // Try UTF-8 first
+      return utf8.decode(bytes);
+    } catch (_) {
+      try {
+        // Fallback to Latin-1
+        return latin1.decode(bytes);
+      } catch (_) {
+        // Ultimate fallback
+        return String.fromCharCodes(bytes);
+      }
+    }
+  }
+
+  Future<void> _checkSavedSubtitle() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final fileName = "sub_${widget.movieName.replaceAll(RegExp(r'[^a-zA-r0-9]'), '_')}.srt";
+      final file = File('${directory.path}/$fileName');
+      
+      if (await file.exists()) {
+        final bytes = await file.readAsBytes();
+        String content = _decodeSubtitleBytes(bytes);
         
-        // Fetch the actual file content
-        final fileRes = await http.get(Uri.parse(link));
-        if (fileRes.statusCode == 200) {
-           final content = fileRes.body;
-           _loadExternalSubtitleFromContent(content);
+        if (content.startsWith('\uFEFF')) {
+          content = content.substring(1);
+        }
+
+        _loadExternalSubtitleFromContent(content);
+        if(mounted) {
+          setState(() {
+            if (!_internalSubtitles.any((s) => s.url == "local_file")) {
+              _internalSubtitles.add(SubtitleInfo(language: "Subtítulo Guardado", url: "local_file"));
+            }
+          });
         }
       }
     } catch (e) {
-      print("Download error: $e");
-      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error al descargar subtítulo: $e")));
+      print("Check saved error: $e");
     }
   }
 
@@ -1280,8 +1405,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       
       _captionNotifier.value = captionFile;
       _controller?.setClosedCaptionFile(Future.value(captionFile));
-      
-      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Subtítulos activados correctamente.")));
     } catch (e) {
       print("Parse error: $e");
     }

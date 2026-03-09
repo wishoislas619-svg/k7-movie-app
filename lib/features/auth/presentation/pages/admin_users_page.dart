@@ -64,53 +64,75 @@ class AdminUsersPage extends ConsumerWidget {
     final usersAsync = ref.watch(usersProvider);
 
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Gestionar Usuarios'),
+        backgroundColor: const Color(0xFF0A0A0A),
+        elevation: 0,
+        title: const Text(
+          'USUARIOS',
+          style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16),
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.logout),
+            icon: const Icon(Icons.logout, color: Colors.white70),
             onPressed: () => ref.read(authStateProvider.notifier).logout(),
           ),
         ],
       ),
       body: usersAsync.when(
         data: (users) => ListView.builder(
+          padding: const EdgeInsets.only(bottom: 120),
           itemCount: users.length,
           itemBuilder: (context, index) {
             final user = users[index];
-            return ListTile(
-              title: Text('${user.firstName} ${user.lastName}'),
-              subtitle: Text('${user.email} | @${user.username}'),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.edit, color: Colors.blue),
-                    onPressed: () => _showEditUserDialog(context, ref, user),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () {
-                      showDialog(
-                        context: context,
-                        builder: (context) => AlertDialog(
-                          title: const Text('Eliminar Usuario'),
-                          content: const Text('¿Estás seguro de que deseas eliminar este usuario?'),
-                          actions: [
-                            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-                            TextButton(
-                              onPressed: () {
-                                ref.read(usersProvider.notifier).deleteUser(user.id);
-                                Navigator.pop(context);
-                              },
-                              child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+            return Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.03),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withOpacity(0.05)),
+              ),
+              child: ListTile(
+                title: Text('${user.firstName} ${user.lastName}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                subtitle: Text('${user.email} | @${user.username}', style: const TextStyle(color: Color(0xFF00A3FF), fontSize: 12)),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(color: Colors.white.withOpacity(0.1), shape: BoxShape.circle),
+                      child: IconButton(
+                        icon: const Icon(Icons.edit, color: Colors.blueAccent, size: 20),
+                        onPressed: () => _showEditUserDialog(context, ref, user),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      decoration: BoxDecoration(color: Colors.red.withOpacity(0.1), shape: BoxShape.circle),
+                      child: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.redAccent, size: 20),
+                        onPressed: () {
+                          showDialog(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              title: const Text('Eliminar Usuario'),
+                              content: const Text('¿Estás seguro de que deseas eliminar este usuario?'),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+                                TextButton(
+                                  onPressed: () {
+                                    ref.read(usersProvider.notifier).deleteUser(user.id);
+                                    Navigator.pop(context);
+                                  },
+                                  child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+                                ),
+                              ],
                             ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-                ],
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
               ),
             );
           },

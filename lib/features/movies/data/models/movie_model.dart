@@ -14,6 +14,8 @@ class MovieModel extends Movie {
     super.rating = 0.0,
     super.year,
     super.duration,
+    super.subtitleUrl,
+    super.isPopular = false,
     required super.createdAt,
   });
 
@@ -31,6 +33,8 @@ class MovieModel extends Movie {
       rating: (map['rating'] ?? 0.0).toDouble(),
       year: map['year'],
       duration: map['duration'],
+      subtitleUrl: map['subtitleUrl'] ?? map['subtitleRss'],
+      isPopular: map['isPopular'] == 1,
       createdAt: DateTime.parse(map['createdAt']),
     );
   }
@@ -49,6 +53,8 @@ class MovieModel extends Movie {
       'rating': rating,
       'year': year,
       'duration': duration,
+      'subtitleUrl': subtitleUrl,
+      'isPopular': isPopular ? 1 : 0,
       'createdAt': createdAt.toIso8601String(),
     };
   }

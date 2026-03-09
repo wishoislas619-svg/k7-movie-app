@@ -32,6 +32,8 @@ class MovieRepositorySqliteImpl implements MovieRepository {
       rating: movie.rating,
       year: movie.year,
       duration: movie.duration,
+      subtitleUrl: movie.subtitleUrl,
+      isPopular: movie.isPopular,
       createdAt: movie.createdAt,
     );
     await db.insert('movies', model.toMap());
@@ -53,6 +55,8 @@ class MovieRepositorySqliteImpl implements MovieRepository {
       rating: movie.rating,
       year: movie.year,
       duration: movie.duration,
+      subtitleUrl: movie.subtitleUrl,
+      isPopular: movie.isPopular,
       createdAt: movie.createdAt,
     );
     await db.update(

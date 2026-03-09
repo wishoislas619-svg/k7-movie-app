@@ -33,6 +33,7 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
         builder: (_) => VideoPlayerPage(
           movieName: widget.movie.name,
           videoOptions: [option, ...allOptions.where((o) => o.id != option.id)],
+          subtitleUrl: widget.movie.subtitleUrl,
         ),
       ),
     );

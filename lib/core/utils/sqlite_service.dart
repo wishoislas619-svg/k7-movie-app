@@ -15,7 +15,7 @@ class SqliteService {
     String path = join(await getDatabasesPath(), 'movie_app.db');
     return await openDatabase(
       path,
-      version: 8,
+      version: 11,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -51,6 +51,15 @@ class SqliteService {
     }
     if (oldVersion < 8) {
       await db.execute('ALTER TABLE movies ADD COLUMN backdropUrl TEXT');
+    }
+    if (oldVersion < 9) {
+      await db.execute('ALTER TABLE movies ADD COLUMN subtitleRss TEXT');
+    }
+    if (oldVersion < 10) {
+      await db.execute('ALTER TABLE movies RENAME COLUMN subtitleRss TO subtitleUrl');
+    }
+    if (oldVersion < 11) {
+      await db.execute('ALTER TABLE movies ADD COLUMN isPopular INTEGER DEFAULT 0');
     }
   }
 
@@ -88,6 +97,8 @@ class SqliteService {
         rating REAL DEFAULT 0.0,
         year TEXT,
         duration TEXT,
+        subtitleUrl TEXT,
+        isPopular INTEGER DEFAULT 0,
         createdAt TEXT,
         FOREIGN KEY (categoryId) REFERENCES categories (id) ON DELETE SET NULL
       )

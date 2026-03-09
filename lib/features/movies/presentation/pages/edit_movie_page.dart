@@ -18,6 +18,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
   late TextEditingController _imageController;
   late TextEditingController _detailsUrlController;
   late TextEditingController _backdropUrlController;
+  late TextEditingController _subtitleUrlController;
+  late TextEditingController _descriptionController;
   String? _selectedCategoryId;
   List<VideoOption> _options = [];
 
@@ -28,6 +30,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     _imageController = TextEditingController(text: widget.movie?.imagePath ?? '');
     _detailsUrlController = TextEditingController(text: widget.movie?.detailsUrl ?? '');
     _backdropUrlController = TextEditingController(text: widget.movie?.backdropUrl ?? '');
+    _subtitleUrlController = TextEditingController(text: widget.movie?.subtitleUrl ?? '');
+    _descriptionController = TextEditingController(text: widget.movie?.description ?? '');
     _selectedCategoryId = widget.movie?.categoryId;
     if (widget.movie != null) {
       _loadOptions();
@@ -47,6 +51,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         categoryId: _selectedCategoryId,
         detailsUrl: _detailsUrlController.text,
         backdropUrl: _backdropUrlController.text,
+        subtitleUrl: _subtitleUrlController.text,
+        description: _descriptionController.text.isNotEmpty ? _descriptionController.text : null,
       );
     } else {
       final updatedMovie = Movie(
@@ -56,12 +62,13 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         categoryId: _selectedCategoryId,
         detailsUrl: _detailsUrlController.text,
         backdropUrl: _backdropUrlController.text,
-        description: widget.movie!.description,
+        description: _descriptionController.text.isNotEmpty ? _descriptionController.text : null,
         views: widget.movie!.views,
         rating: widget.movie!.rating,
         year: widget.movie!.year,
         duration: widget.movie!.duration,
         backdrop: widget.movie!.backdrop,
+        subtitleUrl: _subtitleUrlController.text,
         createdAt: widget.movie!.createdAt,
       );
       await ref.read(moviesProvider.notifier).updateMovie(updatedMovie);
@@ -128,82 +135,206 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     );
   }
 
+  Widget _buildTextField({
+    required TextEditingController controller,
+    required String labelText,
+    int maxLines = 1,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          labelText.toUpperCase(),
+          style: const TextStyle(color: Color(0xFF00A3FF), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: controller,
+          maxLines: maxLines,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Introduce $labelText',
+            hintStyle: const TextStyle(color: Colors.white38),
+            filled: true,
+            fillColor: Colors.white.withOpacity(0.04),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF00A3FF)),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final categoriesAsync = ref.watch(categoriesProvider);
 
     return Scaffold(
-      appBar: AppBar(title: Text(widget.movie == null ? 'Nueva Película' : 'Editar Película')),
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0A0A),
+        elevation: 0,
+        title: Text(
+          widget.movie == null ? 'NUEVA PELÍCULA' : 'EDITAR PELÍCULA',
+          style: const TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16),
+        ),
+      ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 80),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextField(controller: _imageController, decoration: const InputDecoration(labelText: 'URL Imagen Película (Poster)')),
+            _buildTextField(controller: _imageController, labelText: 'URL Imagen Película (Poster)'),
             const SizedBox(height: 16),
-            TextField(controller: _detailsUrlController, decoration: const InputDecoration(labelText: 'URL detalles de la película (HTML para escanear)')),
+            _buildTextField(controller: _detailsUrlController, labelText: 'URL detalles (HTML)'),
             const SizedBox(height: 16),
-            TextField(controller: _backdropUrlController, decoration: const InputDecoration(labelText: 'link Imagen Portada (Fondo detalles)')),
+            _buildTextField(controller: _backdropUrlController, labelText: 'Imagen Portada (Fondo detalles)'),
+            const SizedBox(height: 16),
+            _buildTextField(controller: _subtitleUrlController, labelText: 'URL Subtítulos'),
             const SizedBox(height: 16),
             categoriesAsync.when(
               data: (categories) {
-                // Ensure the selected ID exists in the current categories list to avoid assertion errors
                 final bool exists = _selectedCategoryId == null || categories.any((c) => c.id == _selectedCategoryId);
                 final dropdownValue = exists ? _selectedCategoryId : null;
 
-                return DropdownButtonFormField<String>(
-                  value: dropdownValue,
-                  decoration: const InputDecoration(labelText: 'Categoría'),
-                  items: [
-                    const DropdownMenuItem<String>(value: null, child: Text('Sin Categoría')),
-                    ...categories.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name))),
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'CATEGORÍA',
+                      style: TextStyle(color: Color(0xFF00A3FF), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String>(
+                      value: dropdownValue,
+                      dropdownColor: const Color(0xFF1E1E1E),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.04),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Color(0xFF00A3FF)),
+                        ),
+                      ),
+                      items: [
+                        const DropdownMenuItem<String>(value: null, child: Text('Sin Categoría')),
+                        ...categories.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name))),
+                      ],
+                      onChanged: (val) => setState(() => _selectedCategoryId = val),
+                    ),
                   ],
-                  onChanged: (val) => setState(() => _selectedCategoryId = val),
                 );
               },
               loading: () => const CircularProgressIndicator(),
-              error: (e, s) => Text('Error cargando categorías: $e'),
+              error: (e, s) => Text('Error cargando categorías: $e', style: const TextStyle(color: Colors.red)),
             ),
             const SizedBox(height: 16),
-            TextField(controller: _nameController, decoration: const InputDecoration(labelText: 'Nombre de la Película')),
+            _buildTextField(controller: _nameController, labelText: 'Nombre de la Película'),
+            const SizedBox(height: 16),
+            _buildTextField(controller: _descriptionController, labelText: 'Descripción de la Película', maxLines: 3),
             const SizedBox(height: 32),
-            const Text('Opciones de Video', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Text('OPCIONES DE VIDEO', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
             const SizedBox(height: 8),
             if (widget.movie == null)
-              const Text('Guarda la película primero para agregar opciones.')
+              const Text('Guarda la película primero para agregar opciones.', style: TextStyle(color: Colors.white38))
             else ...[
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _options.length,
-                itemBuilder: (context, index) {
-                  return ListTile(
-                    leading: Text('Opción ${index + 1}'),
-                    title: Text(_options[index].resolution),
-                    onTap: () => _showOptionModal(_options[index]),
-                  );
-                },
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.02),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: _options.length,
+                  itemBuilder: (context, index) {
+                    return ListTile(
+                      leading: Text('OPCIÓN ${index + 1}', style: const TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, fontSize: 10)),
+                      title: Text(_options[index].resolution, style: const TextStyle(color: Colors.white)),
+                      trailing: const Icon(Icons.edit, color: Colors.white38, size: 16),
+                      onTap: () => _showOptionModal(_options[index]),
+                    );
+                  },
+                ),
               ),
-              ElevatedButton.icon(
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
                 onPressed: () => _showOptionModal(),
-                icon: const Icon(Icons.add),
-                label: const Text('Agregar nueva opción'),
+                icon: const Icon(Icons.add, color: Color(0xFF00A3FF)),
+                label: const Text('NUEVA OPCIÓN', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold)),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF00A3FF)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                ),
               ),
             ],
             const SizedBox(height: 48),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                if (widget.movie != null)
-                  ElevatedButton(
-                    onPressed: _deleteMovie,
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-                    child: const Text('Eliminar'),
+                if (widget.movie != null) ...[
+                  Expanded(
+                    flex: 1,
+                    child: OutlinedButton(
+                      onPressed: _deleteMovie,
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.redAccent),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: const Text('ELIMINAR', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+                    ),
                   ),
-                ElevatedButton(
-                  onPressed: _saveMovie,
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
-                  child: const Text('Guardar'),
+                  const SizedBox(width: 16),
+                ],
+                Expanded(
+                  flex: 1,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                        begin: Alignment.centerLeft,
+                        end: Alignment.centerRight,
+                      ),
+                      boxShadow: [
+                        BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.3), blurRadius: 10, offset: const Offset(-2, 0)),
+                        BoxShadow(color: const Color(0xFFD400FF).withOpacity(0.3), blurRadius: 10, offset: const Offset(2, 0))
+                      ],
+                    ),
+                    child: ElevatedButton(
+                      onPressed: _saveMovie,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.transparent,
+                        shadowColor: Colors.transparent,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: const Text('GUARDAR', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16)),
+                    ),
+                  ),
                 ),
               ],
             ),
