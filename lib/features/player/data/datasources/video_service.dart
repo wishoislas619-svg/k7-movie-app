@@ -2,14 +2,26 @@ import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' as html_parser;
 import '../../../movies/domain/entities/movie.dart';
 
+class SubtitleInfo {
+  final String language;
+  final String url;
+  SubtitleInfo({required this.language, required this.url});
+}
+
+class VideoExtractionResult {
+  final String videoUrl;
+  final List<SubtitleInfo> subtitles;
+  VideoExtractionResult({required this.videoUrl, this.subtitles = const []});
+}
+
 class VideoService {
   /// Simulates Seekee logic: fetches a URL, parses HTML, and finds the direct video link.
-  static Future<String?> findDirectVideoUrl(String webUrl) async {
+  static Future<VideoExtractionResult?> findDirectVideoUrl(String webUrl) async {
     print('DEBUG: Iniciando detección para: $webUrl');
     try {
       if (webUrl.toLowerCase().endsWith('.mp4') || webUrl.toLowerCase().endsWith('.m3u8')) {
         print('DEBUG: El enlace ya es directo: $webUrl');
-        return webUrl;
+        return VideoExtractionResult(videoUrl: webUrl);
       }
 
       final response = await http.get(Uri.parse(webUrl), headers: {
@@ -22,6 +34,28 @@ class VideoService {
       final body = response.body;
       final document = html_parser.parse(body);
       
+      List<SubtitleInfo> extractedSubtitles = [];
+      // Buscar subtítulos en etiquetas <track>
+      final tracks = document.querySelectorAll('track');
+      for (var track in tracks) {
+        final src = track.attributes['src'] ?? track.attributes['data-src'];
+        if (src != null && src.toLowerCase().contains('.vtt')) {
+          final label = track.attributes['label'] ?? track.attributes['srclang'] ?? 'Subtítulo';
+          extractedSubtitles.add(SubtitleInfo(language: label, url: _normalizeUrl(src, webUrl)));
+        }
+      }
+
+      // Buscar subtítulos en formato JSON común (jwplayer tracks, etc)
+      final trackRegex = RegExp(r'"file":\s*"([^"]+\.vtt)"\s*,\s*"label":\s*"([^"]+)"');
+      final trackMatches = trackRegex.allMatches(body);
+      for (var match in trackMatches) {
+         final src = match.group(1);
+         final label = match.group(2) ?? 'Subtítulo';
+         if (src != null) {
+           extractedSubtitles.add(SubtitleInfo(language: label, url: _normalizeUrl(src, webUrl)));
+         }
+      }
+
       // 1. Check <video> and <source> tags
       final videoElements = document.querySelectorAll('video, source');
       print('DEBUG: Elementos <video>/<source> encontrados: ${videoElements.length}');
@@ -30,7 +64,7 @@ class VideoService {
         if (src != null && _isProbablyVideo(src)) {
           final found = _normalizeUrl(src, webUrl);
           print('DEBUG: Video encontrado en tag: $found');
-          return found;
+          return VideoExtractionResult(videoUrl: found, subtitles: extractedSubtitles);
         }
       }
 
@@ -42,7 +76,7 @@ class VideoService {
         if (src != null) {
           print('DEBUG: Analizando iframe: $src');
           if (src.contains('.mp4') || src.contains('.m3u8')) {
-            return _normalizeUrl(src, webUrl);
+            return VideoExtractionResult(videoUrl: _normalizeUrl(src, webUrl), subtitles: extractedSubtitles);
           }
           // Patrón específico encontrado en la investigación (Embed69)
           if (src.contains('embed69.org') || src.contains('vidhide') || src.contains('voe')) {
@@ -70,7 +104,7 @@ class VideoService {
             final normalized = _normalizeUrl(found, webUrl);
             if (_isProbablyVideo(normalized)) {
               print('DEBUG: Video detectado por Regex: $normalized');
-              return normalized;
+              return VideoExtractionResult(videoUrl: normalized, subtitles: extractedSubtitles);
             }
           }
         }

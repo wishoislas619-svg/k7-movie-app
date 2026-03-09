@@ -48,6 +48,7 @@ dependencies:
   state_notifier: ^1.0.0
   screen_brightness: ^2.1.7
   volume_controller: ^3.4.2
+  webview_flutter: ^4.13.1
 
 dev_dependencies:
   flutter_test:
