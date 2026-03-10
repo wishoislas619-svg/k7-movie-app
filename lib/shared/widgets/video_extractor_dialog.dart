@@ -37,6 +37,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
   int _timerCount = 0;
   bool _isDisposed = false;
   final List<VideoExtractionData> _foundMedia = [];
+  bool _snifferInjected = false;
 
   final List<ContentBlocker> _contentBlockers = [
     ContentBlocker(
@@ -118,6 +119,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
                   },
                   onLoadStop: (controller, url) async {
                      _startSniffingTimer();
+                     _injectNetworkSniffer();
                   },
                 ),
               ),
@@ -299,7 +301,12 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
           cookies: cookieString,
         );
 
-        final explodedQualities = await VideoService.getHlsQualities(url, headers: headersForProbe);
+        final masterUrl = await _resolveHlsMasterUrl(url, headersForProbe);
+        final targetUrl = masterUrl ?? url;
+        if (masterUrl != null && masterUrl != url) {
+          print("[SNIFFER] Master HLS detectado: $masterUrl");
+        }
+        final explodedQualities = await VideoService.getHlsQualities(targetUrl, headers: headersForProbe);
         
         // Add each quality found as a separate media entry
         for (var q in explodedQualities) {
@@ -340,6 +347,151 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
     }
   }
 
+  Future<void> _injectNetworkSniffer() async {
+    if (_snifferInjected || _webViewController == null || _isDisposed) return;
+    _snifferInjected = true;
+
+    _webViewController?.addJavaScriptHandler(
+      handlerName: 'snifferManifest',
+      callback: (args) async {
+        if (args.isEmpty) return;
+        final payload = args.first;
+        if (payload is Map) {
+          final url = payload['url']?.toString() ?? '';
+          final body = payload['body']?.toString() ?? '';
+          if (url.isNotEmpty && body.isNotEmpty) {
+            await _handleManifestText(url, body);
+          }
+        }
+      },
+    );
+
+    _webViewController?.addJavaScriptHandler(
+      handlerName: 'snifferUrl',
+      callback: (args) async {
+        if (args.isEmpty) return;
+        final url = args.first?.toString() ?? '';
+        if (url.isNotEmpty && _isVideoUrl(url)) {
+          _handleFoundVideo(url);
+        }
+      },
+    );
+
+    const js = '''
+      (function() {
+        if (window.__snifferHooked) return;
+        window.__snifferHooked = true;
+
+        function shouldCapture(url) {
+          if (!url) return false;
+          var u = url.toLowerCase();
+          return u.indexOf('.m3u8') !== -1 || u.indexOf('.mpd') !== -1;
+        }
+
+        var origFetch = window.fetch;
+        if (origFetch) {
+          window.fetch = function() {
+            return origFetch.apply(this, arguments).then(function(resp) {
+              try {
+                var url = resp.url || (arguments[0] && arguments[0].url) || arguments[0];
+                if (shouldCapture(url)) {
+                  resp.clone().text().then(function(txt) {
+                    try {
+                      window.flutter_inappwebview.callHandler('snifferManifest', {url: url, body: txt});
+                    } catch(e){}
+                  });
+                  window.flutter_inappwebview.callHandler('snifferUrl', url);
+                }
+              } catch(e){}
+              return resp;
+            });
+          };
+        }
+
+        var origOpen = XMLHttpRequest.prototype.open;
+        var origSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method, url) {
+          this.__snifferUrl = url;
+          return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function() {
+          this.addEventListener('load', function() {
+            try {
+              var url = this.__snifferUrl || '';
+              if (shouldCapture(url)) {
+                var txt = this.responseText;
+                try {
+                  window.flutter_inappwebview.callHandler('snifferManifest', {url: url, body: txt});
+                } catch(e){}
+                window.flutter_inappwebview.callHandler('snifferUrl', url);
+              }
+            } catch(e){}
+          });
+          return origSend.apply(this, arguments);
+        };
+      })();
+    ''';
+
+    try {
+      await _webViewController?.evaluateJavascript(source: js);
+    } catch (_) {}
+  }
+
+  Future<void> _handleManifestText(String url, String body) async {
+    if (_isDisposed || !mounted) return;
+    if (!body.contains('#EXTM3U') && !body.contains('#EXT-X-STREAM-INF')) return;
+
+    final headers = <String, String>{'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'};
+    final qualities = <VideoQuality>[];
+    try {
+      final lines = body.split('\\n');
+      String? currentRes;
+      for (int i = 0; i < lines.length; i++) {
+        final line = lines[i].trim();
+        if (line.startsWith('#EXT-X-STREAM-INF')) {
+          final resMatch = RegExp(r'RESOLUTION=(\\d+x\\d+)').firstMatch(line);
+          if (resMatch != null) {
+            currentRes = _formatResolution(resMatch.group(1) ?? '');
+          }
+        } else if (line.isNotEmpty && !line.startsWith('#') && currentRes != null) {
+          final qUrl = _resolveUrl(url, line);
+          qualities.add(VideoQuality(resolution: currentRes, url: qUrl));
+          currentRes = null;
+        }
+      }
+    } catch (_) {}
+
+    if (qualities.isEmpty) return;
+    for (final q in qualities) {
+      _addFoundMedia(
+        url: q.url,
+        resolution: "Streaming ${q.resolution}",
+        size: null,
+        headers: headers,
+        cookies: null,
+      );
+    }
+  }
+
+  String _formatResolution(String res) {
+    if (res.contains('x')) {
+      final height = res.split('x').last;
+      return '${height}p';
+    }
+    return res;
+  }
+
+  String _resolveUrl(String base, String ref) {
+    try {
+      final baseUri = Uri.parse(base);
+      final refUri = Uri.parse(ref);
+      if (refUri.hasScheme) return ref;
+      return baseUri.resolveUri(refUri).toString();
+    } catch (_) {
+      return ref;
+    }
+  }
+
   void _addFoundMedia({
     required String url,
     required String resolution,
@@ -356,6 +508,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
     }
 
     setState(() {
+      if (_foundMedia.any((m) => m.videoUrl == url)) return;
       _foundMedia.add(VideoExtractionData(
         videoUrl: url,
         qualities: [VideoQuality(resolution: size != null ? "$resolution ($size)" : resolution, url: url)],
@@ -365,6 +518,52 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
       ));
       _statusText = "¡Nuevo medio detectado!";
     });
+  }
+
+  Future<String?> _resolveHlsMasterUrl(String mediaUrl, Map<String, String> headers) async {
+    try {
+      final mediaText = await _fetchText(mediaUrl, headers);
+      if (mediaText != null && mediaText.contains('#EXT-X-STREAM-INF')) {
+        return mediaUrl;
+      }
+    } catch (_) {}
+
+    final uri = Uri.parse(mediaUrl);
+    final baseUrl = mediaUrl.split('?').first;
+    final query = uri.hasQuery ? '?${uri.query}' : '';
+
+    final candidates = <String>{
+      _replaceQualitySuffix(baseUrl) + query,
+      _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/master.m3u8') + query,
+      _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/index.m3u8') + query,
+      _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/playlist.m3u8') + query,
+      '${uri.scheme}://${uri.host}${uri.pathSegments.take(uri.pathSegments.length - 1).join('/')}/master.m3u8$query',
+      '${uri.scheme}://${uri.host}${uri.pathSegments.take(uri.pathSegments.length - 1).join('/')}/index.m3u8$query',
+      '${uri.scheme}://${uri.host}${uri.pathSegments.take(uri.pathSegments.length - 1).join('/')}/playlist.m3u8$query',
+    };
+
+    for (final c in candidates) {
+      if (c.isEmpty || !c.contains('.m3u8')) continue;
+      try {
+        final text = await _fetchText(c, headers);
+        if (text != null && text.contains('#EXT-X-STREAM-INF')) {
+          return c;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  String _replaceQualitySuffix(String url) {
+    return url.replaceAll(RegExp(r'(-microframe-(ld|sd|hd)|-(ld|sd|hd)|_(ld|sd|hd)|-\\d+p)\\.m3u8$', caseSensitive: false), '.m3u8');
+  }
+
+  Future<String?> _fetchText(String url, Map<String, String> headers) async {
+    try {
+      final res = await http.get(Uri.parse(url), headers: headers).timeout(const Duration(seconds: 4));
+      if (res.statusCode == 200) return res.body;
+    } catch (_) {}
+    return null;
   }
 
   Future<String?> _tryFindMp4InDialog(String hlsUrl) async {
