@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../providers/movie_provider.dart';
-import '../providers/category_provider.dart';
-import '../../domain/entities/movie.dart';
-import '../../domain/entities/category.dart';
-import 'movie_details_page.dart';
-import 'category_page.dart';
-import '../../../../core/constants/app_constants.dart';
-import '../../../auth/presentation/providers/auth_provider.dart';
-import '../../../../shared/widgets/marquee_text.dart';
+import 'package:movie_app/features/movies/presentation/providers/movie_provider.dart';
+import 'package:movie_app/features/movies/presentation/providers/category_provider.dart';
+import 'package:movie_app/features/movies/domain/entities/movie.dart';
+import 'package:movie_app/features/movies/domain/entities/category.dart';
+import 'package:movie_app/features/movies/presentation/pages/movie_details_page.dart';
+import 'package:movie_app/features/movies/presentation/pages/category_page.dart';
+import 'package:movie_app/core/constants/app_constants.dart';
+import 'package:movie_app/features/auth/presentation/providers/auth_provider.dart';
+import 'package:movie_app/shared/widgets/marquee_text.dart';
+import 'package:movie_app/features/movies/presentation/pages/downloads_page.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -35,7 +36,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: moviesAsync.when(
+      body: _currentTabIndex == 2 ? const DownloadsPage() : moviesAsync.when(
         data: (allMovies) {
           final popularMovies = allMovies.where((m) => m.isPopular).toList();
           return categoriesAsync.when(
@@ -160,6 +161,20 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       },
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.all(1.5), // Border width for iridescent effect
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(25),
+          gradient: LinearGradient(
+            colors: [
+              Colors.blue.withOpacity(0.7),
+              Colors.purple.withOpacity(0.7),
+              Colors.blue.withOpacity(0.7),
+              Colors.purple.withOpacity(0.7),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(24),
           child: Stack(
@@ -210,17 +225,33 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                       Row(
                         children: [
                           Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: () {
-                                Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
-                              },
-                              icon: const Icon(Icons.play_arrow, size: 20),
-                              label: const Text('Play Now', style: TextStyle(fontWeight: FontWeight.bold)),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.white,
-                                foregroundColor: Colors.black,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                padding: const EdgeInsets.symmetric(vertical: 14),
+                            child: Container(
+                              height: 48,
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: const Color(0xFF00A3FF).withOpacity(0.35),
+                                    blurRadius: 15,
+                                    offset: const Offset(0, 8),
+                                  ),
+                                ],
+                              ),
+                              child: ElevatedButton.icon(
+                                onPressed: () {
+                                  Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
+                                },
+                                icon: const Icon(Icons.play_arrow, size: 20),
+                                label: const Text('Play Now', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.1)),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.transparent,
+                                  shadowColor: Colors.transparent,
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                ),
                               ),
                             ),
                           ),

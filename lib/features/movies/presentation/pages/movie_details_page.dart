@@ -264,26 +264,40 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                   // 4. Description Card
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.all(20),
+                    padding: const EdgeInsets.all(1.2), // Border width
                     decoration: BoxDecoration(
-                      color: const Color(0xFF121212),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.white.withOpacity(0.05)),
+                      borderRadius: BorderRadius.circular(17),
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.blue.withOpacity(0.5),
+                          Colors.purple.withOpacity(0.5),
+                          Colors.blue.withOpacity(0.5),
+                          Colors.purple.withOpacity(0.5),
+                        ],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          (!_isDescriptionExpanded && currentDescription.length > 70)
-                              ? '${currentDescription.substring(0, 70)}...'
-                              : currentDescription,
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.7),
-                            fontSize: 15,
-                            height: 1.6,
+                    child: Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF121212),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            (!_isDescriptionExpanded && currentDescription.length > 70)
+                                ? '${currentDescription.substring(0, 70)}...'
+                                : currentDescription,
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.7),
+                              fontSize: 15,
+                              height: 1.6,
+                            ),
+                            textAlign: TextAlign.left,
                           ),
-                          textAlign: TextAlign.left,
-                        ),
                         if (currentDescription.length > 70)
                           GestureDetector(
                             onTap: () => setState(() => _isDescriptionExpanded = !_isDescriptionExpanded),
@@ -302,7 +316,8 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 35),
+                ),
+                const SizedBox(height: 35),
 
                   // 5. More Like This Header
                   Row(

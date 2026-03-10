@@ -15,7 +15,7 @@ class SqliteService {
     String path = join(await getDatabasesPath(), 'movie_app.db');
     return await openDatabase(
       path,
-      version: 11,
+      version: 14,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -60,6 +60,28 @@ class SqliteService {
     }
     if (oldVersion < 11) {
       await db.execute('ALTER TABLE movies ADD COLUMN isPopular INTEGER DEFAULT 0');
+    }
+    if (oldVersion < 12) {
+      await db.execute('ALTER TABLE video_options ADD COLUMN language TEXT');
+    }
+    if (oldVersion < 13) {
+      await db.execute('''
+        CREATE TABLE downloads(
+          id TEXT PRIMARY KEY,
+          movieId TEXT,
+          movieName TEXT,
+          imagePath TEXT,
+          videoUrl TEXT,
+          resolution TEXT,
+          savePath TEXT,
+          progress REAL DEFAULT 0.0,
+          status TEXT,
+          createdAt TEXT
+        )
+      ''');
+    }
+    if (oldVersion < 14) {
+      await db.execute('ALTER TABLE downloads ADD COLUMN headers TEXT');
     }
   }
 
@@ -111,7 +133,24 @@ class SqliteService {
         serverImagePath TEXT,
         resolution TEXT,
         videoUrl TEXT,
+        language TEXT,
         FOREIGN KEY (movieId) REFERENCES movies (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE downloads(
+        id TEXT PRIMARY KEY,
+        movieId TEXT,
+        movieName TEXT,
+        imagePath TEXT,
+        videoUrl TEXT,
+        resolution TEXT,
+        savePath TEXT,
+        progress REAL DEFAULT 0.0,
+        status TEXT,
+        createdAt TEXT,
+        headers TEXT
       )
     ''');
   }

@@ -136,10 +136,10 @@ class _LoginPageState extends ConsumerState<LoginPage> {
         borderRadius: BorderRadius.circular(24),
         gradient: LinearGradient(
           colors: [
-            Colors.blue.withOpacity(0.5),
-            Colors.purple.withOpacity(0.5),
-            Colors.transparent,
-            Colors.transparent
+            Colors.blue.withOpacity(0.6),
+            Colors.purple.withOpacity(0.6),
+            Colors.blue.withOpacity(0.6),
+            Colors.purple.withOpacity(0.6),
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,

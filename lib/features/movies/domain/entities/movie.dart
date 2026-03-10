@@ -40,6 +40,7 @@ class VideoOption {
   final String serverImagePath;
   final String resolution;
   final String videoUrl;
+  final String? language;
 
   VideoOption({
     required this.id,
@@ -47,6 +48,7 @@ class VideoOption {
     required this.serverImagePath,
     required this.resolution,
     required this.videoUrl,
+    this.language,
   });
 }
 class VideoQuality {

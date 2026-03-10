@@ -10,10 +10,14 @@ import 'features/auth/presentation/pages/admin_dashboard.dart';
 import 'features/movies/presentation/pages/movie_grid_page.dart';
 import 'features/movies/presentation/pages/splash_page.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'core/services/notification_service.dart';
+import 'core/services/foreground_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: ".env");
+  await NotificationService.init();
+  await ForegroundService.init();
   final prefs = await SharedPreferences.getInstance();
   
   runApp(

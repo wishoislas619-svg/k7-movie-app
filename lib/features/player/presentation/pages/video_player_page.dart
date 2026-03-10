@@ -13,15 +13,37 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 class VideoPlayerPage extends StatefulWidget {
+  static Route route({required String movieName, required String? localPath, String? subtitleUrl}) {
+    // For local files, we create a dummy VideoOption or handle it specially
+    return MaterialPageRoute(
+      builder: (_) => VideoPlayerPage(
+        movieName: movieName,
+        videoOptions: [
+          VideoOption(
+            id: 'local',
+            movieId: 'local',
+            serverImagePath: '',
+            resolution: 'Local',
+            videoUrl: localPath ?? '',
+          )
+        ],
+        subtitleUrl: subtitleUrl,
+        isLocal: localPath != null,
+      ),
+    );
+  }
+
   final String movieName;
   final List<VideoOption> videoOptions;
   final String? subtitleUrl;
+  final bool isLocal;
 
   const VideoPlayerPage({
     super.key, 
     required this.movieName, 
     required this.videoOptions,
     this.subtitleUrl,
+    this.isLocal = false,
   });
 
   @override
@@ -69,7 +91,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   void initState() {
     super.initState();
     _currentOption = widget.videoOptions.first;
-    _initWebViewController();
+    
+    if (widget.isLocal) {
+      _isLoading = false;
+      _isWebViewExtracting = false;
+      _initializeVideoPlayer(_currentOption.videoUrl);
+    } else {
+      _initWebViewController();
+    }
+    
     _startHideTimer();
     _initSettings();
     
@@ -289,23 +319,28 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
       _controller?.dispose();
 
-      _controller = VideoPlayerController.networkUrl(Uri.parse(videoUrl))
-        ..initialize().then((_) {
-          if (mounted) {
-            setState(() {
-              _isLoading = false;
-              _isSwitchingStream = false;
-            });
-            if (lastPosition != null) {
-              _controller?.seekTo(lastPosition);
-            }
-            _controller?.play();
+      if (widget.isLocal) {
+        _controller = VideoPlayerController.file(File(videoUrl));
+      } else {
+        _controller = VideoPlayerController.networkUrl(Uri.parse(videoUrl));
+      }
 
-            if (_captionNotifier.value != null) {
-              _controller?.setClosedCaptionFile(Future.value(_captionNotifier.value));
-            }
-          }
+      await _controller!.initialize();
+      
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isSwitchingStream = false;
         });
+        if (lastPosition != null) {
+          _controller?.seekTo(lastPosition);
+        }
+        _controller?.play();
+
+        if (_captionNotifier.value != null) {
+          _controller?.setClosedCaptionFile(Future.value(_captionNotifier.value));
+        }
+      }
     } catch (e) {
       if (mounted) {
         setState(() {

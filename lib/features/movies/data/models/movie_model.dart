@@ -67,6 +67,7 @@ class VideoOptionModel extends VideoOption {
     required super.serverImagePath,
     required super.resolution,
     required super.videoUrl,
+    super.language,
   });
 
   factory VideoOptionModel.fromMap(Map<String, dynamic> map) {
@@ -76,6 +77,7 @@ class VideoOptionModel extends VideoOption {
       serverImagePath: map['serverImagePath'],
       resolution: map['resolution'],
       videoUrl: map['videoUrl'],
+      language: map['language'],
     );
   }
 
@@ -86,6 +88,7 @@ class VideoOptionModel extends VideoOption {
       'serverImagePath': serverImagePath,
       'resolution': resolution,
       'videoUrl': videoUrl,
+      'language': language,
     };
   }
 }

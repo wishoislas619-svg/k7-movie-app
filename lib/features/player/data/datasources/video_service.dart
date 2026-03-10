@@ -119,10 +119,10 @@ class VideoService {
   }
 
   /// Parses an .m3u8 master playlist to find available resolutions.
-  static Future<List<VideoQuality>> getHlsQualities(String masterUrl) async {
+  static Future<List<VideoQuality>> getHlsQualities(String masterUrl, {Map<String, String>? headers}) async {
     List<VideoQuality> qualities = [];
     try {
-      final response = await http.get(Uri.parse(masterUrl)).timeout(const Duration(seconds: 5));
+      final response = await http.get(Uri.parse(masterUrl), headers: headers).timeout(const Duration(seconds: 5));
       if (response.statusCode != 200) return qualities;
 
       final lines = response.body.split('\n');

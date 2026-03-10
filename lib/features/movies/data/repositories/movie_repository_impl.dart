@@ -102,6 +102,7 @@ class MovieRepositorySqliteImpl implements MovieRepository {
       serverImagePath: option.serverImagePath,
       resolution: option.resolution,
       videoUrl: option.videoUrl,
+      language: option.language,
     );
     await db.insert('video_options', model.toMap());
   }
@@ -115,6 +116,7 @@ class MovieRepositorySqliteImpl implements MovieRepository {
       serverImagePath: option.serverImagePath,
       resolution: option.resolution,
       videoUrl: option.videoUrl,
+      language: option.language,
     );
     await db.update(
       'video_options',

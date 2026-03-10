@@ -87,57 +87,91 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     final resController = TextEditingController(text: option?.resolution ?? '');
     final urlController = TextEditingController(text: option?.videoUrl ?? '');
     final imgController = TextEditingController(text: option?.serverImagePath ?? '');
+    String? selectedLanguage = option?.language ?? 'Latino';
 
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.white.withOpacity(0.1))),
-        title: Text(option == null ? 'AGREGAR OPCIÓN' : 'EDITAR OPCIÓN', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildDialogTextField(imgController, 'URL Imagen Servidor'),
-            _buildDialogTextField(resController, 'Resolución (ej: 1080P)'),
-            _buildDialogTextField(urlController, 'URL Video'),
-          ],
-        ),
-        actions: [
-          if (option != null)
-            TextButton(
-              onPressed: () async {
-                await ref.read(movieRepositoryProvider).deleteVideoOption(option.id);
-                _loadOptions();
-                if (mounted) Navigator.pop(context);
-              },
-              child: const Text('ELIMINAR', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+      builder: (_) => StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.white.withOpacity(0.1))),
+            title: Text(option == null ? 'AGREGAR OPCIÓN' : 'EDITAR OPCIÓN', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildDialogTextField(imgController, 'URL Imagen Servidor'),
+                  _buildDialogTextField(resController, 'Resolución (ej: 1080P)'),
+                  _buildDialogTextField(urlController, 'URL Video'),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    value: ['Latino', 'Castellano', 'Inglés'].contains(selectedLanguage) ? selectedLanguage : 'Latino',
+                    dropdownColor: const Color(0xFF1E1E1E),
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: 'Idioma',
+                      labelStyle: const TextStyle(color: Color(0xFF00A3FF), fontSize: 13, fontWeight: FontWeight.bold),
+                      filled: true,
+                      fillColor: Colors.white.withOpacity(0.04),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF00A3FF))),
+                    ),
+                    items: ['Latino', 'Castellano', 'Inglés'].map((String value) {
+                      return DropdownMenuItem<String>(
+                        value: value,
+                        child: Text(value),
+                      );
+                    }).toList(),
+                    onChanged: (newValue) {
+                      setState(() {
+                        selectedLanguage = newValue;
+                      });
+                    },
+                  ),
+                ],
+              ),
             ),
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR', style: TextStyle(color: Colors.white54))),
-          ElevatedButton(
-            onPressed: () async {
-              final newOpt = VideoOption(
-                id: option?.id ?? '',
-                movieId: widget.movie!.id,
-                serverImagePath: imgController.text,
-                resolution: resController.text,
-                videoUrl: urlController.text,
-              );
-              if (option == null) {
-                await ref.read(movieRepositoryProvider).addVideoOption(newOpt);
-              } else {
-                await ref.read(movieRepositoryProvider).updateVideoOption(newOpt);
-              }
-              _loadOptions();
-              if (mounted) Navigator.pop(context);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00A3FF),
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            child: const Text('GUARDAR', style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
+            actions: [
+              if (option != null)
+                TextButton(
+                  onPressed: () async {
+                    await ref.read(movieRepositoryProvider).deleteVideoOption(option.id);
+                    _loadOptions();
+                    if (mounted) Navigator.pop(context);
+                  },
+                  child: const Text('ELIMINAR', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                ),
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR', style: TextStyle(color: Colors.white54))),
+              ElevatedButton(
+                onPressed: () async {
+                  final newOpt = VideoOption(
+                    id: option?.id ?? '',
+                    movieId: widget.movie!.id,
+                    serverImagePath: imgController.text,
+                    resolution: resController.text,
+                    videoUrl: urlController.text,
+                    language: selectedLanguage,
+                  );
+                  if (option == null) {
+                    await ref.read(movieRepositoryProvider).addVideoOption(newOpt);
+                  } else {
+                    await ref.read(movieRepositoryProvider).updateVideoOption(newOpt);
+                  }
+                  _loadOptions();
+                  if (mounted) Navigator.pop(context);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00A3FF),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('GUARDAR', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
