@@ -91,13 +91,15 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text(option == null ? 'Agregar Opción' : 'Editar Opción'),
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.white.withOpacity(0.1))),
+        title: Text(option == null ? 'AGREGAR OPCIÓN' : 'EDITAR OPCIÓN', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: imgController, decoration: const InputDecoration(labelText: 'URL Imagen Servidor')),
-            TextField(controller: resController, decoration: const InputDecoration(labelText: 'Resolución (ej: 1080P)')),
-            TextField(controller: urlController, decoration: const InputDecoration(labelText: 'URL Video')),
+            _buildDialogTextField(imgController, 'URL Imagen Servidor'),
+            _buildDialogTextField(resController, 'Resolución (ej: 1080P)'),
+            _buildDialogTextField(urlController, 'URL Video'),
           ],
         ),
         actions: [
@@ -108,10 +110,10 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                 _loadOptions();
                 if (mounted) Navigator.pop(context);
               },
-              child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+              child: const Text('ELIMINAR', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
             ),
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-          TextButton(
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR', style: TextStyle(color: Colors.white54))),
+          ElevatedButton(
             onPressed: () async {
               final newOpt = VideoOption(
                 id: option?.id ?? '',
@@ -128,9 +130,33 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
               _loadOptions();
               if (mounted) Navigator.pop(context);
             },
-            child: const Text('Guardar'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00A3FF),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('GUARDAR', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildDialogTextField(TextEditingController controller, String labelText) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: controller,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          labelText: labelText,
+          labelStyle: const TextStyle(color: Color(0xFF00A3FF), fontSize: 13, fontWeight: FontWeight.bold),
+          filled: true,
+          fillColor: Colors.white.withOpacity(0.04),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF00A3FF))),
+        ),
       ),
     );
   }

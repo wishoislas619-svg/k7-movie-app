@@ -7,6 +7,26 @@ import '../providers/auth_provider.dart';
 class AdminUsersPage extends ConsumerWidget {
   const AdminUsersPage({super.key});
 
+  Widget _buildDialogTextField(TextEditingController controller, String label, {bool obscureText = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: TextField(
+        controller: controller,
+        obscureText: obscureText,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: Color(0xFF00A3FF), fontSize: 13, fontWeight: FontWeight.bold),
+          filled: true,
+          fillColor: Colors.white.withOpacity(0.04),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF00A3FF))),
+        ),
+      ),
+    );
+  }
+
   void _showEditUserDialog(BuildContext context, WidgetRef ref, User user) {
     final firstNameController = TextEditingController(text: user.firstName);
     final lastNameController = TextEditingController(text: user.lastName);
@@ -17,25 +37,23 @@ class AdminUsersPage extends ConsumerWidget {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Editar Usuario'),
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.white.withOpacity(0.1))),
+        title: const Text('EDITAR USUARIO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextField(controller: firstNameController, decoration: const InputDecoration(labelText: 'Nombre')),
-              TextField(controller: lastNameController, decoration: const InputDecoration(labelText: 'Apellido')),
-              TextField(controller: emailController, decoration: const InputDecoration(labelText: 'Correo')),
-              TextField(controller: usernameController, decoration: const InputDecoration(labelText: 'Usuario')),
-              TextField(
-                controller: passwordController, 
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Nueva Contraseña (dejar vacío para no cambiar)'),
-              ),
+              _buildDialogTextField(firstNameController, 'Nombre'),
+              _buildDialogTextField(lastNameController, 'Apellido'),
+              _buildDialogTextField(emailController, 'Correo'),
+              _buildDialogTextField(usernameController, 'Usuario'),
+              _buildDialogTextField(passwordController, 'Nueva Contraseña (vacío para omitir)', obscureText: true),
             ],
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR', style: TextStyle(color: Colors.white54))),
           ElevatedButton(
             onPressed: () {
               final updatedUser = User(
@@ -52,7 +70,12 @@ class AdminUsersPage extends ConsumerWidget {
               );
               Navigator.pop(context);
             },
-            child: const Text('Guardar'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00A3FF),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('GUARDAR', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -114,16 +137,23 @@ class AdminUsersPage extends ConsumerWidget {
                           showDialog(
                             context: context,
                             builder: (context) => AlertDialog(
-                              title: const Text('Eliminar Usuario'),
-                              content: const Text('¿Estás seguro de que deseas eliminar este usuario?'),
+                              backgroundColor: const Color(0xFF1E1E1E),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.white.withOpacity(0.1))),
+                              title: const Text('ELIMINAR USUARIO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              content: const Text('¿Estás seguro de que deseas eliminar este usuario?', style: TextStyle(color: Colors.white70)),
                               actions: [
-                                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-                                TextButton(
+                                TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR', style: TextStyle(color: Colors.white54))),
+                                ElevatedButton(
                                   onPressed: () {
                                     ref.read(usersProvider.notifier).deleteUser(user.id);
                                     Navigator.pop(context);
                                   },
-                                  child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.redAccent,
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  ),
+                                  child: const Text('ELIMINAR', style: TextStyle(fontWeight: FontWeight.bold)),
                                 ),
                               ],
                             ),

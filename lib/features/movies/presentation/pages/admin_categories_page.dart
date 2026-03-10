@@ -13,14 +13,25 @@ class AdminCategoriesPage extends ConsumerWidget {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(category == null ? 'Nueva Categoría' : 'Editar Categoría'),
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.white.withOpacity(0.1))),
+        title: Text(category == null ? 'NUEVA CATEGORÍA' : 'EDITAR CATEGORÍA', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
         content: TextField(
           controller: controller,
-          decoration: const InputDecoration(labelText: 'Nombre de la Categoría'),
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            labelText: 'Nombre de la Categoría',
+            labelStyle: const TextStyle(color: Color(0xFF00A3FF), fontSize: 13, fontWeight: FontWeight.bold),
+            filled: true,
+            fillColor: Colors.white.withOpacity(0.04),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+            enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF00A3FF))),
+          ),
           autofocus: true,
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR', style: TextStyle(color: Colors.white54))),
           ElevatedButton(
             onPressed: () async {
               if (controller.text.isNotEmpty) {
@@ -34,7 +45,12 @@ class AdminCategoriesPage extends ConsumerWidget {
                 if (context.mounted) Navigator.pop(context);
               }
             },
-            child: const Text('Guardar'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00A3FF),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('GUARDAR', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -89,16 +105,23 @@ class AdminCategoriesPage extends ConsumerWidget {
                           showDialog(
                             context: context,
                             builder: (context) => AlertDialog(
-                              title: const Text('Eliminar Categoría'),
-                              content: const Text('¿Estás seguro? Las películas de esta categoría se quedarán sin categoría, pero NO se borrarán.'),
+                              backgroundColor: const Color(0xFF1E1E1E),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.white.withOpacity(0.1))),
+                              title: const Text('ELIMINAR CATEGORÍA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              content: const Text('¿Estás seguro? Las películas de esta categoría se quedarán sin categoría, pero NO se borrarán.', style: TextStyle(color: Colors.white70)),
                               actions: [
-                                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-                                TextButton(
+                                TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR', style: TextStyle(color: Colors.white54))),
+                                ElevatedButton(
                                   onPressed: () {
                                     ref.read(categoriesProvider.notifier).deleteCategory(category.id);
                                     Navigator.pop(context);
                                   },
-                                  child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.redAccent,
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  ),
+                                  child: const Text('ELIMINAR', style: TextStyle(fontWeight: FontWeight.bold)),
                                 ),
                               ],
                             ),
