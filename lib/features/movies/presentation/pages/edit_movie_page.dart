@@ -251,7 +251,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         ),
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 80),
+        padding: EdgeInsets.only(left: 16, right: 16, top: 16, bottom: MediaQuery.of(context).padding.bottom + 80),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

@@ -3,6 +3,8 @@ import '../../../../features/movies/presentation/pages/admin_movie_page.dart';
 import '../../../../features/auth/presentation/pages/admin_users_page.dart';
 import '../../../../features/movies/presentation/pages/admin_categories_page.dart';
 import '../../../../features/movies/presentation/pages/admin_popular_movies_page.dart';
+import '../../../../features/series/presentation/pages/admin_series_page.dart';
+import '../../../../features/series/presentation/pages/admin_series_categories_page.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -17,6 +19,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
   final List<Widget> _pages = [
     const AdminMoviePage(),
     const AdminCategoriesPage(),
+    const AdminSeriesPage(),
+    const AdminSeriesCategoriesPage(),
     const AdminPopularMoviesPage(),
     const AdminUsersPage(),
   ];
@@ -38,8 +42,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
           elevation: 0,
           selectedItemColor: const Color(0xFF00A3FF),
           unselectedItemColor: Colors.white38,
-          selectedFontSize: 10,
-          unselectedFontSize: 10,
+          selectedFontSize: 9,
+          unselectedFontSize: 9,
           type: BottomNavigationBarType.fixed,
           items: const [
             BottomNavigationBarItem(
@@ -50,7 +54,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
             BottomNavigationBarItem(
               icon: Icon(Icons.category_outlined),
               activeIcon: Icon(Icons.category),
-              label: 'CATEGORÍAS',
+              label: 'CAT. PELIS',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.live_tv_outlined),
+              activeIcon: Icon(Icons.live_tv),
+              label: 'SERIES',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.format_list_bulleted),
+              activeIcon: Icon(Icons.format_list_bulleted),
+              label: 'CAT. SERIES',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.star_outline),

@@ -10,6 +10,7 @@ import 'package:movie_app/core/constants/app_constants.dart';
 import 'package:movie_app/features/auth/presentation/providers/auth_provider.dart';
 import 'package:movie_app/shared/widgets/marquee_text.dart';
 import 'package:movie_app/features/movies/presentation/pages/downloads_page.dart';
+import 'package:movie_app/features/series/presentation/pages/series_grid_page.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -36,7 +37,13 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: _currentTabIndex == 2 ? const DownloadsPage() : moviesAsync.when(
+      body: _currentTabIndex == 1 
+        ? const SeriesGridPage() 
+        : _currentTabIndex == 2 
+          ? const DownloadsPage() 
+          : _currentTabIndex == 3
+            ? const Center(child: Text('Perfil / Configuración (Próximamente)', style: TextStyle(color: Colors.white)))
+            : moviesAsync.when(
         data: (allMovies) {
           final popularMovies = allMovies.where((m) => m.isPopular).toList();
           return categoriesAsync.when(
@@ -411,10 +418,10 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         selectedFontSize: 10,
         unselectedFontSize: 10,
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home_filled), label: 'HOME'),
-          BottomNavigationBarItem(icon: Icon(Icons.search), label: 'SEARCH'),
-          BottomNavigationBarItem(icon: Icon(Icons.download_rounded), label: 'DOWNLOADS'),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'PROFILE'),
+          BottomNavigationBarItem(icon: Icon(Icons.movie_creation_outlined), label: 'PELÍCULAS'),
+          BottomNavigationBarItem(icon: Icon(Icons.live_tv_outlined), label: 'SERIES'),
+          BottomNavigationBarItem(icon: Icon(Icons.download_rounded), label: 'DESCARGAS'),
+          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'PERFIL'),
         ],
       ),
     );

@@ -11,66 +11,133 @@ class DownloadsPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final downloads = ref.watch(downloadsListProvider);
+    final movieDownloads = downloads.where((d) => !d.isSeries).toList();
+    final seriesDownloads = downloads.where((d) => d.isSeries).toList();
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        title: const Text('MIS DESCARGAS', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.5)),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.delete_sweep, color: Colors.redAccent),
-            onPressed: downloads.any((d) => d.status == DownloadStatus.error)
-                ? () async {
-                    final ok = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        backgroundColor: const Color(0xFF1E1E1E),
-                        title: const Text('Limpiar errores', style: TextStyle(color: Colors.white)),
-                        content: const Text(
-                          'Se eliminarán las descargas con error y cualquier archivo residual.',
-                          style: TextStyle(color: Colors.white70),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx, false),
-                            child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
-                          ),
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx, true),
-                            child: const Text('Eliminar', style: TextStyle(color: Colors.redAccent)),
-                          ),
-                        ],
-                      ),
-                    );
-                    if (ok == true) {
-                      await ref.read(downloadsListProvider.notifier).clearFailedDownloads();
-                    }
-                  }
-                : null,
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          title: const Text('MIS DESCARGAS', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+          bottom: const TabBar(
+            indicatorColor: Color(0xFF00A3FF),
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white54,
+            tabs: [
+              Tab(text: 'Películas'),
+              Tab(text: 'Series'),
+            ],
           ),
-        ],
-      ),
-      body: downloads.isEmpty
-          ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                   Icon(Icons.download_for_offline_outlined, size: 80, color: Colors.grey[800]),
-                   const SizedBox(height: 16),
-                   const Text("No tienes descargas aún", style: TextStyle(color: Colors.grey, fontSize: 18)),
-                ],
-              ),
-            )
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: downloads.length,
-              itemBuilder: (context, index) {
-                final task = downloads[index];
-                return _buildDownloadItem(context, ref, task);
-              },
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.delete_sweep, color: Colors.redAccent),
+              onPressed: downloads.any((d) => d.status == DownloadStatus.error)
+                  ? () async {
+                      final ok = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          backgroundColor: const Color(0xFF1E1E1E),
+                          title: const Text('Limpiar errores', style: TextStyle(color: Colors.white)),
+                          content: const Text(
+                            'Se eliminarán las descargas con error y cualquier archivo residual.',
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, false),
+                              child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, true),
+                              child: const Text('Eliminar', style: TextStyle(color: Colors.redAccent)),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (ok == true) {
+                        await ref.read(downloadsListProvider.notifier).clearFailedDownloads();
+                      }
+                    }
+                  : null,
             ),
+          ],
+        ),
+        body: TabBarView(
+          children: [
+            _buildList(movieDownloads, context, ref),
+            _buildSeriesMapList(seriesDownloads, context, ref),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildList(List<DownloadTask> tasks, BuildContext context, WidgetRef ref) {
+    if (tasks.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+             Icon(Icons.download_for_offline_outlined, size: 80, color: Colors.grey[800]),
+             const SizedBox(height: 16),
+             const Text("No tienes descargas aún", style: TextStyle(color: Colors.grey, fontSize: 18)),
+          ],
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: tasks.length,
+      itemBuilder: (context, index) {
+        return _buildDownloadItem(context, ref, tasks[index]);
+      },
+    );
+  }
+
+  Widget _buildSeriesMapList(List<DownloadTask> tasks, BuildContext context, WidgetRef ref) {
+    if (tasks.isEmpty) return _buildList(tasks, context, ref);
+
+    final seriesMap = <String, Map<int, List<DownloadTask>>>{};
+    for(var t in tasks) {
+        final parts = t.movieName.split(' - S');
+        final seriesName = parts.isNotEmpty ? parts[0] : t.movieName;
+        if(!seriesMap.containsKey(seriesName)) seriesMap[seriesName] = {};
+        final seasonNum = t.seasonNumber ?? 1;
+        if(!seriesMap[seriesName]!.containsKey(seasonNum)) seriesMap[seriesName]![seasonNum] = [];
+        seriesMap[seriesName]![seasonNum]!.add(t);
+    }
+
+    final sortedSeriesNames = seriesMap.keys.toList()..sort();
+    final groupedTasks = <dynamic>[];
+    for(var name in sortedSeriesNames) {
+       final seasonMap = seriesMap[name]!;
+       final sortedSeasons = seasonMap.keys.toList()..sort();
+       for(var sNum in sortedSeasons) {
+           groupedTasks.add('$name - Temporada $sNum');
+           final epTasks = seasonMap[sNum]!;
+           epTasks.sort((a,b) => (a.episodeNumber ?? 0).compareTo(b.episodeNumber ?? 0));
+           groupedTasks.addAll(epTasks);
+       }
+    }
+
+    return ListView.builder(
+       padding: const EdgeInsets.all(16),
+       itemCount: groupedTasks.length,
+       itemBuilder: (context, index) {
+          final item = groupedTasks[index];
+          if(item is String) {
+              return Padding(
+                 padding: const EdgeInsets.only(top: 16.0, bottom: 8.0, left: 4.0),
+                 child: Text(item, style: const TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, fontSize: 18)),
+              );
+          } else {
+             final DownloadTask task = item;
+             return _buildDownloadItem(context, ref, task.copyWith(movieName: 'Episodio ${task.episodeNumber ?? 1}'));
+          }
+       }
     );
   }
 

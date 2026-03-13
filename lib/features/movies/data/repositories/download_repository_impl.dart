@@ -51,18 +51,40 @@ class DownloadRepository {
 
   Future<void> saveDownloadTask(my.DownloadTask task) async {
     final db = await _sqliteService.database;
-    await db.insert('downloads', task.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    try {
+      await db.insert('downloads', task.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    } catch (e) {
+      if (e.toString().contains('no column named isSeries')) {
+         try { await db.execute('ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0'); } catch (_) {}
+         try { await db.execute('ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER'); } catch (_) {}
+         try { await db.execute('ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER'); } catch (_) {}
+         await db.insert('downloads', task.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+      } else {
+        rethrow;
+      }
+    }
   }
 
   Future<void> updateDownloadTask(my.DownloadTask task) async {
     final db = await _sqliteService.database;
-    await db.update(
-      'downloads',
-      task.toMap(),
-      where: 'id = ?',
-      whereArgs: [task.id],
-    );
+    try {
+      await db.update(
+        'downloads',
+        task.toMap(),
+        where: 'id = ?',
+        whereArgs: [task.id],
+      );
+    } catch (e) {
+      if (e.toString().contains('no column named isSeries')) {
+         try { await db.execute('ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0'); } catch (_) {}
+         try { await db.execute('ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER'); } catch (_) {}
+         try { await db.execute('ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER'); } catch (_) {}
+         await db.update('downloads', task.toMap(), where: 'id = ?', whereArgs: [task.id]);
+      } else {
+        rethrow;
+      }
+    }
   }
 
   Future<my.DownloadTask?> getDownloadById(String id) async {
@@ -179,10 +201,12 @@ class DownloadRepository {
     print('[DL] enqueue id=${task.id} isHls=$isHls url=${task.videoUrl}');
     
     // Prefer headers already in task (with cookies)
-    final headers = task.headers ?? {
+    final headers = task.headers != null ? Map<String, String>.from(task.headers!) : {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       'Referer': task.videoUrl.split('/').take(3).join('/'),
     };
+    headers.remove('range');
+    headers.remove('Range');
 
     var finalUrl = task.videoUrl;
     var finalExt = finalUrl.split('?').first.split('.').last;
@@ -246,7 +270,7 @@ class DownloadRepository {
       final playlistRes = await client.get(Uri.parse(task.videoUrl), headers: headers)
           .timeout(const Duration(seconds: 10));
 
-      if (playlistRes.statusCode != 200) {
+      if (playlistRes.statusCode != 200 && playlistRes.statusCode != 206) {
         print('[HLS] playlist status=${playlistRes.statusCode}');
         onStatusChange(my.DownloadStatus.error);
         client.close();
@@ -260,7 +284,7 @@ class DownloadRepository {
         print('[HLS] selected variant: $selectedPlaylistUrl');
         final variantRes = await client.get(Uri.parse(selectedPlaylistUrl), headers: headers)
             .timeout(const Duration(seconds: 10));
-        if (variantRes.statusCode != 200) {
+        if (variantRes.statusCode != 200 && variantRes.statusCode != 206) {
           print('[HLS] variant status=${variantRes.statusCode}');
           onStatusChange(my.DownloadStatus.error);
           client.close();

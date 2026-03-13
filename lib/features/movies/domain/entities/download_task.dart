@@ -14,6 +14,9 @@ class DownloadTask {
   final DownloadStatus status;
   final DateTime createdAt;
   final Map<String, String>? headers;
+  final bool isSeries;
+  final int? seasonNumber;
+  final int? episodeNumber;
 
   DownloadTask({
     required this.id,
@@ -28,6 +31,9 @@ class DownloadTask {
     required this.status,
     required this.createdAt,
     this.headers,
+    this.isSeries = false,
+    this.seasonNumber,
+    this.episodeNumber,
   });
 
   Map<String, dynamic> toMap() {
@@ -43,6 +49,9 @@ class DownloadTask {
       'status': status.name,
       'createdAt': createdAt.toIso8601String(),
       'headers': headers != null ? _encodeHeaders(headers!) : null,
+      'isSeries': isSeries ? 1 : 0,
+      'seasonNumber': seasonNumber,
+      'episodeNumber': episodeNumber,
     };
   }
 
@@ -69,6 +78,9 @@ class DownloadTask {
       status: DownloadStatus.values.byName(map['status']),
       createdAt: DateTime.parse(map['createdAt']),
       headers: map['headers'] != null ? _decodeHeaders(map['headers']) : null,
+      isSeries: map['isSeries'] == 1,
+      seasonNumber: map['seasonNumber'],
+      episodeNumber: map['episodeNumber'],
     );
   }
 
@@ -85,6 +97,9 @@ class DownloadTask {
     DownloadStatus? status,
     DateTime? createdAt,
     Map<String, String>? headers,
+    bool? isSeries,
+    int? seasonNumber,
+    int? episodeNumber,
   }) {
     return DownloadTask(
       id: id ?? this.id,
@@ -99,6 +114,9 @@ class DownloadTask {
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
       headers: headers ?? this.headers,
+      isSeries: isSeries ?? this.isSeries,
+      seasonNumber: seasonNumber ?? this.seasonNumber,
+      episodeNumber: episodeNumber ?? this.episodeNumber,
     );
   }
 }

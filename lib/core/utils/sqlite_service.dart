@@ -15,7 +15,7 @@ class SqliteService {
     String path = join(await getDatabasesPath(), 'movie_app.db');
     return await openDatabase(
       path,
-      version: 14,
+      version: 17,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -82,6 +82,72 @@ class SqliteService {
     }
     if (oldVersion < 14) {
       await db.execute('ALTER TABLE downloads ADD COLUMN headers TEXT');
+    }
+    if (oldVersion < 15) {
+      await db.execute('''
+        CREATE TABLE series_categories(
+          id TEXT PRIMARY KEY,
+          name TEXT UNIQUE
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE series(
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          imagePath TEXT,
+          categoryId TEXT,
+          description TEXT,
+          detailsUrl TEXT,
+          backdrop TEXT,
+          backdropUrl TEXT,
+          views INTEGER DEFAULT 0,
+          rating REAL DEFAULT 0.0,
+          year TEXT,
+          isPopular INTEGER DEFAULT 0,
+          createdAt TEXT,
+          FOREIGN KEY (categoryId) REFERENCES series_categories (id) ON DELETE SET NULL
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE seasons(
+          id TEXT PRIMARY KEY,
+          seriesId TEXT,
+          seasonNumber INTEGER,
+          name TEXT,
+          FOREIGN KEY (seriesId) REFERENCES series (id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE episodes(
+          id TEXT PRIMARY KEY,
+          seasonId TEXT,
+          episodeNumber INTEGER,
+          name TEXT,
+          url TEXT,
+          urls TEXT, -- Store JSON list of {url, optionId, quality}
+          FOREIGN KEY (seasonId) REFERENCES seasons (id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE series_options(
+          id TEXT PRIMARY KEY,
+          seriesId TEXT,
+          serverImagePath TEXT,
+          resolution TEXT,
+          videoUrl TEXT,
+          language TEXT,
+          FOREIGN KEY (seriesId) REFERENCES series (id) ON DELETE CASCADE
+        )
+      ''');
+    }
+    if (oldVersion < 16) {
+      await db.execute('ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0');
+      await db.execute('ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER');
+      await db.execute('ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER');
+    }
+    if (oldVersion < 17) {
+       // Add urls column to episodes for multiple servers support
+       try { await db.execute('ALTER TABLE episodes ADD COLUMN urls TEXT'); } catch (_) {}
     }
   }
 
@@ -150,7 +216,70 @@ class SqliteService {
         progress REAL DEFAULT 0.0,
         status TEXT,
         createdAt TEXT,
-        headers TEXT
+        headers TEXT,
+        isSeries INTEGER DEFAULT 0,
+        seasonNumber INTEGER,
+        episodeNumber INTEGER
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE series_categories(
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE series(
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        imagePath TEXT,
+        categoryId TEXT,
+        description TEXT,
+        detailsUrl TEXT,
+        backdrop TEXT,
+        backdropUrl TEXT,
+        views INTEGER DEFAULT 0,
+        rating REAL DEFAULT 0.0,
+        year TEXT,
+        isPopular INTEGER DEFAULT 0,
+        createdAt TEXT,
+        FOREIGN KEY (categoryId) REFERENCES series_categories (id) ON DELETE SET NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE seasons(
+        id TEXT PRIMARY KEY,
+        seriesId TEXT,
+        seasonNumber INTEGER,
+        name TEXT,
+        FOREIGN KEY (seriesId) REFERENCES series (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE episodes(
+        id TEXT PRIMARY KEY,
+        seasonId TEXT,
+        episodeNumber INTEGER,
+        name TEXT,
+        url TEXT,
+        urls TEXT,
+        FOREIGN KEY (seasonId) REFERENCES seasons (id) ON DELETE CASCADE
+      )
+    ''');
+
+     await db.execute('''
+      CREATE TABLE series_options(
+        id TEXT PRIMARY KEY,
+        seriesId TEXT,
+        serverImagePath TEXT,
+        resolution TEXT,
+        videoUrl TEXT,
+        language TEXT,
+        FOREIGN KEY (seriesId) REFERENCES series (id) ON DELETE CASCADE
       )
     ''');
   }

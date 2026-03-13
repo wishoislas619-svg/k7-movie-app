@@ -41,18 +41,29 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
 
   final List<ContentBlocker> _contentBlockers = [
     ContentBlocker(
-      trigger: ContentBlockerTrigger(urlFilter: ".*", resourceType: [
-        ContentBlockerTriggerResourceType.IMAGE,
-        ContentBlockerTriggerResourceType.STYLE_SHEET,
-        ContentBlockerTriggerResourceType.FONT,
-      ]),
-      action: ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
+      trigger: ContentBlockerTrigger(urlFilter: ".*"),
+      action: ContentBlockerAction(
+        type: ContentBlockerActionType.CSS_DISPLAY_NONE, 
+        selector: ".ad, .ads, .advertisement, [id^='ad-'], [class^='ad-'], .popup, .overlay"
+      ),
     ),
     ContentBlocker(
-      trigger: ContentBlockerTrigger(urlFilter: ".*(google-analytics|doubleclick|popads|adnium|popcash).*"),
+      trigger: ContentBlockerTrigger(urlFilter: ".*(google-analytics|doubleclick|popads|adnium|popcash|exoclick|juicyads|propellerads|clonamp).*"),
       action: ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
     ),
   ];
+
+  final String _cleanerJs = '''
+    (function() {
+      const selectors = ['.overlay', '.popup', '.popup-container', '#popads', '.modal-backdrop', 'div[class*="ad-"]', 'div[id*="ad-"]'];
+      selectors.forEach(s => {
+        document.querySelectorAll(s).forEach(el => el.remove());
+      });
+      // Facilitate interaction if something is blocked
+      document.body.style.overflow = 'auto';
+      window.open = function() { return null; };
+    })();
+  ''';
 
   @override
   Widget build(BuildContext context) {
@@ -105,6 +116,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
                     mediaPlaybackRequiresUserGesture: false,
                     useShouldInterceptRequest: true,
                     contentBlockers: _contentBlockers,
+                    javaScriptCanOpenWindowsAutomatically: false,
+                    supportMultipleWindows: false,
+                    useShouldOverrideUrlLoading: true,
                     userAgent: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
                   ),
                   onWebViewCreated: (controller) => _webViewController = controller,
@@ -120,6 +134,17 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
                   onLoadStop: (controller, url) async {
                      _startSniffingTimer();
                      _injectNetworkSniffer();
+                     controller.evaluateJavascript(source: _cleanerJs);
+                  },
+                  shouldOverrideUrlLoading: (controller, navigationAction) async {
+                    var uri = navigationAction.request.url;
+                    if (uri != null) {
+                      final initialHost = Uri.parse(widget.url).host;
+                      if (uri.host != initialHost && !uri.host.contains('google') && !uri.host.contains('facebook')) {
+                        return NavigationActionPolicy.CANCEL;
+                      }
+                    }
+                    return NavigationActionPolicy.ALLOW;
                   },
                 ),
               ),

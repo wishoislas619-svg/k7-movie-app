@@ -7,6 +7,10 @@ import '../features/movies/data/repositories/movie_repository_impl.dart';
 import '../features/movies/domain/repositories/movie_repository.dart';
 import '../features/movies/data/repositories/category_repository_impl.dart';
 import '../features/movies/domain/repositories/category_repository.dart';
+import '../features/series/data/repositories/series_repository_impl.dart';
+import '../features/series/domain/repositories/series_repository.dart';
+import '../features/series/data/repositories/series_category_repository_impl.dart';
+import '../features/series/domain/repositories/series_category_repository.dart';
 
 final sqliteServiceProvider = Provider<SqliteService>((ref) {
   return SqliteService();
@@ -32,6 +36,16 @@ final movieRepositoryProvider = Provider<MovieRepository>((ref) {
 final categoryRepositoryProvider = Provider<CategoryRepository>((ref) {
   final sqliteService = ref.watch(sqliteServiceProvider);
   return CategoryRepositorySqliteImpl(sqliteService);
+});
+
+final seriesRepositoryProvider = Provider<SeriesRepository>((ref) {
+  final sqliteService = ref.watch(sqliteServiceProvider);
+  return SeriesRepositoryImpl(sqliteService);
+});
+
+final seriesCategoryRepositoryProvider = Provider<SeriesCategoryRepository>((ref) {
+  final sqliteService = ref.watch(sqliteServiceProvider);
+  return SeriesCategoryRepositoryImpl(sqliteService);
 });
 
 final splashDoneProvider = StateProvider<bool>((ref) => false);
