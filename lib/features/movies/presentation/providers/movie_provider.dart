@@ -25,7 +25,7 @@ class MovieController extends StateNotifier<AsyncValue<List<Movie>>> {
     }
   }
 
-  Future<void> addMovie(String name, String imagePath, {String? categoryId, String? detailsUrl, String? backdropUrl, String? subtitleUrl, String? description}) async {
+  Future<void> addMovie(String name, String imagePath, {String? categoryId, String? detailsUrl, String? backdropUrl, String? subtitleUrl, String? description, double rating = 0.0, String? year}) async {
     final movie = Movie(
       id: '',
       name: name,
@@ -35,6 +35,8 @@ class MovieController extends StateNotifier<AsyncValue<List<Movie>>> {
       backdropUrl: backdropUrl,
       subtitleUrl: subtitleUrl,
       description: description,
+      rating: rating,
+      year: year,
       createdAt: DateTime.now(),
     );
     await _repository.addMovie(movie);

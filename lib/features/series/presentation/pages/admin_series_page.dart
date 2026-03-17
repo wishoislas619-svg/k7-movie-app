@@ -5,6 +5,7 @@ import '../providers/series_category_provider.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../domain/entities/series_category.dart';
 import 'edit_series_page.dart';
+import 'admin_popular_series_page.dart';
 
 class AdminSeriesPage extends ConsumerWidget {
   const AdminSeriesPage({super.key});
@@ -24,6 +25,10 @@ class AdminSeriesPage extends ConsumerWidget {
           style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.star_border, color: Color(0xFFD400FF)),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminPopularSeriesPage())),
+          ),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.white70),
             onPressed: () => ref.read(authStateProvider.notifier).logout(),

@@ -11,6 +11,7 @@ import 'package:video_player/video_player.dart';
 import 'package:http/http.dart' as http;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 class VideoPlayerPage extends StatefulWidget {
   static Route route({required String movieName, required String? localPath, String? subtitleUrl}) {
@@ -37,6 +38,7 @@ class VideoPlayerPage extends StatefulWidget {
   final List<VideoOption> videoOptions;
   final String? subtitleUrl;
   final bool isLocal;
+  final VoidCallback? onVideoStarted;
 
   const VideoPlayerPage({
     super.key, 
@@ -44,6 +46,7 @@ class VideoPlayerPage extends StatefulWidget {
     required this.videoOptions,
     this.subtitleUrl,
     this.isLocal = false,
+    this.onVideoStarted,
   });
 
   @override
@@ -74,6 +77,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   
   List<SubtitleInfo> _internalSubtitles = [];
   SubtitleInfo? _currentSubtitle;
+  bool _hasIncrementedView = false;
 
   InAppWebViewController? _webViewController;
   bool _isWebViewExtracting = true;
@@ -110,6 +114,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     ]);
 
     _checkSavedSubtitle();
+    WakelockPlus.enable();
   }
 
   void _initWebViewController() {
@@ -337,6 +342,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         }
         _controller?.play();
 
+        if (!_hasIncrementedView) {
+          _hasIncrementedView = true;
+          widget.onVideoStarted?.call();
+        }
+
         if (_captionNotifier.value != null) {
           _controller?.setClosedCaptionFile(Future.value(_captionNotifier.value));
         }
@@ -432,6 +442,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       DeviceOrientation.portraitUp,
     ]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    WakelockPlus.disable();
     super.dispose();
   }
 

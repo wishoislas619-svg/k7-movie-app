@@ -53,4 +53,45 @@ class AuthController extends StateNotifier<User?> {
     await _repository.logout();
     state = null;
   }
+
+  Future<bool> updateProfile({
+    required String firstName,
+    required String lastName,
+    required String email,
+    required String username,
+  }) async {
+    if (state == null) return false;
+    
+    final updatedUser = User(
+      id: state!.id,
+      firstName: firstName,
+      lastName: lastName,
+      email: email,
+      username: username,
+      role: state!.role,
+    );
+
+    try {
+      await _repository.updateUser(updatedUser);
+      state = updatedUser;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<bool> changePassword(String currentPassword, String newPassword) async {
+    if (state == null) return false;
+
+    // Validate current password by trying to login
+    final user = await _repository.login(state!.username, currentPassword);
+    if (user == null) return false;
+
+    try {
+      await _repository.updateUser(state!, password: newPassword);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
 }

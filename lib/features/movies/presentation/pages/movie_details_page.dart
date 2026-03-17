@@ -215,7 +215,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                     children: [
                       _buildMetaIcon(Icons.remove_red_eye, '${currentMovie.views} Views'),
                       const SizedBox(width: 20),
-                      _buildMetaIcon(Icons.star, '${(currentRating * 2).toStringAsFixed(1)} Rating', color: Colors.amber),
+                      _buildMetaIcon(Icons.star, '${currentRating.toStringAsFixed(1)} Rating', color: Colors.amber),
                       const SizedBox(width: 20),
                       _buildMetaIcon(Icons.movie_creation_outlined, category.name),
                     ],

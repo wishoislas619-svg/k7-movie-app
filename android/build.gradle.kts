@@ -22,3 +22,10 @@ subprojects {
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
+
+subprojects {
+    tasks.withType<JavaCompile>().configureEach {
+         sourceCompatibility = "17"
+         targetCompatibility = "17"
+    }
+}

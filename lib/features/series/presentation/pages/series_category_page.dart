@@ -1,31 +1,30 @@
 import 'package:flutter/material.dart';
-import '../../domain/entities/movie.dart';
-import '../../domain/entities/category.dart';
-import 'movie_details_page.dart';
-import '../../../../core/constants/app_constants.dart';
+import '../../domain/entities/series.dart';
+import '../../domain/entities/series_category.dart';
+import 'series_details_page.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 
-class CategoryPage extends StatefulWidget {
-  final Category category;
-  final List<Movie> movies;
+class SeriesCategoryPage extends StatefulWidget {
+  final SeriesCategory category;
+  final List<Series> seriesList;
 
-  const CategoryPage({
+  const SeriesCategoryPage({
     super.key, 
     required this.category, 
-    required this.movies
+    required this.seriesList
   });
 
   @override
-  State<CategoryPage> createState() => _CategoryPageState();
+  State<SeriesCategoryPage> createState() => _SeriesCategoryPageState();
 }
 
-class _CategoryPageState extends State<CategoryPage> {
+class _SeriesCategoryPageState extends State<SeriesCategoryPage> {
   String _searchQuery = "";
   final TextEditingController _searchController = TextEditingController();
 
   @override
   Widget build(BuildContext context) {
-    final filteredMovies = widget.movies.where((m) => m.name.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
+    final filteredSeries = widget.seriesList.where((s) => s.name.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -34,7 +33,7 @@ class _CategoryPageState extends State<CategoryPage> {
         elevation: 0,
         title: Text(
           widget.category.name.toUpperCase(),
-          style: const TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16),
+          style: const TextStyle(color: Color(0xFFD400FF), fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16),
         ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(60),
@@ -53,7 +52,7 @@ class _CategoryPageState extends State<CategoryPage> {
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: Color(0xFF00A3FF)),
+                  borderSide: const BorderSide(color: Color(0xFFD400FF)),
                 ),
                 filled: true,
                 fillColor: Colors.white.withOpacity(0.04),
@@ -70,16 +69,16 @@ class _CategoryPageState extends State<CategoryPage> {
           crossAxisCount: 3,
           crossAxisSpacing: 12,
           mainAxisSpacing: 20,
-          mainAxisExtent: 220,
+          mainAxisExtent: 250,
         ),
-        itemCount: filteredMovies.length,
+        itemCount: filteredSeries.length,
         itemBuilder: (context, index) {
-          final movie = filteredMovies[index];
+          final series = filteredSeries[index];
           return GestureDetector(
             onTap: () {
               Navigator.push(
                 context, 
-                MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie))
+                MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series))
               );
             },
             child: Column(
@@ -93,8 +92,8 @@ class _CategoryPageState extends State<CategoryPage> {
                         borderRadius: BorderRadius.circular(16),
                         gradient: LinearGradient(
                           colors: [
-                            const Color(0xFF00A3FF).withOpacity(0.5),
                             const Color(0xFFD400FF).withOpacity(0.5),
+                            const Color(0xFF00A3FF).withOpacity(0.5),
                           ],
                         ),
                       ),
@@ -102,31 +101,19 @@ class _CategoryPageState extends State<CategoryPage> {
                         borderRadius: BorderRadius.circular(15),
                         child: Container(
                           width: double.infinity,
-                          height: 170,
+                          height: 190,
                           color: Colors.white10,
-                          child: movie.imagePath.startsWith('http') 
-                            ? Image.network(movie.imagePath, fit: BoxFit.cover)
-                            : const Icon(Icons.movie, color: Colors.white24, size: 40),
+                          child: series.imagePath.startsWith('http') 
+                            ? Image.network(series.imagePath, fit: BoxFit.cover)
+                            : const Icon(Icons.live_tv, color: Colors.white24, size: 40),
                         ),
-                      ),
-                    ),
-                    Positioned(
-                      top: 8,
-                      left: 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF00A3FF).withOpacity(0.8),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text('MOVIE', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 8),
                 MarqueeText(
-                  text: movie.name,
+                  text: series.name,
                   style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
                   width: 100,
                 ),

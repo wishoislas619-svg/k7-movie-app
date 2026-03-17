@@ -5,6 +5,7 @@ import '../providers/series_category_provider.dart';
 import '../../domain/entities/series.dart';
 import '../../domain/entities/series_category.dart';
 import 'series_details_page.dart';
+import 'series_category_page.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 
 class SeriesGridPage extends ConsumerStatefulWidget {
@@ -17,6 +18,10 @@ class SeriesGridPage extends ConsumerStatefulWidget {
 class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
   final PageController _carouselController = PageController();
   int _currentCarouselPage = 0;
+  String? _selectedCategoryFilter;
+  bool _isSearching = false;
+  String _searchQuery = "";
+  final TextEditingController _searchController = TextEditingController();
 
   @override
   void dispose() {
@@ -33,44 +38,109 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
       backgroundColor: Colors.black,
       body: seriesAsync.when(
         data: (allSeries) {
-          final popularSeries = allSeries.where((m) => m.isPopular).toList();
-          if (popularSeries.isEmpty && allSeries.isNotEmpty) {
-            popularSeries.add(allSeries.first);
+          // Filtering logic
+          var filteredSeries = allSeries;
+          if (_selectedCategoryFilter != null) {
+            filteredSeries = allSeries.where((s) => s.categoryId == _selectedCategoryFilter).toList();
+          }
+          if (_searchQuery.isNotEmpty) {
+            filteredSeries = filteredSeries.where((s) => s.name.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
+          }
+
+          final popularSeries = filteredSeries.where((m) => m.isPopular).toList();
+          if (popularSeries.isEmpty && filteredSeries.isNotEmpty) {
+            popularSeries.add(filteredSeries.first);
           }
           
           return categoriesAsync.when(
             data: (categories) {
-              return CustomScrollView(
-                slivers: [
-                  _buildHeader(),
-                  if (popularSeries.isNotEmpty)
-                    SliverToBoxAdapter(
-                      child: _buildCarousel(popularSeries),
-                    ),
-                  SliverPadding(
-                    padding: const EdgeInsets.only(top: 20, bottom: 100),
-                    sliver: SliverList(
-                      delegate: SliverChildListDelegate([
-                        if (allSeries.isNotEmpty)
-                          _buildSeriesSection(
-                            context, 
-                            'RECIÉN AGREGADAS', 
-                            allSeries.take(20).toList()
+               return RefreshIndicator(
+                onRefresh: () async {
+                  await ref.read(seriesListProvider.notifier).loadSeries();
+                  await ref.read(seriesCategoriesProvider.notifier).loadCategories();
+                },
+                color: const Color(0xFF00A3FF),
+                backgroundColor: const Color(0xFF1A1A1A),
+                child: CustomScrollView(
+                  slivers: [
+                    _buildHeader(categories),
+                    if (_isSearching)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          child: TextField(
+                            controller: _searchController,
+                            autofocus: true,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: InputDecoration(
+                              hintText: 'Buscar series...',
+                              hintStyle: const TextStyle(color: Colors.white38),
+                              prefixIcon: const Icon(Icons.search, color: Color(0xFFD400FF)),
+                              suffixIcon: IconButton(
+                                icon: const Icon(Icons.close, color: Colors.white70),
+                                onPressed: () {
+                                  setState(() {
+                                    _isSearching = false;
+                                    _searchQuery = "";
+                                    _searchController.clear();
+                                  });
+                                },
+                              ),
+                              filled: true,
+                              fillColor: Colors.white.withOpacity(0.05),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                            ),
+                            onChanged: (val) => setState(() => _searchQuery = val),
                           ),
-                        ...categories.map((cat) {
-                          final catSeries = allSeries.where((m) => m.categoryId == cat.id).toList();
-                          if (catSeries.isEmpty) return const SizedBox.shrink();
-                          return _buildSeriesSection(
-                            context, 
-                            cat.name.toUpperCase(), 
-                            catSeries,
-                            category: cat
-                          );
-                        }),
-                      ]),
+                        ),
+                      ),
+                    if (popularSeries.isNotEmpty && !_isSearching && _selectedCategoryFilter == null)
+                      SliverToBoxAdapter(
+                        child: _buildCarousel(popularSeries),
+                      ),
+                    SliverPadding(
+                      padding: const EdgeInsets.only(top: 0, bottom: 10),
+                      sliver: SliverList(
+                        delegate: SliverChildListDelegate([
+                          if (filteredSeries.isNotEmpty && !_isSearching && _selectedCategoryFilter == null) ...[
+                            _buildSeriesSection(
+                              context, 
+                              'RECIÉN AGREGADAS', 
+                              filteredSeries.where((s) => true).toList()..sort((a,b) => b.createdAt.compareTo(a.createdAt)),
+                            ),
+                          ],
+                          if (_isSearching || _selectedCategoryFilter != null)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16),
+                              child: GridView.builder(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: 3,
+                                  crossAxisSpacing: 12,
+                                  mainAxisSpacing: 20,
+                                  mainAxisExtent: 260,
+                                ),
+                                itemCount: filteredSeries.length,
+                                itemBuilder: (context, index) => _buildSeriesCard(context, filteredSeries[index]),
+                              ),
+                            )
+                          else
+                            ...categories.map((cat) {
+                              final catSeries = filteredSeries.where((m) => m.categoryId == cat.id).toList();
+                              if (catSeries.isEmpty) return const SizedBox.shrink();
+                              return _buildSeriesSection(
+                                context, 
+                                cat.name.toUpperCase(), 
+                                catSeries,
+                                category: cat
+                              );
+                            }),
+                        ]),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               );
             },
             loading: () => const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
@@ -83,7 +153,7 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
     );
   }
 
-  Widget _buildHeader() {
+  Widget _buildHeader(List<SeriesCategory> categories) {
     return SliverAppBar(
       backgroundColor: Colors.black.withOpacity(0.5),
       floating: true,
@@ -103,9 +173,22 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
         ],
       ),
       actions: [
-        IconButton(icon: const Icon(Icons.cast, color: Colors.white70), onPressed: () {}),
-        IconButton(icon: const Icon(Icons.notifications_none, color: Colors.white70), onPressed: () {}),
-        IconButton(icon: const Icon(Icons.search, color: Colors.white70), onPressed: () {}),
+        DropdownButtonHideUnderline(
+          child: DropdownButton<String?>(
+            value: _selectedCategoryFilter,
+            dropdownColor: const Color(0xFF121212),
+            icon: const Icon(Icons.filter_list, color: Color(0xFFD400FF)),
+            items: [
+              const DropdownMenuItem(value: null, child: Text("Todas", style: TextStyle(color: Colors.white))),
+              ...categories.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name, style: const TextStyle(color: Colors.white)))),
+            ],
+            onChanged: (val) => setState(() => _selectedCategoryFilter = val),
+          ),
+        ),
+        IconButton(
+          icon: Icon(_isSearching ? Icons.search_off : Icons.search, color: Colors.white70), 
+          onPressed: () => setState(() => _isSearching = !_isSearching)
+        ),
       ],
     );
   }
@@ -114,7 +197,7 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
     return Column(
       children: [
         SizedBox(
-          height: 350,
+          height: 300,
           child: PageView.builder(
             controller: _carouselController,
             onPageChanged: (index) => setState(() => _currentCarouselPage = index),
@@ -133,11 +216,11 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
             (index) => AnimatedContainer(
               duration: const Duration(milliseconds: 300),
               margin: const EdgeInsets.symmetric(horizontal: 4),
-              width: _currentCarouselPage == index ? 24 : 8,
-              height: 8,
+              width: _currentCarouselPage == index ? 10 : 8,
+              height: _currentCarouselPage == index ? 10 : 8,
               decoration: BoxDecoration(
+                shape: BoxShape.circle,
                 color: _currentCarouselPage == index ? const Color(0xFF00A3FF) : Colors.white24,
-                borderRadius: BorderRadius.circular(4),
               ),
             ),
           ),
@@ -155,20 +238,23 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
         );
       },
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.all(1.5), // Border width for iridescent effect
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white.withOpacity(0.1)),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF00A3FF).withOpacity(0.2),
-              blurRadius: 20,
-              offset: const Offset(0, 10),
-            )
-          ],
+          borderRadius: BorderRadius.circular(25),
+          gradient: LinearGradient(
+            colors: [
+              Colors.blue.withOpacity(0.7),
+              Colors.purple.withOpacity(0.7),
+              Colors.blue.withOpacity(0.7),
+              Colors.purple.withOpacity(0.7),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(15),
+          borderRadius: BorderRadius.circular(24),
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -180,78 +266,102 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
               Container(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
-                    colors: [Colors.black.withOpacity(0.9), Colors.transparent],
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Colors.black.withOpacity(0.4),
+                      Colors.black.withOpacity(0.9),
+                    ],
                   ),
                 ),
               ),
               Positioned(
-                bottom: 24,
-                left: 24,
-                right: 24,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFD400FF),
-                        borderRadius: BorderRadius.circular(4),
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'TRENDING NOW',
+                        style: TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold, letterSpacing: 1.2, fontSize: 11),
                       ),
-                      child: const Text('SERIE', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      series.name,
-                      style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(30),
-                              gradient: const LinearGradient(colors: [Color(0xFF00A3FF), Color(0xFFBC00FF)]),
-                              boxShadow: [
-                                BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.5), blurRadius: 10, offset: const Offset(0, 4)),
-                              ],
+                      const SizedBox(height: 8),
+                      Text(
+                        series.name.toUpperCase(),
+                        style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900, height: 1.1),
+                      ),
+                      const SizedBox(height: 10),
+                      if (series.description != null)
+                        Text(
+                          series.description!,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 13),
+                        ),
+                      const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Container(
+                              height: 48,
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: const Color(0xFF00A3FF).withOpacity(0.35),
+                                    blurRadius: 15,
+                                    offset: const Offset(0, 8),
+                                  ),
+                                ],
+                              ),
+                              child: ElevatedButton.icon(
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
+                                  );
+                                },
+                                icon: const Icon(Icons.play_arrow, size: 20, color: Colors.white),
+                                label: const Text('Play Now', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.1, color: Colors.white)),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.transparent,
+                                  shadowColor: Colors.transparent,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                ),
+                              ),
                             ),
-                            child: ElevatedButton.icon(
+                          ),
+                          const SizedBox(width: 12),
+                          Container(
+                            height: 48,
+                            width: 48,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.white.withOpacity(0.1)),
+                            ),
+                            child: IconButton(
+                              icon: const Icon(Icons.info_outline, color: Colors.white),
                               onPressed: () {
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
                                 );
                               },
-                              icon: const Icon(Icons.play_arrow, color: Colors.white),
-                              label: const Text('Comenzar a ver', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.transparent,
-                                shadowColor: Colors.transparent,
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 16),
-                        Container(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.white.withOpacity(0.1),
-                          ),
-                          child: IconButton(
-                            icon: const Icon(Icons.add, color: Colors.white),
-                            onPressed: () {},
-                          ),
-                        )
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -266,20 +376,46 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.only(left: 20, right: 10, bottom: 12),
+          padding: const EdgeInsets.only(left: 20, right: 10, bottom: 12, top: 12),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                title,
-                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.2),
+              Row(
+                children: [
+                  Container(
+                    width: 4,
+                    height: 16,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(2),
+                      gradient: const LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    title,
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 1.2),
+                  ),
+                ],
               ),
-              IconButton(icon: const Icon(Icons.arrow_forward_ios, color: Colors.white54, size: 14), onPressed: () {}),
+              if (category != null)
+                TextButton(
+                  onPressed: () {
+                    Navigator.push(
+                      context, 
+                      MaterialPageRoute(builder: (_) => SeriesCategoryPage(category: category, seriesList: seriesList))
+                    );
+                  },
+                  child: const Text('VIEW ALL', style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold)),
+                ),
             ],
           ),
         ),
         SizedBox(
-          height: 250,
+          height: 240,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -303,25 +439,44 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
         );
       },
       child: Container(
-        width: 130,
+        width: 120,
         margin: const EdgeInsets.only(right: 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Stack(
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.network(
-                    series.imagePath,
-                    width: 130,
-                    height: 190,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Container(
-                       width: 130,
-                       height: 190,
-                       color: Colors.white12,
-                       child: const Center(child: Icon(Icons.live_tv, size: 40, color: Colors.white24))
+                Container(
+                  padding: const EdgeInsets.all(1.2),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF00A3FF).withOpacity(0.2),
+                        blurRadius: 8,
+                        spreadRadius: -2,
+                      ),
+                    ],
+                    gradient: LinearGradient(
+                      colors: [
+                        const Color(0xFF00A3FF).withOpacity(0.5),
+                        const Color(0xFFD400FF).withOpacity(0.5),
+                      ],
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(15),
+                    child: Image.network(
+                      series.imagePath,
+                      width: 120,
+                      height: 190,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                         width: 120,
+                         height: 190,
+                         color: Colors.white12,
+                         child: const Center(child: Icon(Icons.live_tv, size: 40, color: Colors.white24))
+                      ),
                     ),
                   ),
                 ),
@@ -343,7 +498,7 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
             MarqueeText(
               text: series.name,
               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-              width: 130,
+              width: 120,
             ),
           ],
         ),

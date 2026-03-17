@@ -265,31 +265,26 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
 
       final existingEps = await repo.getEpisodesForSeason(targetSeason.id);
 
+      int episodeCounter = existingEps.length;
       for (var scraped in extractions) {
-        // Try to find if episode already exists in this season (by number)
-        // Extract number from title if possible, or use current loop index if not provided by scraper
-        // For simplicity, Scraper gives a title, we might want to let user edit it later.
-        // We'll match by name/title for now or just add if not found.
-        
         Episode? existing;
         try {
-           existing = existingEps.firstWhere((e) => e.name.toLowerCase() == scraped.title.toLowerCase());
+           existing = existingEps.firstWhere((e) => e.name.toLowerCase() == scraped.title.toLowerCase() || e.url == scraped.url);
         } catch(_) {}
 
         if (existing != null) {
-          // Add as a second option if URL is different
           final currentUrls = List<EpisodeUrl>.from(existing.urls);
           if (!currentUrls.any((u) => u.url == scraped.url)) {
             currentUrls.add(EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution));
             await repo.updateEpisode(existing.copyWith(urls: currentUrls));
           }
         } else {
-          // New episode
+          episodeCounter++;
           final newEp = Episode(
             id: const Uuid().v4(),
             seasonId: targetSeason.id,
-            episodeNumber: existingEps.length + 1,
-            name: scraped.title,
+            episodeNumber: episodeCounter,
+            name: 'Capítulo $episodeCounter',
             url: scraped.url,
             urls: [EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution)],
           );

@@ -4,6 +4,7 @@ import '../../../../providers.dart';
 import '../../domain/entities/movie.dart';
 import '../providers/movie_provider.dart';
 import '../providers/category_provider.dart';
+import '../../../../shared/widgets/metadata_scraper_dialog.dart';
 
 class EditMoviePage extends ConsumerStatefulWidget {
   final Movie? movie;
@@ -20,8 +21,11 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
   late TextEditingController _backdropUrlController;
   late TextEditingController _subtitleUrlController;
   late TextEditingController _descriptionController;
+  late TextEditingController _ratingController;
+  late TextEditingController _yearController;
   String? _selectedCategoryId;
   List<VideoOption> _options = [];
+  bool _isScraping = false;
 
   @override
   void initState() {
@@ -32,6 +36,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     _backdropUrlController = TextEditingController(text: widget.movie?.backdropUrl ?? '');
     _subtitleUrlController = TextEditingController(text: widget.movie?.subtitleUrl ?? '');
     _descriptionController = TextEditingController(text: widget.movie?.description ?? '');
+    _ratingController = TextEditingController(text: widget.movie?.rating.toString() ?? '0.0');
+    _yearController = TextEditingController(text: widget.movie?.year ?? '');
     _selectedCategoryId = widget.movie?.categoryId;
     if (widget.movie != null) {
       _loadOptions();
@@ -53,6 +59,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         backdropUrl: _backdropUrlController.text,
         subtitleUrl: _subtitleUrlController.text,
         description: _descriptionController.text.isNotEmpty ? _descriptionController.text : null,
+        rating: double.tryParse(_ratingController.text) ?? 0.0,
+        year: _yearController.text.isNotEmpty ? _yearController.text : null,
       );
     } else {
       final updatedMovie = Movie(
@@ -64,8 +72,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         backdropUrl: _backdropUrlController.text,
         description: _descriptionController.text.isNotEmpty ? _descriptionController.text : null,
         views: widget.movie!.views,
-        rating: widget.movie!.rating,
-        year: widget.movie!.year,
+        rating: double.tryParse(_ratingController.text) ?? 0.0,
+        year: _yearController.text.isNotEmpty ? _yearController.text : null,
         duration: widget.movie!.duration,
         backdrop: widget.movie!.backdrop,
         subtitleUrl: _subtitleUrlController.text,
@@ -195,10 +203,38 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     );
   }
 
+  void _fetchMetadata() async {
+    final url = _detailsUrlController.text;
+    if (url.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Introduce una URL de detalles primero')));
+      return;
+    }
+
+    setState(() => _isScraping = true);
+    
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => MetadataScraperDialog(url: url),
+    );
+
+    if (result != null) {
+      setState(() {
+        if (result['description'] != null) _descriptionController.text = result['description'];
+        if (result['rating'] != null) _ratingController.text = result['rating'].toString();
+        if (result['year'] != null) _yearController.text = result['year'].toString();
+        if (result['name'] != null && _nameController.text.isEmpty) _nameController.text = result['name'];
+        if (result['image'] != null && _imageController.text.isEmpty) _imageController.text = result['image'];
+      });
+    }
+    
+    setState(() => _isScraping = false);
+  }
+
   Widget _buildTextField({
     required TextEditingController controller,
     required String labelText,
     int maxLines = 1,
+    TextInputType? keyboardType,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -258,7 +294,17 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
             _buildTextField(controller: _imageController, labelText: 'URL Imagen Película (Poster)'),
             const SizedBox(height: 16),
             _buildTextField(controller: _detailsUrlController, labelText: 'URL detalles (HTML)'),
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isScraping ? null : _fetchMetadata,
+                icon: _isScraping ? const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.download, size: 18),
+                label: const Text('EXTRAER INFO (DESCRIPCIÓN, NOTA, AÑO)'),
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF).withOpacity(0.1), foregroundColor: const Color(0xFF00A3FF)),
+              ),
+            ),
+            const SizedBox(height: 24),
             _buildTextField(controller: _backdropUrlController, labelText: 'Imagen Portada (Fondo detalles)'),
             const SizedBox(height: 16),
             _buildTextField(controller: _subtitleUrlController, labelText: 'URL Subtítulos'),
@@ -312,7 +358,15 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
             const SizedBox(height: 16),
             _buildTextField(controller: _nameController, labelText: 'Nombre de la Película'),
             const SizedBox(height: 16),
-            _buildTextField(controller: _descriptionController, labelText: 'Descripción de la Película', maxLines: 3),
+            Row(
+              children: [
+                Expanded(child: _buildTextField(controller: _ratingController, labelText: 'Calificación (0-10)', keyboardType: const TextInputType.numberWithOptions(decimal: true))),
+                const SizedBox(width: 16),
+                Expanded(child: _buildTextField(controller: _yearController, labelText: 'Año', keyboardType: TextInputType.number)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            _buildTextField(controller: _descriptionController, labelText: 'Descripción de la Película', maxLines: 5),
             const SizedBox(height: 32),
             const Text('OPCIONES DE VIDEO', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
             const SizedBox(height: 8),

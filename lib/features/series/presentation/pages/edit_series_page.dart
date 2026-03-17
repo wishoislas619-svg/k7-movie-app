@@ -7,6 +7,7 @@ import '../../domain/entities/series_option.dart';
 import '../providers/series_provider.dart';
 import '../providers/series_category_provider.dart';
 import 'admin_seasons_episodes_page.dart';
+import '../../../../shared/widgets/metadata_scraper_dialog.dart';
 
 class EditSeriesPage extends ConsumerStatefulWidget {
   final Series? series;
@@ -22,8 +23,11 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
   late TextEditingController _detailsUrlController;
   late TextEditingController _backdropUrlController;
   late TextEditingController _descriptionController;
+  late TextEditingController _ratingController;
+  late TextEditingController _yearController;
   String? _selectedCategoryId;
   List<SeriesOption> _options = [];
+  bool _isScraping = false;
 
   @override
   void initState() {
@@ -33,6 +37,8 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
     _detailsUrlController = TextEditingController(text: widget.series?.detailsUrl ?? '');
     _backdropUrlController = TextEditingController(text: widget.series?.backdropUrl ?? '');
     _descriptionController = TextEditingController(text: widget.series?.description ?? '');
+    _ratingController = TextEditingController(text: widget.series?.rating.toString() ?? '0.0');
+    _yearController = TextEditingController(text: widget.series?.year ?? '');
     _selectedCategoryId = widget.series?.categoryId;
     if (widget.series != null) {
       _loadOptions();
@@ -54,6 +60,8 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
         detailsUrl: _detailsUrlController.text,
         backdropUrl: _backdropUrlController.text,
         description: _descriptionController.text.isNotEmpty ? _descriptionController.text : null,
+        rating: double.tryParse(_ratingController.text) ?? 0.0,
+        year: _yearController.text.isNotEmpty ? _yearController.text : null,
         createdAt: DateTime.now(),
       );
       await ref.read(seriesListProvider.notifier).addSeries(newSeries);
@@ -67,8 +75,8 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
         backdropUrl: _backdropUrlController.text,
         description: _descriptionController.text.isNotEmpty ? _descriptionController.text : null,
         views: widget.series!.views,
-        rating: widget.series!.rating,
-        year: widget.series!.year,
+        rating: double.tryParse(_ratingController.text) ?? 0.0,
+        year: _yearController.text.isNotEmpty ? _yearController.text : null,
         backdrop: widget.series!.backdrop,
         createdAt: widget.series!.createdAt,
       );
@@ -177,7 +185,35 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
     );
   }
 
-  Widget _buildTextField({required TextEditingController controller, required String labelText, int maxLines = 1}) {
+  void _fetchMetadata() async {
+    final url = _detailsUrlController.text;
+    if (url.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Introduce una URL de detalles primero')));
+      return;
+    }
+
+    setState(() => _isScraping = true);
+    
+    // We reuse the SeriesScraperDialog logic but with a different focus
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => MetadataScraperDialog(url: url),
+    );
+
+    if (result != null) {
+      setState(() {
+        if (result['description'] != null) _descriptionController.text = result['description'];
+        if (result['rating'] != null) _ratingController.text = result['rating'].toString();
+        if (result['year'] != null) _yearController.text = result['year'].toString();
+        if (result['name'] != null && _nameController.text.isEmpty) _nameController.text = result['name'];
+        if (result['image'] != null && _imageController.text.isEmpty) _imageController.text = result['image'];
+      });
+    }
+    
+    setState(() => _isScraping = false);
+  }
+
+  Widget _buildTextField({required TextEditingController controller, required String labelText, int maxLines = 1, TextInputType? keyboardType}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -221,7 +257,17 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
             _buildTextField(controller: _backdropUrlController, labelText: 'URL de la Portada (Backdrop)'),
             const SizedBox(height: 16),
             _buildTextField(controller: _detailsUrlController, labelText: 'URL de Detalles (Para Scraping)'),
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isScraping ? null : _fetchMetadata,
+                icon: _isScraping ? const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.download, size: 18),
+                label: const Text('EXTRAER INFO (DESCRIPCIÓN, NOTA, AÑO)'),
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF).withOpacity(0.1), foregroundColor: const Color(0xFF00A3FF)),
+              ),
+            ),
+            const SizedBox(height: 24),
             const Text('CATEGORÍA', style: TextStyle(color: Color(0xFF00A3FF), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
             const SizedBox(height: 8),
             ref.watch(seriesCategoriesProvider).when(
@@ -250,7 +296,15 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
             const SizedBox(height: 16),
             _buildTextField(controller: _nameController, labelText: 'Nombre de la Serie'),
             const SizedBox(height: 16),
-            _buildTextField(controller: _descriptionController, labelText: 'Descripción de la Serie', maxLines: 3),
+            Row(
+              children: [
+                Expanded(child: _buildTextField(controller: _ratingController, labelText: 'Calificación (0-10)', keyboardType: const TextInputType.numberWithOptions(decimal: true))),
+                const SizedBox(width: 16),
+                Expanded(child: _buildTextField(controller: _yearController, labelText: 'Año', keyboardType: TextInputType.number)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            _buildTextField(controller: _descriptionController, labelText: 'Descripción de la Serie', maxLines: 5),
             const SizedBox(height: 32),
             const Text('OPCIONES DE SERVIDORES Y EXTRACCIÓN', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
             const SizedBox(height: 8),

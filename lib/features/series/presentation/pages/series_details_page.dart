@@ -5,6 +5,8 @@ import '../../domain/entities/season.dart';
 import '../../domain/entities/episode.dart';
 import '../../domain/entities/series_option.dart';
 import '../providers/series_provider.dart';
+import '../providers/series_category_provider.dart';
+import '../../domain/entities/series_category.dart';
 import '../../../../providers.dart';
 import '../../../../shared/widgets/video_extractor_dialog.dart';
 import '../../../player/presentation/pages/video_player_page.dart';
@@ -29,12 +31,33 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
   List<SeriesOption>? _videoOptions;
   bool _isLoading = true;
   bool _isDescriptionExpanded = false;
+  final ScrollController _scrollController = ScrollController();
+  bool _isRefreshing = false;
 
   @override
   void initState() {
     super.initState();
     _loadSeasons();
-    ref.read(seriesListProvider.notifier).incrementViews(widget.series.id);
+    _scrollController.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels > _scrollController.position.maxScrollExtent + 50) {
+      if (!_isRefreshing) _onRefresh();
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _onRefresh() async {
+    if (_isRefreshing) return;
+    setState(() => _isRefreshing = true);
+    await _loadSeasons();
+    setState(() => _isRefreshing = false);
   }
 
   Future<void> _loadSeasons() async {
@@ -77,6 +100,9 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
       MaterialPageRoute(
         builder: (_) => VideoPlayerPage(
           movieName: '${widget.series.name} - S${_selectedSeason?.seasonNumber ?? 1} E${episode.episodeNumber}',
+          onVideoStarted: () {
+            ref.read(seriesListProvider.notifier).incrementViews(widget.series.id);
+          },
           videoOptions: [
             VideoOption(
               id: episode.id,
@@ -239,216 +265,385 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: CustomScrollView(
-        slivers: [
-          SliverAppBar(
-            expandedHeight: 500,
-            pinned: true,
-            backgroundColor: const Color(0xFF0A0A0A),
-            leading: const SizedBox.shrink(),
-            flexibleSpace: FlexibleSpaceBar(
-              background: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (curSeries.backdropUrl?.isNotEmpty == true || curSeries.backdrop?.isNotEmpty == true)
-                    Image.network(
-                      curSeries.backdropUrl?.isNotEmpty == true ? curSeries.backdropUrl! : curSeries.backdrop!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _buildPlaceholder(),
-                    )
-                  else
-                    Image.network(
-                      curSeries.imagePath,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _buildPlaceholder(),
-                    ),
-                  Container(
+      body: Stack(
+        children: [
+          // Fixed background image with darker overlay
+          Positioned.fill(
+            child: Stack(
+              children: [
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: SizedBox(
                     height: 300,
+                    child: Opacity(
+                      opacity: 0.99,
+                      child: Image.network(
+                        (curSeries.backdropUrl?.isNotEmpty == true ? curSeries.backdropUrl! : curSeries.backdrop!) ?? curSeries.imagePath,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.topCenter,
+                        errorBuilder: (_,__,___) => const SizedBox.expand(),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned.fill(
+                  child: Container(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
                         colors: [
-                          Colors.black.withOpacity(0.2),
                           Colors.transparent,
-                          Colors.black.withOpacity(0.6),
-                          Colors.black.withOpacity(0.9),
+                          Colors.black.withOpacity(0.4),
+                          Colors.black,
                         ],
-                        stops: const [0.0, 0.4, 0.8, 1.0],
+                        stops: const [0.0, 0.15, 0.3], // Gradient finishes within the 250px window
                       ),
                     ),
                   ),
-                  Positioned(
-                    bottom: 25,
-                    left: 20,
-                    right: 20,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          curSeries.name,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 34,
-                            fontWeight: FontWeight.bold,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black45,
-                                offset: Offset(0, 2),
-                                blurRadius: 10,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  SafeArea(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          _buildRoundButton(Icons.arrow_back, () => Navigator.pop(context)),
-                          _buildRoundButton(Icons.add, () {}),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 0.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+          RefreshIndicator(
+            onRefresh: _onRefresh,
+            color: const Color(0xFF00A3FF),
+            backgroundColor: const Color(0xFF1A1A1A),
+            strokeWidth: 2,
+            child: CustomScrollView(
+              controller: _scrollController,
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                SliverAppBar(
+                expandedHeight: 300,
+                pinned: true,
+                backgroundColor: Colors.transparent,
+                leading: const SizedBox.shrink(),
+                elevation: 0,
+                flexibleSpace: FlexibleSpaceBar(
+                  background: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      _buildMetaIcon(Icons.remove_red_eye, '${curSeries.views} Views'),
-                      const SizedBox(width: 20),
-                      _buildMetaIcon(Icons.star, '${(curSeries.rating * 2).toStringAsFixed(1)} Rating', color: Colors.amber),
-                    ],
-                  ),
-                  const SizedBox(height: 25),
-
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(1.2),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(17),
-                      gradient: LinearGradient(
-                        colors: [
-                          Colors.blue.withOpacity(0.5),
-                          Colors.purple.withOpacity(0.5),
-                          Colors.blue.withOpacity(0.5),
-                          Colors.purple.withOpacity(0.5),
-                        ],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                    ),
-                    child: Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF121212),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            (!_isDescriptionExpanded && currentDescription.length > 70)
-                                ? '${currentDescription.substring(0, 70)}...'
-                                : currentDescription,
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.7),
-                              fontSize: 15,
-                              height: 1.6,
-                            ),
-                            textAlign: TextAlign.left,
+                      // Subtle gradient purely for text readability, moved lower to not dim the image top
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.transparent,
+                              Colors.black.withOpacity(1),
+                            ],
+                            stops: const [0.6, 1.0],
                           ),
-                          if (currentDescription.length > 70)
-                            GestureDetector(
-                              onTap: () => setState(() => _isDescriptionExpanded = !_isDescriptionExpanded),
-                              child: Padding(
-                                padding: const EdgeInsets.only(top: 8.0),
-                                child: Text(
-                                  _isDescriptionExpanded ? 'Ver menos' : 'Ver más...',
-                                  style: const TextStyle(
-                                    color: Color(0xFF00A3FF),
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
+                        ),
+                      ),
+                      Positioned(
+                        bottom: 40,
+                        left: 20,
+                        right: 20,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            // Poster Image on the left
+                            Hero(
+                              tag: 'poster_${curSeries.id}',
+                              child: Container(
+                                width: 120,
+                                height: 180,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(12),
+                                  boxShadow: [
+                                    BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.3), blurRadius: 15, spreadRadius: 1),
+                                  ],
+                                  border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.5), width: 1.5),
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(11),
+                                  child: Image.network(
+                                    curSeries.imagePath,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => Container(color: Colors.white12, child: const Icon(Icons.movie, color: Colors.white24)),
                                   ),
                                 ),
                               ),
                             ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 35),
-                  const Text('TEMPORADAS', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, fontSize: 18, letterSpacing: 1.2)),
-                  const SizedBox(height: 16),
-                  if (_isLoading)
-                     const Center(child: CircularProgressIndicator())
-                  else if (_seasons.isEmpty)
-                     const Text('No hay temporadas disponibles para esta serie.', style: TextStyle(color: Colors.white54))
-                  else ...[
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1E1E1E),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.white.withOpacity(0.1)),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<Season>(
-                          dropdownColor: const Color(0xFF2C2C2C),
-                          value: _selectedSeason,
-                          isExpanded: true,
-                          icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF00A3FF)),
-                          items: _seasons.map((s) => DropdownMenuItem(value: s, child: Text(s.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))).toList(),
-                          onChanged: (val) => setState(() => _selectedSeason = val),
+                            const SizedBox(width: 20),
+                            // Title and Meta
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (curSeries.rating > 0)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      margin: const EdgeInsets.only(bottom: 8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.amber.withOpacity(0.2),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(color: Colors.amber.withOpacity(0.5)),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.star_rounded, color: Colors.amber, size: 16),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            curSeries.rating.toStringAsFixed(1),
+                                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  Text(
+                                    curSeries.name,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 28,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: -0.5,
+                                      height: 1.1,
+                                      shadows: [
+                                        Shadow(color: Colors.black, blurRadius: 20, offset: Offset(0, 4)),
+                                        Shadow(color: Color(0xFF00A3FF), blurRadius: 10),
+                                      ],
+                                    ),
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  if (curSeries.year != null)
+                                    Text(
+                                      curSeries.year!,
+                                      style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 14, fontWeight: FontWeight.w500),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 24),
-                    const Text('EPISODIOS', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 12)),
-                    const SizedBox(height: 16),
-                    if (_selectedSeason != null)
-                      ...(_episodesMap[_selectedSeason!.id] ?? []).map((ep) => _buildEpisodeItem(ep)),
-                  ]
-                ],
+                      SafeArea(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              _buildRoundButton(Icons.arrow_back, () => Navigator.pop(context)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-            ),
-          )
-        ],
-      )
-    );
-  }
+              SliverToBoxAdapter(
+                child: Container(
+                  color: Colors.transparent,
+                  padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 0.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          _buildMetaIcon(Icons.remove_red_eye, '${curSeries.views} Views'),
+                          const SizedBox(width: 20),
+                          _buildMetaIcon(Icons.star, '${curSeries.rating.toStringAsFixed(1)} Rating', color: Colors.amber),
+                          if (curSeries.categoryId != null) ...[
+                            const SizedBox(width: 20),
+                            ref.watch(seriesCategoriesProvider).when(
+                              data: (categories) {
+                                final category = categories.firstWhere((c) => c.id == curSeries.categoryId, orElse: () => SeriesCategory(id: '', name: 'Serie'));
+                                return _buildMetaIcon(Icons.live_tv_outlined, category.name);
+                              },
+                              loading: () => const SizedBox.shrink(),
+                              error: (_, __) => const SizedBox.shrink(),
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 25),
+
+                      // Description with Neon Border
+                      Container(
+                         padding: const EdgeInsets.all(1.2),
+                         decoration: BoxDecoration(
+                           borderRadius: BorderRadius.circular(16),
+                           boxShadow: [
+                             BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.1), blurRadius: 10, spreadRadius: -2),
+                           ],
+                           gradient: LinearGradient(
+                             colors: [const Color(0xFF00A3FF).withOpacity(0.4), const Color(0xFFD400FF).withOpacity(0.4)],
+                           ),
+                         ),
+                         child: Container(
+                           width: double.infinity,
+                           padding: const EdgeInsets.all(20),
+                           decoration: BoxDecoration(
+                             color: const Color(0xFF0A0A0A),
+                             borderRadius: BorderRadius.circular(15),
+                           ),
+                           child: Column(
+                             crossAxisAlignment: CrossAxisAlignment.start,
+                             children: [
+                               Text(
+                                 (!_isDescriptionExpanded && currentDescription.length > 100)
+                                     ? '${currentDescription.substring(0, 100)}...'
+                                     : currentDescription,
+                                 style: TextStyle(
+                                   color: Colors.white.withOpacity(0.9),
+                                   fontSize: 15,
+                                   height: 1.6,
+                                 ),
+                               ),
+                               if (currentDescription.length > 100)
+                                 GestureDetector(
+                                   onTap: () => setState(() => _isDescriptionExpanded = !_isDescriptionExpanded),
+                                   child: Padding(
+                                     padding: const EdgeInsets.only(top: 8.0),
+                                     child: Text(
+                                       _isDescriptionExpanded ? 'Ver menos' : 'Ver más...',
+                                       style: const TextStyle(
+                                         color: Color(0xFF00A3FF),
+                                         fontWeight: FontWeight.bold,
+                                       ),
+                                     ),
+                                   ),
+                                 ),
+                             ],
+                           ),
+                         ),
+                      ),
+                      const SizedBox(height: 35),
+                      const Text('TEMPORADAS', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, fontSize: 18, letterSpacing: 1.2)),
+                      const SizedBox(height: 16),
+                      if (_isLoading)
+                         const Center(child: CircularProgressIndicator())
+                      else if (_seasons.isEmpty)
+                         const Text('No hay temporadas disponibles.', style: TextStyle(color: Colors.white54))
+                      else ...[
+                        // Season Selector with Neon Border
+                        Container(
+                          padding: const EdgeInsets.all(1.2),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            gradient: LinearGradient(
+                              colors: [const Color(0xFF00A3FF).withOpacity(0.4), const Color(0xFFD400FF).withOpacity(0.4)],
+                            ),
+                          ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF0A0A0A),
+                              borderRadius: BorderRadius.circular(11),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<Season>(
+                                dropdownColor: const Color(0xFF1A1A1A),
+                                value: _selectedSeason,
+                                isExpanded: true,
+                                icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF00A3FF)),
+                                items: _seasons.map((s) => DropdownMenuItem(value: s, child: Text(s.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))).toList(),
+                                onChanged: (val) => setState(() => _selectedSeason = val),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        const Text('EPISODIOS', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 12)),
+                        const SizedBox(height: 16),
+                        if (_selectedSeason != null)
+                          ...(_episodesMap[_selectedSeason!.id] ?? []).map((ep) => _buildEpisodeItem(ep)),
+                      ],
+                      const SizedBox(height: 50),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildEpisodeItem(Episode episode) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(1.2), // Neon border width
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.04),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF00A3FF).withOpacity(0.12),
+            blurRadius: 10,
+            spreadRadius: -2,
+          ),
+        ],
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFF00A3FF).withOpacity(0.5),
+            const Color(0xFFD400FF).withOpacity(0.5),
+            const Color(0xFF00A3FF).withOpacity(0.5),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
       ),
-      child: ListTile(
-         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-         onTap: () => _showServerSelectionModal(episode),
-         leading: Container(
-           width: 32,
-           height: 32,
-           decoration: BoxDecoration(color: const Color(0xFF00A3FF).withOpacity(0.1), shape: BoxShape.circle),
-           child: Center(child: Text('${episode.episodeNumber}', style: const TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, fontSize: 12))),
-         ),
-         title: Text(episode.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14), maxLines: 1),
-         trailing: const Icon(Icons.chevron_right, color: Colors.white24),
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF0A0A0A), // Solid dark background for item
+          borderRadius: BorderRadius.circular(15),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: ListTile(
+             contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+             onTap: () => _showServerSelectionModal(episode),
+             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+             leading: Container(
+               width: 40,
+               height: 40,
+               decoration: BoxDecoration(
+                 color: const Color(0xFF00A3FF).withOpacity(0.1),
+                 shape: BoxShape.circle,
+                 border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.2)),
+               ),
+               child: Center(
+                 child: Text(
+                   '${episode.episodeNumber}', 
+                   style: const TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, fontSize: 14),
+                 ),
+               ),
+             ),
+             title: Text(
+               episode.name, 
+               style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 0.5), 
+               maxLines: 1, 
+               overflow: TextOverflow.ellipsis,
+             ),
+             subtitle: const Padding(
+               padding: EdgeInsets.only(top: 4.0),
+               child: Text(
+                 'Toca para elegir servidor', 
+                 style: TextStyle(color: Colors.white38, fontSize: 11),
+               ),
+             ),
+             trailing: Container(
+               padding: const EdgeInsets.all(8),
+               decoration: BoxDecoration(
+                 color: Colors.white.withOpacity(0.05),
+                 shape: BoxShape.circle,
+               ),
+               child: const Icon(Icons.play_arrow_rounded, color: Color(0xFF00A3FF), size: 20),
+             ),
+          ),
+        ),
       ),
     );
   }

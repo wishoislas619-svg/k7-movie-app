@@ -11,6 +11,7 @@ import 'package:movie_app/features/auth/presentation/providers/auth_provider.dar
 import 'package:movie_app/shared/widgets/marquee_text.dart';
 import 'package:movie_app/features/movies/presentation/pages/downloads_page.dart';
 import 'package:movie_app/features/series/presentation/pages/series_grid_page.dart';
+import 'package:movie_app/features/auth/presentation/pages/profile_page.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -21,39 +22,104 @@ class MovieGridPage extends ConsumerStatefulWidget {
 
 class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   final PageController _carouselController = PageController();
+  final PageController _pageController = PageController();
   int _currentCarouselPage = 0;
   int _currentTabIndex = 0;
+  String? _selectedCategoryFilter;
+  bool _isSearching = false;
+  String _searchQuery = "";
+  final TextEditingController _searchController = TextEditingController();
 
   @override
   void dispose() {
     _carouselController.dispose();
+    _pageController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: PageView(
+        controller: _pageController,
+        onPageChanged: (index) {
+          setState(() => _currentTabIndex = index);
+        },
+        physics: const ClampingScrollPhysics(),
+        children: [
+          _buildMoviesView(),
+          const SeriesGridPage(),
+          const DownloadsPage(),
+          const ProfilePage(),
+        ],
+      ),
+      bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildMoviesView() {
     final moviesAsync = ref.watch(moviesProvider);
     final categoriesAsync = ref.watch(categoriesProvider);
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: _currentTabIndex == 1 
-        ? const SeriesGridPage() 
-        : _currentTabIndex == 2 
-          ? const DownloadsPage() 
-          : _currentTabIndex == 3
-            ? const Center(child: Text('Perfil / Configuración (Próximamente)', style: TextStyle(color: Colors.white)))
-            : moviesAsync.when(
-        data: (allMovies) {
-          final popularMovies = allMovies.where((m) => m.isPopular).toList();
-          return categoriesAsync.when(
-            data: (categories) {
-              return Stack(
-                children: [
-                   CustomScrollView(
+    return moviesAsync.when(
+      data: (allMovies) {
+        // Filtering logic
+        var filteredMovies = allMovies;
+        if (_selectedCategoryFilter != null) {
+          filteredMovies = allMovies.where((m) => m.categoryId == _selectedCategoryFilter).toList();
+        }
+        if (_searchQuery.isNotEmpty) {
+          filteredMovies = filteredMovies.where((m) => m.name.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
+        }
+
+        final popularMovies = filteredMovies.where((m) => m.isPopular).toList();
+
+        return categoriesAsync.when(
+          data: (categories) {
+            return Stack(
+              children: [
+                 RefreshIndicator(
+                  onRefresh: () async {
+                    await ref.read(moviesProvider.notifier).loadMovies();
+                    await ref.read(categoriesProvider.notifier).loadCategories();
+                  },
+                  color: const Color(0xFF00A3FF),
+                  backgroundColor: const Color(0xFF1A1A1A),
+                  child: CustomScrollView(
                     slivers: [
-                      _buildHeader(),
-                      if (popularMovies.isNotEmpty)
+                      _buildHeader(categories),
+                      if (_isSearching)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            child: TextField(
+                              controller: _searchController,
+                              autofocus: true,
+                              style: const TextStyle(color: Colors.white),
+                              decoration: InputDecoration(
+                                hintText: 'Buscar películas...',
+                                hintStyle: const TextStyle(color: Colors.white38),
+                                prefixIcon: const Icon(Icons.search, color: Color(0xFF00A3FF)),
+                                suffixIcon: IconButton(
+                                  icon: const Icon(Icons.close, color: Colors.white70),
+                                  onPressed: () {
+                                    setState(() {
+                                      _isSearching = false;
+                                      _searchQuery = "";
+                                      _searchController.clear();
+                                    });
+                                  },
+                                ),
+                                filled: true,
+                                fillColor: Colors.white.withOpacity(0.05),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                              ),
+                              onChanged: (val) => setState(() => _searchQuery = val),
+                            ),
+                          ),
+                        ),
+                      if (popularMovies.isNotEmpty && !_isSearching && _selectedCategoryFilter == null)
                         SliverToBoxAdapter(
                           child: _buildCarousel(popularMovies),
                         ),
@@ -61,41 +127,59 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                         padding: const EdgeInsets.only(top: 20, bottom: 100),
                         sliver: SliverList(
                           delegate: SliverChildListDelegate([
-                            _buildMovieSection(
-                              context, 
-                              'RECIÉN AGREGADAS', 
-                              allMovies.take(20).toList()
-                            ),
-                            ...categories.map((cat) {
-                              final catMovies = allMovies.where((m) => m.categoryId == cat.id).toList();
-                              if (catMovies.isEmpty) return const SizedBox.shrink();
-                              return _buildMovieSection(
+                            if (filteredMovies.isNotEmpty && !_isSearching && _selectedCategoryFilter == null) ...[
+                              _buildMovieSection(
                                 context, 
-                                cat.name.toUpperCase(), 
-                                catMovies,
-                                category: cat
-                              );
-                            }),
+                                'RECIÉN AGREGADAS', 
+                                filteredMovies.where((m) => true).toList()..sort((a,b) => b.createdAt.compareTo(a.createdAt)),
+                              ),
+                            ],
+                            if (_isSearching || _selectedCategoryFilter != null)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                child: GridView.builder(
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 3,
+                                    crossAxisSpacing: 12,
+                                    mainAxisSpacing: 20,
+                                    mainAxisExtent: 240,
+                                  ),
+                                  itemCount: filteredMovies.length,
+                                  itemBuilder: (context, index) => _buildMovieCard(context, filteredMovies[index]),
+                                ),
+                              )
+                            else
+                              ...categories.map((cat) {
+                                final catMovies = filteredMovies.where((m) => m.categoryId == cat.id).toList();
+                                if (catMovies.isEmpty) return const SizedBox.shrink();
+                                return _buildMovieSection(
+                                  context, 
+                                  cat.name.toUpperCase(), 
+                                  catMovies,
+                                  category: cat
+                                );
+                              }),
                           ]),
                         ),
                       ),
                     ],
                   ),
-                ],
-              );
-            },
-            loading: () => const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
-            error: (e, s) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white))),
-          );
-        },
-        loading: () => const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
-        error: (e, s) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white))),
-      ),
-      bottomNavigationBar: _buildBottomNav(),
+                ),
+              ],
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
+          error: (e, s) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white))),
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
+      error: (e, s) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white))),
     );
   }
 
-  Widget _buildHeader() {
+  Widget _buildHeader(List<Category> categories) {
     return SliverAppBar(
       backgroundColor: Colors.black.withOpacity(0.5),
       floating: true,
@@ -115,11 +199,21 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         ],
       ),
       actions: [
-        IconButton(icon: const Icon(Icons.cast, color: Colors.white70), onPressed: () {}),
-        IconButton(icon: const Icon(Icons.notifications_none, color: Colors.white70), onPressed: () {}),
+        DropdownButtonHideUnderline(
+          child: DropdownButton<String?>(
+            value: _selectedCategoryFilter,
+            dropdownColor: const Color(0xFF121212),
+            icon: const Icon(Icons.filter_list, color: Color(0xFF00A3FF)),
+            items: [
+              const DropdownMenuItem(value: null, child: Text("Todas", style: TextStyle(color: Colors.white))),
+              ...categories.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name, style: const TextStyle(color: Colors.white)))),
+            ],
+            onChanged: (val) => setState(() => _selectedCategoryFilter = val),
+          ),
+        ),
         IconButton(
-          icon: const Icon(Icons.logout, color: Colors.white70),
-          onPressed: () => ref.read(authStateProvider.notifier).logout(),
+          icon: Icon(_isSearching ? Icons.search_off : Icons.search, color: Colors.white70), 
+          onPressed: () => setState(() => _isSearching = !_isSearching)
         ),
       ],
     );
@@ -129,7 +223,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     return Column(
       children: [
         SizedBox(
-          height: 350,
+          height: 300,
           child: PageView.builder(
             controller: _carouselController,
             onPageChanged: (index) => setState(() => _currentCarouselPage = index),
@@ -330,7 +424,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           ),
         ),
         SizedBox(
-          height: 220,
+          height: 240,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -362,16 +456,28 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           children: [
             Stack(
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: Container(
-                    width: 120,
-                    height: 160,
-                    color: Colors.white10,
-                    child: Image.network(
-                      movie.imagePath, 
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white24, size: 50),
+                Container(
+                  padding: const EdgeInsets.all(1.2),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    gradient: LinearGradient(
+                      colors: [
+                        const Color(0xFF00A3FF).withOpacity(0.5),
+                        const Color(0xFFD400FF).withOpacity(0.5),
+                      ],
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(15),
+                    child: Container(
+                      width: 120,
+                      height: 180,
+                      color: Colors.white10,
+                      child: Image.network(
+                        movie.imagePath, 
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white24, size: 50),
+                      ),
                     ),
                   ),
                 ),
@@ -379,12 +485,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                   top: 8,
                   left: 8,
                   child: Container(
-                    padding: const EdgeInsets.all(4),
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.5),
-                      shape: BoxShape.circle,
+                      color: const Color(0xFF00A3FF).withOpacity(0.8),
+                      borderRadius: BorderRadius.circular(4),
                     ),
-                    child: const Text('K7', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                    child: const Text('MOVIE', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
                   ),
                 ),
               ],
@@ -409,7 +515,13 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       ),
       child: BottomNavigationBar(
         currentIndex: _currentTabIndex,
-        onTap: (index) => setState(() => _currentTabIndex = index),
+        onTap: (index) {
+          _pageController.animateToPage(
+            index,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        },
         backgroundColor: Colors.transparent,
         elevation: 0,
         type: BottomNavigationBarType.fixed,

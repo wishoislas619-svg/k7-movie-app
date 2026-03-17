@@ -66,6 +66,7 @@ class DownloadsPage extends ConsumerWidget {
           ],
         ),
         body: TabBarView(
+          physics: const NeverScrollableScrollPhysics(),
           children: [
             _buildList(movieDownloads, context, ref),
             _buildSeriesMapList(seriesDownloads, context, ref),
