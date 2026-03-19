@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/repositories/auth_repository.dart';
 import '../../domain/entities/user.dart';
 import '../../../../providers.dart';
+import '../../data/repositories/auth_repository_supabase_impl.dart';
 
 final authStateProvider = StateNotifierProvider<AuthController, User?>((ref) {
   final repo = ref.watch(authRepositoryProvider);
@@ -11,9 +12,7 @@ final authStateProvider = StateNotifierProvider<AuthController, User?>((ref) {
 class AuthController extends StateNotifier<User?> {
   final AuthRepository _repository;
 
-  AuthController(this._repository) : super(null) {
-    checkStatus();
-  }
+  AuthController(this._repository) : super(null);
 
   Future<void> checkStatus() async {
     state = await _repository.getCurrentUser();
@@ -54,6 +53,15 @@ class AuthController extends StateNotifier<User?> {
     state = null;
   }
 
+  // Llama esto cuando el usuario interactúa con la app para resetear inactividad
+  Future<void> refreshActivity() async {
+    if (state == null) return;
+    final repo = _repository;
+    if (repo is AuthRepositorySupabaseImpl) {
+      await repo.refreshActivity();
+    }
+  }
+
   Future<bool> updateProfile({
     required String firstName,
     required String lastName,
@@ -83,8 +91,8 @@ class AuthController extends StateNotifier<User?> {
   Future<bool> changePassword(String currentPassword, String newPassword) async {
     if (state == null) return false;
 
-    // Validate current password by trying to login
-    final user = await _repository.login(state!.username, currentPassword);
+    // Validar contraseña actual re-logueando
+    final user = await _repository.login(state!.email, currentPassword);
     if (user == null) return false;
 
     try {

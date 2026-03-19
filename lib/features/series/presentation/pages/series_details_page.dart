@@ -12,6 +12,7 @@ import '../../../../shared/widgets/video_extractor_dialog.dart';
 import '../../../player/presentation/pages/video_player_page.dart';
 import '../../../player/data/datasources/video_service.dart';
 import '../../../movies/domain/entities/download_task.dart';
+import '../../../movies/presentation/providers/history_provider.dart';
 import '../../../movies/domain/entities/movie.dart' show VideoOption; // Added VideoOption
 import '../../../movies/data/repositories/download_repository_impl.dart'; // Added downloadsListProvider
 import 'package:uuid/uuid.dart';
@@ -103,6 +104,11 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
           onVideoStarted: () {
             ref.read(seriesListProvider.notifier).incrementViews(widget.series.id);
           },
+          mediaId: widget.series.id,
+          episodeId: episode.id,
+          mediaType: 'series',
+          imagePath: widget.series.imagePath,
+          subtitleLabel: 'S${_selectedSeason?.seasonNumber ?? 1} E${episode.episodeNumber}: ${episode.name}',
           videoOptions: [
             VideoOption(
               id: episode.id,
@@ -602,46 +608,61 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
         ),
         child: Material(
           color: Colors.transparent,
-          child: ListTile(
-             contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-             onTap: () => _showServerSelectionModal(episode),
-             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-             leading: Container(
-               width: 40,
-               height: 40,
-               decoration: BoxDecoration(
-                 color: const Color(0xFF00A3FF).withOpacity(0.1),
-                 shape: BoxShape.circle,
-                 border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.2)),
-               ),
-               child: Center(
-                 child: Text(
-                   '${episode.episodeNumber}', 
-                   style: const TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, fontSize: 14),
+          child: Consumer(
+            builder: (context, ref, child) {
+              final isWatched = ref.watch(historyProvider).maybeWhen(
+                data: (history) => history.any((h) => h.id == episode.id && h.lastPosition > (h.totalDuration * 0.9)), // Consider watched if > 90%
+                orElse: () => false,
+              );
+              final isPartiallyWatched = ref.watch(historyProvider).maybeWhen(
+                data: (history) => history.any((h) => h.id == episode.id && h.lastPosition < (h.totalDuration * 0.9)),
+                orElse: () => false,
+              );
+
+              final Color accentColor = isWatched ? const Color(0xFFD400FF) : (isPartiallyWatched ? const Color(0xFF00A3FF).withOpacity(0.8) : const Color(0xFF00A3FF));
+
+              return ListTile(
+                 contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                 onTap: () => _showServerSelectionModal(episode),
+                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                 leading: Container(
+                   width: 40,
+                   height: 40,
+                   decoration: BoxDecoration(
+                     color: accentColor.withOpacity(0.1),
+                     shape: BoxShape.circle,
+                     border: Border.all(color: accentColor.withOpacity(0.2)),
+                   ),
+                   child: Center(
+                     child: Text(
+                       '${episode.episodeNumber}', 
+                       style: TextStyle(color: accentColor, fontWeight: FontWeight.bold, fontSize: 14),
+                     ),
+                   ),
                  ),
-               ),
-             ),
-             title: Text(
-               episode.name, 
-               style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 0.5), 
-               maxLines: 1, 
-               overflow: TextOverflow.ellipsis,
-             ),
-             subtitle: const Padding(
-               padding: EdgeInsets.only(top: 4.0),
-               child: Text(
-                 'Toca para elegir servidor', 
-                 style: TextStyle(color: Colors.white38, fontSize: 11),
-               ),
-             ),
-             trailing: Container(
-               padding: const EdgeInsets.all(8),
-               decoration: BoxDecoration(
-                 color: Colors.white.withOpacity(0.05),
-                 shape: BoxShape.circle,
-               ),
-               child: const Icon(Icons.play_arrow_rounded, color: Color(0xFF00A3FF), size: 20),
-             ),
+                 title: Text(
+                   episode.name, 
+                   style: TextStyle(color: isWatched ? const Color(0xFFD400FF) : Colors.white, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 0.5), 
+                   maxLines: 1, 
+                   overflow: TextOverflow.ellipsis,
+                 ),
+                 subtitle: Padding(
+                   padding: const EdgeInsets.only(top: 4.0),
+                   child: Text(
+                     isWatched ? 'Reproducido' : (isPartiallyWatched ? 'En curso' : 'Toca para elegir servidor'), 
+                     style: TextStyle(color: isWatched ? const Color(0xFFD400FF).withOpacity(0.6) : Colors.white38, fontSize: 11),
+                   ),
+                 ),
+                 trailing: Container(
+                   padding: const EdgeInsets.all(8),
+                   decoration: BoxDecoration(
+                     color: Colors.white.withOpacity(0.05),
+                     shape: BoxShape.circle,
+                   ),
+                   child: Icon(Icons.play_arrow_rounded, color: accentColor, size: 20),
+                 ),
+              );
+            },
           ),
         ),
       ),

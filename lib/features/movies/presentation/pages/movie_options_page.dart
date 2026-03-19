@@ -38,6 +38,9 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
           movieName: widget.movie.name,
           videoOptions: [option, ...allOptions.where((o) => o.id != option.id)],
           subtitleUrl: widget.movie.subtitleUrl,
+          mediaId: widget.movie.id,
+          mediaType: 'movie',
+          imagePath: widget.movie.imagePath,
         ),
       ),
     );

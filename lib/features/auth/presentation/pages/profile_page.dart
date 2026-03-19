@@ -289,7 +289,7 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                     radius: 45,
                     backgroundColor: const Color(0xFF121212),
                     child: Text(
-                      user.firstName[0].toUpperCase(),
+                      user.firstName.isNotEmpty ? user.firstName[0].toUpperCase() : '?',
                       style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.white),
                     ),
                   ),

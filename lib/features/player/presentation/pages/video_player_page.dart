@@ -12,48 +12,43 @@ import 'package:http/http.dart' as http;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:movie_app/features/movies/presentation/providers/history_provider.dart';
+import 'package:movie_app/features/movies/domain/entities/watch_history.dart';
 
-class VideoPlayerPage extends StatefulWidget {
-  static Route route({required String movieName, required String? localPath, String? subtitleUrl}) {
-    // For local files, we create a dummy VideoOption or handle it specially
-    return MaterialPageRoute(
-      builder: (_) => VideoPlayerPage(
-        movieName: movieName,
-        videoOptions: [
-          VideoOption(
-            id: 'local',
-            movieId: 'local',
-            serverImagePath: '',
-            resolution: 'Local',
-            videoUrl: localPath ?? '',
-          )
-        ],
-        subtitleUrl: subtitleUrl,
-        isLocal: localPath != null,
-      ),
-    );
-  }
-
+class VideoPlayerPage extends ConsumerStatefulWidget {
   final String movieName;
   final List<VideoOption> videoOptions;
   final String? subtitleUrl;
   final bool isLocal;
   final VoidCallback? onVideoStarted;
+  
+  // New history fields
+  final String mediaId;
+  final String? episodeId;
+  final String mediaType; // 'movie' or 'series'
+  final String imagePath;
+  final String? subtitleLabel; // e.g. "S1 E5: Episode Name"
 
   const VideoPlayerPage({
     super.key, 
     required this.movieName, 
     required this.videoOptions,
+    required this.mediaId,
+    this.episodeId,
+    required this.mediaType,
+    required this.imagePath,
+    this.subtitleLabel,
     this.subtitleUrl,
     this.isLocal = false,
     this.onVideoStarted,
   });
 
   @override
-  State<VideoPlayerPage> createState() => _VideoPlayerPageState();
+  ConsumerState<VideoPlayerPage> createState() => _VideoPlayerPageState();
 }
 
-class _VideoPlayerPageState extends State<VideoPlayerPage> {
+class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   VideoPlayerController? _controller;
   bool _isLoading = true;
   String? _errorMessage;
@@ -90,6 +85,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   final ValueNotifier<List<String>> _extractedSubtitlesNotifier = ValueNotifier<List<String>>([]);
   final ValueNotifier<ClosedCaptionFile?> _captionNotifier = ValueNotifier<ClosedCaptionFile?>(null);
   String? _currentQualityLabel;
+  Timer? _progressSaveTimer;
+  bool _hasCheckedResume = false;
 
   @override
   void initState() {
@@ -106,6 +103,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     
     _startHideTimer();
     _initSettings();
+    _startProgressTimer();
     
     // Auto landscape mode
     SystemChrome.setPreferredOrientations([
@@ -115,6 +113,89 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
     _checkSavedSubtitle();
     WakelockPlus.enable();
+  }
+
+  void _startProgressTimer() {
+    _progressSaveTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+      _saveProgress();
+    });
+  }
+
+  Future<void> _saveProgress() async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    
+    final position = _controller!.value.position.inMilliseconds;
+    final duration = _controller!.value.duration.inMilliseconds;
+    
+    if (position <= 0) return;
+
+    ref.read(historyProvider.notifier).saveProgress(
+      mediaId: widget.mediaId,
+      episodeId: widget.episodeId,
+      mediaType: widget.mediaType,
+      position: position,
+      duration: duration,
+      title: widget.movieName.split(' - ').first, // Get base title
+      subtitle: widget.subtitleLabel,
+      imagePath: widget.imagePath,
+    );
+  }
+
+  Future<void> _checkResume(VideoPlayerController controller) async {
+    if (_hasCheckedResume) return;
+    _hasCheckedResume = true;
+
+    final history = await ref.read(historyProvider.notifier).getProgress(widget.episodeId ?? widget.mediaId);
+    
+    if (history != null && history.lastPosition > 10000) { // More than 10 seconds
+      // Pause immediately to ask
+      controller.pause();
+      
+      if (!mounted) return;
+
+      final resume = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1A1A),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text("Continuar Viendo", style: TextStyle(color: Colors.white)),
+          content: Text(
+            "¿Quieres retomar desde donde te quedaste? (${_formatDuration(Duration(milliseconds: history.lastPosition))})",
+            style: const TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text("Desde el inicio", style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00A3FF),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text("Reanudar", style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+
+      if (resume == true) {
+        await controller.seekTo(Duration(milliseconds: history.lastPosition));
+      }
+      controller.play();
+    }
+  }
+
+  String _formatDuration(Duration duration) {
+    String twoDigits(int n) => n.toString().padLeft(2, "0");
+    String twoDigitMinutes = twoDigits(duration.inMinutes.remainder(60));
+    String twoDigitSeconds = twoDigits(duration.inSeconds.remainder(60));
+    if (duration.inHours > 0) {
+      return "${twoDigits(duration.inHours)}:$twoDigitMinutes:$twoDigitSeconds";
+    }
+    return "$twoDigitMinutes:$twoDigitSeconds";
   }
 
   void _initWebViewController() {
@@ -350,6 +431,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         if (_captionNotifier.value != null) {
           _controller?.setClosedCaptionFile(Future.value(_captionNotifier.value));
         }
+
+        // Check for resume after initialization
+        _checkResume(_controller!);
       }
     } catch (e) {
       if (mounted) {
@@ -434,8 +518,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
   @override
   void dispose() {
+    _saveProgress(); // Final save
     _hideTimer?.cancel();
     _labelHideTimer?.cancel();
+    _progressSaveTimer?.cancel();
     _controller?.dispose();
     VolumeController.instance.removeListener();
     SystemChrome.setPreferredOrientations([
@@ -958,16 +1044,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         ),
       ),
     );
-  }
-
-  String _formatDuration(Duration duration) {
-    String twoDigits(int n) => n.toString().padLeft(2, "0");
-    String twoDigitMinutes = twoDigits(duration.inMinutes.remainder(60));
-    String twoDigitSeconds = twoDigits(duration.inSeconds.remainder(60));
-    if (duration.inHours > 0) {
-      return "${twoDigits(duration.inHours)}:$twoDigitMinutes:$twoDigitSeconds";
-    }
-    return "$twoDigitMinutes:$twoDigitSeconds";
   }
 
   Widget _buildErrorContent() {

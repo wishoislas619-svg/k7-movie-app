@@ -5,16 +5,9 @@ class AppConstants {
   static const double serverImageSize = 40.0;
   static const double optionRowHeight = 40.0;
 
-  // Admin Credentials
-  static const String adminUser = 'wisho619';
-  static const String adminPassword = 'blueyes\$5L';
-
-  // Auth Keys
-  static const String keyIsLoggedIn = 'is_logged_in';
-  static const String keyUserRole = 'user_role';
-  static const String keyUserData = 'user_data';
-
-  // Role names
-  static const String roleAdmin = 'admin';
-  static const String roleUser = 'user';
+  // Roles del sistema (deben coincidir con el enum en Supabase)
+  static const String roleAdmin    = 'admin';
+  static const String roleUser     = 'user';
+  static const String roleUserVip  = 'uservip';
+  static const String roleSecurity = 'security';
 }

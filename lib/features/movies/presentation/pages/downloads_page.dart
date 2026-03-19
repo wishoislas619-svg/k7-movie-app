@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:movie_app/features/movies/data/repositories/download_repository_impl.dart';
 import 'package:movie_app/features/movies/domain/entities/download_task.dart';
+import 'package:movie_app/features/movies/domain/entities/movie.dart';
 import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
 
 class DownloadsPage extends ConsumerWidget {
@@ -294,9 +295,24 @@ class DownloadsPage extends ConsumerWidget {
 
               Navigator.push(
                 context,
-                VideoPlayerPage.route(
-                  movieName: task.movieName,
-                  localPath: path,
+                MaterialPageRoute(
+                  builder: (_) => VideoPlayerPage(
+                    movieName: task.movieName,
+                    isLocal: true,
+                    mediaId: task.movieId,
+                    mediaType: task.isSeries ? 'series' : 'movie',
+                    imagePath: task.imagePath,
+                    subtitleLabel: task.isSeries ? 'S${task.seasonNumber} E${task.episodeNumber}' : null,
+                    videoOptions: [
+                      VideoOption(
+                        id: 'local',
+                        movieId: task.movieId,
+                        serverImagePath: '',
+                        resolution: 'Local',
+                        videoUrl: path,
+                      )
+                    ],
+                  ),
                 ),
               );
             },

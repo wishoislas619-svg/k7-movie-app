@@ -12,6 +12,12 @@ import 'package:movie_app/shared/widgets/marquee_text.dart';
 import 'package:movie_app/features/movies/presentation/pages/downloads_page.dart';
 import 'package:movie_app/features/series/presentation/pages/series_grid_page.dart';
 import 'package:movie_app/features/auth/presentation/pages/profile_page.dart';
+import 'package:movie_app/features/movies/presentation/providers/history_provider.dart';
+import 'package:movie_app/features/movies/domain/entities/watch_history.dart';
+import 'package:movie_app/features/series/domain/entities/series.dart';
+import 'package:movie_app/features/series/presentation/pages/series_details_page.dart';
+import 'package:movie_app/features/movies/presentation/pages/history_view_all_page.dart';
+import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -128,6 +134,14 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                         sliver: SliverList(
                           delegate: SliverChildListDelegate([
                             if (filteredMovies.isNotEmpty && !_isSearching && _selectedCategoryFilter == null) ...[
+                              ref.watch(historyProvider).when(
+                                data: (history) {
+                                  if (history.isEmpty) return const SizedBox.shrink();
+                                  return _buildHistorySection(context, history.take(20).toList());
+                                },
+                                loading: () => const SizedBox.shrink(),
+                                error: (_, __) => const SizedBox.shrink(),
+                              ),
                               _buildMovieSection(
                                 context, 
                                 'RECIÉN AGREGADAS', 
@@ -501,6 +515,174 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
               width: 120,
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHistorySection(BuildContext context, List<WatchHistory> history) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 3,
+                    height: 18,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                      ),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'CONTINUAR VIENDO',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1.5, color: Colors.white),
+                  ),
+                ],
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const HistoryViewAllPage())
+                  );
+                },
+                child: const Text('VIEW ALL', style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 260,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: history.length,
+            itemBuilder: (context, index) {
+              return _buildHistoryCard(context, history[index]);
+            },
+          ),
+        ),
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+
+  Widget _buildHistoryCard(BuildContext context, WatchHistory item) {
+    final progress = item.lastPosition / item.totalDuration;
+    
+    return Container(
+      width: 140,
+      margin: const EdgeInsets.only(right: 16),
+      child: GestureDetector(
+        onTap: () async {
+          if (item.mediaType == 'movie') {
+             final movie = (ref.read(moviesProvider).value ?? []).firstWhere((m) => m.id == item.mediaId);
+             Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
+          } else {
+             final series = (ref.read(seriesListProvider).value ?? []).firstWhere((s) => s.id == item.mediaId);
+             Navigator.push(context, MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)));
+          }
+        },
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Stack(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(1.2),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    gradient: LinearGradient(
+                      colors: [
+                        const Color(0xFF00A3FF).withOpacity(0.5),
+                        const Color(0xFFD400FF).withOpacity(0.5),
+                      ],
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(15),
+                    child: Stack(
+                      children: [
+                        Container(
+                          width: 140,
+                          height: 200,
+                          color: Colors.white10,
+                          child: Image.network(
+                            item.imagePath, 
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white24, size: 50),
+                          ),
+                        ),
+                        // Progress bar at the bottom of the card image
+                        Positioned(
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          child: Column(
+                            children: [
+                              Container(
+                                height: 4,
+                                width: double.infinity,
+                                color: Colors.white24,
+                                child: UnconstrainedBox(
+                                  alignment: Alignment.centerLeft,
+                                  child: Container(
+                                    height: 4,
+                                    width: 140 * progress.clamp(0.0, 1.0),
+                                    decoration: const BoxDecoration(
+                                      gradient: LinearGradient(colors: [Color(0xFF00A3FF), Color(0xFFD400FF)]),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        // Play icon overlay
+                        Positioned.fill(
+                          child: Center(
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.4),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 30),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              item.title,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            if (item.subtitle != null)
+              Text(
+                item.subtitle!,
+                style: const TextStyle(fontSize: 11, color: Colors.white54),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
           ],
         ),
       ),

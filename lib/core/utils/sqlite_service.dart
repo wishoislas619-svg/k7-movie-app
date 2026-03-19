@@ -15,7 +15,7 @@ class SqliteService {
     String path = join(await getDatabasesPath(), 'movie_app.db');
     return await openDatabase(
       path,
-      version: 17,
+      version: 18,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -149,6 +149,22 @@ class SqliteService {
        // Add urls column to episodes for multiple servers support
        try { await db.execute('ALTER TABLE episodes ADD COLUMN urls TEXT'); } catch (_) {}
     }
+    if (oldVersion < 18) {
+      await db.execute('''
+        CREATE TABLE watch_history(
+          id TEXT PRIMARY KEY,
+          mediaId TEXT NOT NULL,
+          episodeId TEXT,
+          mediaType TEXT NOT NULL,
+          lastPosition INTEGER NOT NULL,
+          totalDuration INTEGER NOT NULL,
+          lastWatchedAt TEXT NOT NULL,
+          title TEXT,
+          subtitle TEXT,
+          imagePath TEXT
+        )
+      ''');
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -280,6 +296,21 @@ class SqliteService {
         videoUrl TEXT,
         language TEXT,
         FOREIGN KEY (seriesId) REFERENCES series (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE watch_history(
+        id TEXT PRIMARY KEY,
+        mediaId TEXT NOT NULL,
+        episodeId TEXT,
+        mediaType TEXT NOT NULL,
+        lastPosition INTEGER NOT NULL,
+        totalDuration INTEGER NOT NULL,
+        lastWatchedAt TEXT NOT NULL,
+        title TEXT,
+        subtitle TEXT,
+        imagePath TEXT
       )
     ''');
   }
