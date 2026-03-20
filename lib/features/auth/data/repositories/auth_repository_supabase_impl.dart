@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../../domain/entities/user.dart';
 import '../../domain/repositories/auth_repository.dart';
 import '../../../../core/services/supabase_service.dart';
+import '../../../../core/services/storage_service.dart';
 
 class AuthRepositorySupabaseImpl implements AuthRepository {
   final _client = SupabaseService.client;
@@ -70,11 +71,64 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
 
       // Registrar el dispositivo actual como la sesión activa (single-session)
       final deviceId = await _getDeviceId();
+      
+      // Obtener el perfil para verificar si hay una sesión activa
+      final profile = await _client.from('profiles').select().eq('id', res.user!.id).maybeSingle();
+      
+      // Verificar si el usuario está realmente online
+      bool isActuallyOnline = false;
+      if (profile?['is_online'] == true) {
+        if (profile?['active_device_id'] != deviceId) {
+          isActuallyOnline = true;
+        }
+      }
+
+      if (isActuallyOnline) {
+        // Enviar petición de autorización al dispositivo original
+        await _client.from('profiles').update({
+          'login_request_status': 'pending',
+          'requesting_device_id': deviceId,
+          'login_request_at': DateTime.now().toIso8601String(),
+        }).eq('id', res.user!.id);
+
+        // Esperar respuesta vía Realtime (máximo 1 minuto)
+        final completer = Completer<bool>();
+        final subscription = _client
+            .from('profiles')
+            .stream(primaryKey: ['id'])
+            .eq('id', res.user!.id)
+            .listen((data) {
+              if (data.isNotEmpty) {
+                final status = data.first['login_request_status'];
+                if (status == 'approved') completer.complete(true);
+                if (status == 'denied') completer.complete(false);
+              }
+            });
+
+        final approved = await completer.future.timeout(
+          const Duration(minutes: 1),
+          onTimeout: () => false,
+        );
+        subscription.cancel();
+
+        if (!approved) {
+          await _client.auth.signOut();
+          return null;
+        }
+      }
+
+      // Login exitoso o autorizado: Actualizar perfil como activo y online
       await _client.from('profiles').update({
         'active_device_id': deviceId,
         'last_active_at': DateTime.now().toIso8601String(),
-        'email': res.user!.email, // Sincronizar email por si no se guardó en el trigger
+        'email': res.user!.email,
+        'is_online': true,
+        'login_request_status': null,
+        'requesting_device_id': null,
       }).eq('id', res.user!.id);
+
+      // Guardar credenciales para auto-login inteligente
+      await StorageService.saveCredentials(emailToUse, password);
 
       return _toUser(res.user);
     } on sb.AuthException {
@@ -129,6 +183,9 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
         'last_active_at': DateTime.now().toIso8601String(),
       }).eq('id', res.user!.id);
 
+      // Guardar credenciales para auto-login inteligente
+      await StorageService.saveCredentials(email.trim().toLowerCase(), password);
+
       return _toUser(res.user);
     } on sb.AuthException {
       return null;
@@ -139,6 +196,14 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
 
   @override
   Future<void> logout() async {
+    final user = _client.auth.currentUser;
+    if (user != null) {
+      await _client.from('profiles').update({
+        'is_online': false,
+        'login_request_status': null,
+      }).eq('id', user.id);
+    }
+    await StorageService.setAutoLoginEnabled(false);
     await _client.auth.signOut();
   }
 
@@ -230,5 +295,55 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
   Future<void> deleteUser(String id) async {
     // Sólo admins pueden borrar usuarios. Usamos una Function de Supabase.
     await _client.from('profiles').delete().eq('id', id);
+  }
+
+  @override
+  Future<void> updateOnlineStatus(bool isOnline) async {
+    final user = _client.auth.currentUser;
+    if (user != null) {
+      await _client.from('profiles').update({
+        'is_online': isOnline,
+        'last_active_at': DateTime.now().toIso8601String(),
+      }).eq('id', user.id);
+    }
+  }
+
+  @override
+  Future<bool> sendRecoveryOtp(String email) async {
+    try {
+      await _client.auth.signInWithOtp(email: email.trim().toLowerCase());
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> verifyRecoveryOtp(String email, String token) async {
+    try {
+      final res = await _client.auth.verifyOTP(
+        email: email.trim().toLowerCase(),
+        token: token.trim(),
+        type: sb.OtpType.email,
+      );
+
+      if (res.user != null) {
+        final deviceId = await _getDeviceId();
+        // Al verificar exitosamente, forzamos el cierre de la sesión online anterior
+        await _client.from('profiles').update({
+          'active_device_id': deviceId,
+          'last_active_at': DateTime.now().toIso8601String(),
+          'email': res.user!.email,
+          'is_online': true,
+          'login_request_status': null,
+          'requesting_device_id': null,
+        }).eq('id', res.user!.id);
+        
+        return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 }

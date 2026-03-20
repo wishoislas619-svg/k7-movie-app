@@ -5,6 +5,7 @@ import '../providers/category_provider.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../domain/entities/category.dart';
 import 'edit_movie_page.dart';
+import 'admin_popular_movies_page.dart';
 
 class AdminMoviePage extends ConsumerWidget {
   const AdminMoviePage({super.key});
@@ -24,6 +25,13 @@ class AdminMoviePage extends ConsumerWidget {
           style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.star_border, color: Color(0xFF00A3FF)),
+            onPressed: () => Navigator.push(
+              context, 
+              MaterialPageRoute(builder: (_) => const AdminPopularMoviesPage())
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.white70),
             onPressed: () => ref.read(authStateProvider.notifier).logout(),

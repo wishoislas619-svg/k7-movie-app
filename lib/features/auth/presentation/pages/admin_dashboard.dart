@@ -21,7 +21,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
     const AdminCategoriesPage(),
     const AdminSeriesPage(),
     const AdminSeriesCategoriesPage(),
-    const AdminPopularMoviesPage(),
     const AdminUsersPage(),
   ];
 
@@ -65,11 +64,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
               icon: Icon(Icons.format_list_bulleted),
               activeIcon: Icon(Icons.format_list_bulleted),
               label: 'CAT. SERIES',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.star_outline),
-              activeIcon: Icon(Icons.star),
-              label: 'POPULARES',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.people_outline),

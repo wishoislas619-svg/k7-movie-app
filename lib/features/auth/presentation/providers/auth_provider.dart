@@ -102,4 +102,20 @@ class AuthController extends StateNotifier<User?> {
       return false;
     }
   }
+
+  Future<void> updateOnlineStatus(bool isOnline) async {
+    await _repository.updateOnlineStatus(isOnline);
+  }
+
+  Future<bool> sendRecoveryOtp(String email) async {
+    return await _repository.sendRecoveryOtp(email);
+  }
+
+  Future<bool> verifyRecoveryOtp(String email, String token) async {
+    final success = await _repository.verifyRecoveryOtp(email, token);
+    if (success) {
+      state = await _repository.getCurrentUser();
+    }
+    return success;
+  }
 }

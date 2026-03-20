@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
 import 'register_page.dart';
+import '../../../../core/services/storage_service.dart';
 
 class LoginPage extends ConsumerStatefulWidget {
   const LoginPage({super.key});
@@ -15,6 +16,30 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   final _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkAutoLogin());
+  }
+
+  Future<void> _checkAutoLogin() async {
+    final isEnabled = await StorageService.isAutoLoginEnabled();
+    if (!isEnabled) return;
+
+    final email = await StorageService.getStoredEmail();
+    final password = await StorageService.getStoredPassword();
+
+    if (email != null && password != null) {
+      if (mounted) {
+        setState(() {
+          _emailController.text = email;
+          _passwordController.text = password;
+        });
+        _login();
+      }
+    }
+  }
 
   void _login() async {
     // Hide keyboard
@@ -326,10 +351,143 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Próximamente...")));
               },
               child: const Text('¿OLVIDASTE TU CONTRASEÑA?', style: TextStyle(color: Colors.white38, fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
+            ),
+            
+            const SizedBox(height: 10),
+            
+            // Perdiste tu dispositivo
+            TextButton(
+              onPressed: () => _showRecoveryDialog(),
+              child: const Text('¿PERDISTE TU DISPOSITIVO?', style: TextStyle(color: Color(0xFF00A3FF), fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
             )
           ],
         ),
       ),
+    );
+  }
+
+  void _showRecoveryDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        final emailController = TextEditingController(text: _emailController.text.contains('@') ? _emailController.text.trim() : '');
+        final codeController = TextEditingController();
+        bool isSending = false;
+
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF08080B),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20), side: const BorderSide(color: Color(0xFF00A3FF), width: 0.5)),
+              title: const Text('RECUPERAR ACCESO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Ingresa el correo de tu cuenta (del dispositivo perdido):',
+                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: emailController,
+                      keyboardType: TextInputType.emailAddress,
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: 'ejemplo@correo.com',
+                        hintStyle: const TextStyle(color: Colors.white10),
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.05),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                        prefixIcon: const Icon(Icons.email, color: Colors.white24, size: 18),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Enviaremos un código de 6 dígitos a este correo:',
+                      style: TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: codeController,
+                      keyboardType: TextInputType.number,
+                      maxLength: 6,
+                      style: const TextStyle(color: Colors.white, fontSize: 24, letterSpacing: 8),
+                      textAlign: TextAlign.center,
+                      decoration: InputDecoration(
+                        hintText: '000000',
+                        hintStyle: const TextStyle(color: Colors.white10),
+                        counterText: '',
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.05),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      ),
+                      onChanged: (val) => setModalState(() {}),
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      '¿No tienes acceso al correo? Contáctanos:',
+                      style: TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Contactando al 7792282959 vía WhatsApp...")));
+                      },
+                      child: const Text('WhatsApp: 7792282959', style: TextStyle(color: Colors.greenAccent, fontSize: 12)),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('CANCELAR', style: TextStyle(color: Colors.white38)),
+                ),
+                ElevatedButton(
+                  onPressed: isSending ? null : () async {
+                    final email = emailController.text.trim();
+                    final code = codeController.text.trim();
+
+                    if (email.isEmpty || !email.contains('@')) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Ingresa un correo válido")));
+                      return;
+                    }
+
+                    if (code.length < 6) {
+                      setModalState(() => isSending = true);
+                      final success = await ref.read(authStateProvider.notifier).sendRecoveryOtp(email);
+                      setModalState(() => isSending = false);
+                      
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(success ? "Código enviado" : "Error al enviar código"))
+                        );
+                      }
+                    } else {
+                      setModalState(() => isSending = true);
+                      final success = await ref.read(authStateProvider.notifier).verifyRecoveryOtp(email, code);
+                      setModalState(() => isSending = false);
+                      
+                      if (success) {
+                        if (mounted) {
+                          Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("¡Cuenta recuperada!")));
+                        }
+                      } else {
+                        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Código inválido o expirado")));
+                      }
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF)),
+                  child: Text(isSending ? '...' : (codeController.text.length < 6 ? 'ENVIAR CÓDIGO' : 'VERIFICAR')),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 

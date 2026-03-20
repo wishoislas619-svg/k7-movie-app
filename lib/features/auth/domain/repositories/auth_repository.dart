@@ -14,4 +14,7 @@ abstract class AuthRepository {
   Future<List<User>> getUsers();
   Future<void> updateUser(User user, {String? password});
   Future<void> deleteUser(String id);
+  Future<void> updateOnlineStatus(bool isOnline);
+  Future<bool> sendRecoveryOtp(String email);
+  Future<bool> verifyRecoveryOtp(String email, String token);
 }
