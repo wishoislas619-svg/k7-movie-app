@@ -88,7 +88,7 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
         await _client.from('profiles').update({
           'login_request_status': 'pending',
           'requesting_device_id': deviceId,
-          'login_request_at': DateTime.now().toIso8601String(),
+          'login_request_at': DateTime.now().toUtc().toIso8601String(),
         }).eq('id', res.user!.id);
 
         // Esperar respuesta vía Realtime (máximo 1 minuto)
@@ -120,7 +120,7 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
       // Login exitoso o autorizado: Actualizar perfil como activo y online
       await _client.from('profiles').update({
         'active_device_id': deviceId,
-        'last_active_at': DateTime.now().toIso8601String(),
+        'last_active_at': DateTime.now().toUtc().toIso8601String(),
         'email': res.user!.email,
         'is_online': true,
         'login_request_status': null,
@@ -180,7 +180,7 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
         'username': username.trim(),
         'email': email.trim().toLowerCase(),
         'active_device_id': deviceId,
-        'last_active_at': DateTime.now().toIso8601String(),
+        'last_active_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('id', res.user!.id);
 
       // Guardar credenciales para auto-login inteligente
@@ -230,23 +230,43 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
       return null;
     }
 
-    // 2. Verificar inactividad (2 horas)
-    final lastActiveStr = profile['last_active_at'] as String?;
-    if (lastActiveStr != null) {
-      final lastActive = DateTime.parse(lastActiveStr);
-      final diff = DateTime.now().difference(lastActive);
-      if (diff.inHours >= 2) {
-        await _client.auth.signOut();
-        return null;
+    // Sesión válida — intentar actualizar timestamp de última actividad inmediatamente
+    try {
+      final lastActiveDate = DateTime.now().toUtc();
+      await _client.from('profiles').update({
+        'last_active_at': lastActiveDate.toIso8601String(),
+        'active_device_id': deviceId,
+      }).eq('id', sbUser.id);
+
+      // Ahora verificamos la inactividad pero comparando con el dato que TRAÍA el perfil antes del update.
+      // Si el dato anterior era muy viejo (> 2 horas), permitimos que siga SOLO si la sesión es nueva.
+      // Pero mejor aún: si logramos actualizar el campo 'last_active_at' hoy, significa que el usuario está interactuando.
+      final lastActiveStr = profile['last_active_at'] as String?;
+      if (lastActiveStr != null) {
+        final lastActive = DateTime.parse(lastActiveStr).toUtc();
+        final inactivityDiff = lastActiveDate.difference(lastActive);
+        
+        // Si el usuario estuvo inactivo por más de 2 horas (históricamente),
+        // pero hemos logrado conectarnos ahora, permitimos que la sesión continúe 
+        // solo si estamos refrescando el estado.
+        // Pero para cumplir con el requisito estricto de cerrar sesión tras 2h:
+        if (inactivityDiff.inHours >= 2) {
+           // EXCEPCIÓN: Si la sesión de Supabase empezó hace menos de 1 minuto, NO cerramos (es una recuperación fresca)
+           // Sin embargo, Supabase no nos da el 'createdAt' de la sesión de forma simple.
+           // Usaremos el authStateProvider.state como indicador, pero aquí no tenemos acceso a Riverpod.
+           
+           // Decisión: Si la inactividad es de más de 2 horas, cerramos sesión PARA LOGIN NORMAL.
+           // Para recuperación de contraseña, el AuthController hará el reset ANTES de que esto estalle si es posible.
+           
+           await _client.auth.signOut();
+           return null;
+        }
       }
+      return _toUser(sbUser);
+    } catch (_) {
+      // Si el update falla (ej. sin internet o perfil no encontrado), tratamos como sesión inválida
+      return null;
     }
-
-    // Sesión válida — actualizar timestamp de última actividad
-    await _client.from('profiles').update({
-      'last_active_at': DateTime.now().toIso8601String(),
-    }).eq('id', sbUser.id);
-
-    return _toUser(sbUser);
   }
 
   // Llamar cada vez que el usuario interactúa con la app
@@ -254,7 +274,7 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
     final user = _client.auth.currentUser;
     if (user == null) return;
     await _client.from('profiles').update({
-      'last_active_at': DateTime.now().toIso8601String(),
+      'last_active_at': DateTime.now().toUtc().toIso8601String(),
     }).eq('id', user.id);
   }
 
@@ -277,17 +297,23 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
 
   @override
   Future<void> updateUser(User user, {String? password}) async {
-    // Actualizar datos en el perfil
-    await _client.from('profiles').update({
-      'first_name': user.firstName,
-      'last_name': user.lastName,
-      'username': user.username,
-      'email': user.email,
-    }).eq('id', user.id);
-
-    // Si se cambia la contraseña, actualizarla en Supabase Auth
+    // 1. Si se cambia la contraseña, actualizarla primero en Supabase Auth
     if (password != null && password.isNotEmpty) {
       await _client.auth.updateUser(sb.UserAttributes(password: password));
+    }
+
+    // 2. Intentar actualizar datos en el perfil
+    try {
+      await _client.from('profiles').upsert({
+        'id': user.id,
+        'first_name': user.firstName,
+        'last_name': user.lastName,
+        'username': user.username,
+        'email': user.email,
+        'last_active_at': DateTime.now().toUtc().toIso8601String(),
+      });
+    } catch (_) {
+      // Ignoramos errores menores en el perfil si la contraseña ya se actualizó
     }
   }
 
@@ -303,7 +329,7 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
     if (user != null) {
       await _client.from('profiles').update({
         'is_online': isOnline,
-        'last_active_at': DateTime.now().toIso8601String(),
+        'last_active_at': DateTime.now().toUtc().toIso8601String(),
       }).eq('id', user.id);
     }
   }
@@ -311,7 +337,7 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
   @override
   Future<bool> sendRecoveryOtp(String email) async {
     try {
-      await _client.auth.signInWithOtp(email: email.trim().toLowerCase());
+      await _client.auth.resetPasswordForEmail(email.trim().toLowerCase());
       return true;
     } catch (_) {
       return false;
@@ -324,20 +350,19 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
       final res = await _client.auth.verifyOTP(
         email: email.trim().toLowerCase(),
         token: token.trim(),
-        type: sb.OtpType.email,
+        type: sb.OtpType.recovery,
       );
 
       if (res.user != null) {
         final deviceId = await _getDeviceId();
-        // Al verificar exitosamente, forzamos el cierre de la sesión online anterior
-        await _client.from('profiles').update({
+        // Al verificar exitosamente (recovery), aseguramos que exista el perfil
+        await _client.from('profiles').upsert({
+          'id': res.user!.id,
           'active_device_id': deviceId,
-          'last_active_at': DateTime.now().toIso8601String(),
+          'last_active_at': DateTime.now().toUtc().toIso8601String(),
           'email': res.user!.email,
           'is_online': true,
-          'login_request_status': null,
-          'requesting_device_id': null,
-        }).eq('id', res.user!.id);
+        });
         
         return true;
       }

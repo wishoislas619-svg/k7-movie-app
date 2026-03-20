@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide User;
 import '../../domain/repositories/auth_repository.dart';
 import '../../domain/entities/user.dart';
 import '../../../../providers.dart';
@@ -113,9 +114,44 @@ class AuthController extends StateNotifier<User?> {
 
   Future<bool> verifyRecoveryOtp(String email, String token) async {
     final success = await _repository.verifyRecoveryOtp(email, token);
-    if (success) {
-      state = await _repository.getCurrentUser();
-    }
+    // No actualizamos el state aquí para evitar que el AuthWrapper redirija al Home
+    // antes de que el usuario pueda escribir su nueva contraseña.
     return success;
+  }
+
+  Future<bool> resetPassword(String newPassword) async {
+    // Si no hay perfil cargado (state es null), pero Supabase dice que hay un usuario autenticado,
+    // intentamos resetear la contraseña directamente vía repository.
+    final currentUserData = state ?? await _repository.getCurrentUser();
+    
+    // Si sigue siendo null, intentamos crear un usuario básico solo para el reset
+    User? tempUser = currentUserData;
+    if (tempUser == null) {
+       // Intento de último recurso: ¿Hay sesión activa en el cliente?
+       if (_repository is AuthRepositorySupabaseImpl) {
+          final sbUser = Supabase.instance.client.auth.currentUser;
+          if (sbUser != null) {
+            tempUser = User(
+              id: sbUser.id,
+              firstName: '',
+              lastName: '',
+              email: sbUser.email ?? '',
+              username: '',
+              role: 'user',
+            );
+          }
+       }
+    }
+
+    if (tempUser == null) return false;
+
+    try {
+      await _repository.updateUser(tempUser, password: newPassword);
+      // Tras el reset, intentamos recargar el estado real
+      state = await _repository.getCurrentUser();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 }

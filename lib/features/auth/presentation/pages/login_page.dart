@@ -346,10 +346,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
             
             // Forgot Password
             TextButton(
-              onPressed: () {
-                // TODO: Implement forgot password
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Próximamente...")));
-              },
+              onPressed: () => _showForgotPasswordDialog(),
               child: const Text('¿OLVIDASTE TU CONTRASEÑA?', style: TextStyle(color: Colors.white38, fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
             ),
             
@@ -363,6 +360,130 @@ class _LoginPageState extends ConsumerState<LoginPage> {
           ],
         ),
       ),
+    );
+  }
+
+  void _showForgotPasswordDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        final emailController = TextEditingController(text: _emailController.text.contains('@') ? _emailController.text.trim() : '');
+        final codeController = TextEditingController();
+        final passController = TextEditingController();
+        final confirmPassController = TextEditingController();
+        
+        int step = 1; // 1: Email, 2: OTP, 3: New Password
+        bool isLoading = false;
+
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF08080B),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20), side: const BorderSide(color: Color(0xFF00A3FF), width: 0.5)),
+              title: Text(
+                step == 1 ? 'RECUPERAR CONTRASEÑA' : (step == 2 ? 'VERIFICAR CÓDIGO' : 'NUEVA CONTRASEÑA'),
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (step == 1) ...[
+                      const Text('Ingresa tu correo para recibir un código de recuperación:', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: emailController,
+                        keyboardType: TextInputType.emailAddress,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: _dialogInputDecoration('ejemplo@correo.com', Icons.email),
+                      ),
+                    ] else if (step == 2) ...[
+                      Text('Ingresa el código de 6 dígitos enviado a ${emailController.text}:', style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: codeController,
+                        keyboardType: TextInputType.number,
+                        maxLength: 6,
+                        style: const TextStyle(color: Colors.white, fontSize: 24, letterSpacing: 8),
+                        textAlign: TextAlign.center,
+                        decoration: _dialogInputDecoration('000000', null).copyWith(counterText: ''),
+                      ),
+                    ] else ...[
+                      const Text('Ingresa tu nueva contraseña para completar el proceso:', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: passController,
+                        obscureText: true,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: _dialogInputDecoration('Nueva contraseña', Icons.lock),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: confirmPassController,
+                        obscureText: true,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: _dialogInputDecoration('Confirmar contraseña', Icons.lock_outline),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('CANCELAR', style: TextStyle(color: Colors.white38)),
+                ),
+                ElevatedButton(
+                  onPressed: isLoading ? null : () async {
+                    if (step == 1) {
+                      if (!emailController.text.contains('@')) return;
+                      setModalState(() => isLoading = true);
+                      final ok = await ref.read(authStateProvider.notifier).sendRecoveryOtp(emailController.text.trim());
+                      setModalState(() { isLoading = false; if (ok) step = 2; });
+                    } else if (step == 2) {
+                      if (codeController.text.length < 6) return;
+                      setModalState(() => isLoading = true);
+                      final ok = await ref.read(authStateProvider.notifier).verifyRecoveryOtp(emailController.text.trim(), codeController.text.trim());
+                      setModalState(() { isLoading = false; if (ok) step = 3; });
+                      if (!ok && mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Código inválido")));
+                    } else {
+                      if (passController.text.isEmpty || passController.text != confirmPassController.text) {
+                         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Las contraseñas no coinciden")));
+                         return;
+                      }
+                      setModalState(() => isLoading = true);
+                      final ok = await ref.read(authStateProvider.notifier).resetPassword(passController.text.trim());
+                      setModalState(() => isLoading = false);
+                      
+                      if (ok && mounted) {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("¡Contraseña actualizada correctamente!")));
+                      } else {
+                        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Error al actualizar contraseña")));
+                      }
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF)),
+                  child: Text(isLoading ? '...' : (step == 3 ? 'ACTUALIZAR' : 'CONTINUAR')),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  InputDecoration _dialogInputDecoration(String hint, IconData? icon) {
+    return InputDecoration(
+      hintText: hint,
+      hintStyle: const TextStyle(color: Colors.white10),
+      filled: true,
+      fillColor: Colors.white.withOpacity(0.05),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+      prefixIcon: icon != null ? Icon(icon, color: Colors.white24, size: 18) : null,
     );
   }
 
@@ -386,29 +507,16 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Ingresa el correo de tu cuenta (del dispositivo perdido):',
-                      style: TextStyle(color: Colors.white70, fontSize: 13),
-                    ),
+                    const Text('Ingresa el correo de tu cuenta (del dispositivo perdido):', style: TextStyle(color: Colors.white70, fontSize: 13)),
                     const SizedBox(height: 12),
                     TextField(
                       controller: emailController,
                       keyboardType: TextInputType.emailAddress,
                       style: const TextStyle(color: Colors.white, fontSize: 14),
-                      decoration: InputDecoration(
-                        hintText: 'ejemplo@correo.com',
-                        hintStyle: const TextStyle(color: Colors.white10),
-                        filled: true,
-                        fillColor: Colors.white.withOpacity(0.05),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                        prefixIcon: const Icon(Icons.email, color: Colors.white24, size: 18),
-                      ),
+                      decoration: _dialogInputDecoration('ejemplo@correo.com', Icons.email),
                     ),
                     const SizedBox(height: 20),
-                    const Text(
-                      'Enviaremos un código de 6 dígitos a este correo:',
-                      style: TextStyle(color: Colors.white38, fontSize: 11),
-                    ),
+                    const Text('Enviaremos un código de 6 dígitos a este correo:', style: TextStyle(color: Colors.white38, fontSize: 11)),
                     const SizedBox(height: 12),
                     TextField(
                       controller: codeController,
@@ -416,25 +524,12 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                       maxLength: 6,
                       style: const TextStyle(color: Colors.white, fontSize: 24, letterSpacing: 8),
                       textAlign: TextAlign.center,
-                      decoration: InputDecoration(
-                        hintText: '000000',
-                        hintStyle: const TextStyle(color: Colors.white10),
-                        counterText: '',
-                        filled: true,
-                        fillColor: Colors.white.withOpacity(0.05),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                      ),
-                      onChanged: (val) => setModalState(() {}),
+                      decoration: _dialogInputDecoration('000000', null).copyWith(counterText: ''),
                     ),
                     const SizedBox(height: 20),
-                    const Text(
-                      '¿No tienes acceso al correo? Contáctanos:',
-                      style: TextStyle(color: Colors.white38, fontSize: 11),
-                    ),
+                    const Text('¿No tienes acceso al correo? Contáctanos:', style: TextStyle(color: Colors.white38, fontSize: 11)),
                     TextButton(
-                      onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Contactando al 7792282959 vía WhatsApp...")));
-                      },
+                      onPressed: () {}, // WhatsApp link
                       child: const Text('WhatsApp: 7792282959', style: TextStyle(color: Colors.greenAccent, fontSize: 12)),
                     ),
                   ],
@@ -447,37 +542,15 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                 ),
                 ElevatedButton(
                   onPressed: isSending ? null : () async {
-                    final email = emailController.text.trim();
-                    final code = codeController.text.trim();
-
-                    if (email.isEmpty || !email.contains('@')) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Ingresa un correo válido")));
-                      return;
-                    }
-
-                    if (code.length < 6) {
+                    if (codeController.text.length < 6) {
                       setModalState(() => isSending = true);
-                      final success = await ref.read(authStateProvider.notifier).sendRecoveryOtp(email);
+                      await ref.read(authStateProvider.notifier).sendRecoveryOtp(emailController.text.trim());
                       setModalState(() => isSending = false);
-                      
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text(success ? "Código enviado" : "Error al enviar código"))
-                        );
-                      }
                     } else {
                       setModalState(() => isSending = true);
-                      final success = await ref.read(authStateProvider.notifier).verifyRecoveryOtp(email, code);
+                      final ok = await ref.read(authStateProvider.notifier).verifyRecoveryOtp(emailController.text.trim(), codeController.text.trim());
                       setModalState(() => isSending = false);
-                      
-                      if (success) {
-                        if (mounted) {
-                          Navigator.pop(context);
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("¡Cuenta recuperada!")));
-                        }
-                      } else {
-                        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Código inválido o expirado")));
-                      }
+                      if (ok && mounted) Navigator.pop(context);
                     }
                   },
                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF)),
@@ -503,7 +576,6 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   }
 }
 
-// Re-using the Logo Painter for the geometric shape
 class K7LogoPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
