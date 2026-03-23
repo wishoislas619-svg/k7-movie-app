@@ -12,6 +12,9 @@
         android:label="movie_app"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-3088460333344148~5150082687"/>
         <service
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:exported="false"

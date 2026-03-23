@@ -1,3 +1,6 @@
+import 'package:movie_app/core/services/ad_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uuid/uuid.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
@@ -69,6 +72,12 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
 }
 
 class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
+  // --- Monetización ---
+  bool _isAdVerified = false;
+  bool _isLoadingAd = false;
+  String? _adError;
+  bool _isMidrollShown = false;
+
   VideoPlayerController? _controller;
   bool _isLoading = true;
   String? _errorMessage;
@@ -122,6 +131,167 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     super.initState();
     _currentOption = widget.videoOptions.first;
     
+    // Auto landscape mode
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+
+    _checkAdRequirement();
+  }
+
+  Future<void> _checkAdRequirement() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+    
+    final role = user.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
+    if (role == 'admin' || role == 'uservip') {
+      _startPlayback();
+      return;
+    }
+
+    if (mounted) setState(() => _isLoadingAd = true);
+
+    try {
+      final ticketId = const Uuid().v4();
+      await Supabase.instance.client.from('ad_tickets').insert({
+        'id': ticketId,
+        'user_id': user.id,
+        'media_type': widget.mediaType,
+        'media_id': widget.mediaId,
+      });
+
+      print('--- [AD_DEBUG] TICKET_ID: $ticketId ---');
+      AdService.showRewardedAd(
+        ticketId: ticketId,
+        onAdWatched: (String completedTicketId) => _pollVerification(completedTicketId),
+        onAdFailed: (String error) {
+          if (mounted) {
+            setState(() {
+              _isLoadingAd = false;
+              _adError = error;
+            });
+            _pollVerification(ticketId);
+          }
+        },
+        onAdDismissedIncomplete: () {
+          if (mounted) {
+            setState(() {
+              _isLoadingAd = false;
+              _adError = 'Cancelaste el anuncio. Debes verlo completo para desbloquear el video.';
+            });
+          }
+        },
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingAd = false;
+          _adError = 'Error generando el ticket de sesión publicitaria.';
+        });
+      }
+    }
+  }
+
+  Future<void> _pollVerification(String ticketId) async {
+    int retries = 15; // Un poco más de paciencia (30 seg total)
+    while (retries > 0) {
+      if (!mounted) return;
+      try {
+        final response = await Supabase.instance.client.functions.invoke(
+          'secure-video-link',
+          body: {
+            'ticket_id': ticketId,
+            'media_type': widget.mediaType,
+            'media_id': widget.mediaId,
+          },
+        );
+
+        if (response.status == 200) {
+          if (mounted) {
+            setState(() {
+              _isAdVerified = true;
+              _isLoadingAd = false;
+              _adError = null;
+            });
+            if (_isMidrollShown) {
+              _controller?.play();
+            } else {
+              _startPlayback();
+            }
+          }
+          return;
+        }
+      } catch (e) {
+        // 403 suele significar "Aun no validado por AdMob"
+        if (e is FunctionException && e.status == 403) {
+          retries--;
+          if (retries == 0) return; // Se rinde pero deja el mensaje de error anterior
+          await Future.delayed(const Duration(seconds: 2));
+        } else {
+          return; // Error fatal, paramos polling
+        }
+      }
+    }
+  }
+
+  Future<void> _showMidrollAd() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user != null) {
+      final role = user.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
+      if (role == 'admin' || role == 'uservip') return;
+    }
+    
+    _isMidrollShown = true;
+    _controller?.pause();
+    
+    if (mounted) {
+      setState(() {
+         _isAdVerified = false;
+         _isLoadingAd = true;
+      });
+    }
+
+    try {
+      final ticketId = const Uuid().v4();
+      await Supabase.instance.client.from('ad_tickets').insert({
+        'id': ticketId,
+        'user_id': user?.id,
+        'media_type': widget.mediaType,
+        'media_id': widget.mediaId,
+      });
+
+      AdService.showRewardedAd(
+        ticketId: ticketId,
+        onAdWatched: (String ct) => _pollVerification(ct),
+        onAdFailed: (String error) {
+          if (mounted) {
+            setState(() {
+              _isLoadingAd = false;
+              _adError = error;
+            });
+            _pollVerification(ticketId);
+          }
+        },
+        onAdDismissedIncomplete: () {
+          if (mounted) {
+            setState(() {
+              _isLoadingAd = false;
+              _adError = 'Cancelaste el anuncio. Debes verlo completo para continuar.';
+            });
+          }
+        },
+      );
+    } catch(e) {
+      if (mounted) setState(() { _isLoadingAd = false; _adError = 'Error de red en medio del video.'; });
+    }
+  }
+
+  void _startPlayback() {
+    _isAdVerified = true;
     if (widget.isLocal) {
       _isLoading = false;
       _isWebViewExtracting = false;
@@ -134,12 +304,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     _initSettings();
     _startProgressTimer();
     
-    // Auto landscape mode
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
-
     _checkSavedSubtitle();
     WakelockPlus.enable();
   }
@@ -490,6 +654,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     
     final posSecs = _controller!.value.position.inSeconds;
     
+    if (widget.mediaType == 'movie' && !_isMidrollShown && _controller!.value.duration.inSeconds > 0) {
+      if (posSecs >= _controller!.value.duration.inSeconds / 2) {
+        _showMidrollAd();
+        return;
+      }
+    }
+
     bool showSkip = false;
     bool showCredits = false;
 
@@ -623,8 +794,51 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         child: Stack(
           alignment: Alignment.center,
           children: [
+            if (!_isAdVerified)
+              Container(
+                color: Colors.black,
+                width: double.infinity,
+                height: double.infinity,
+                child: Center(
+                  child: _isLoadingAd
+                     ? const Column(
+                         mainAxisAlignment: MainAxisAlignment.center,
+                         children: [
+                           CircularProgressIndicator(color: Color(0xFF00A3FF)),
+                           SizedBox(height: 16),
+                           Text('Cargando anuncio para el video...', style: TextStyle(color: Colors.white70))
+                         ],
+                       )
+                     : Column(
+                         mainAxisAlignment: MainAxisAlignment.center,
+                         children: [
+                           const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+                           const SizedBox(height: 16),
+                           Text(_adError ?? 'Error desconocido', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
+                           const SizedBox(height: 24),
+                           ElevatedButton(
+                             onPressed: () {
+                               if (!_isMidrollShown) {
+                                 _checkAdRequirement();
+                               } else {
+                                 _showMidrollAd();
+                               }
+                             },
+                             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF)),
+                             child: const Text('Reintentar', style: TextStyle(color: Colors.white)),
+                           ),
+                           const SizedBox(height: 8),
+                           TextButton(
+                             onPressed: () => Navigator.pop(context),
+                             child: const Text('Salir', style: TextStyle(color: Colors.white54)),
+                           )
+                         ],
+                       ),
+                ),
+              ),
+
             // Video Player
-            if (_errorMessage == null && _controller != null && _controller!.value.isInitialized)
+            if (_isAdVerified && _errorMessage == null && _controller != null && _controller!.value.isInitialized)
               Center(
                 child: AspectRatio(
                   aspectRatio: _controller!.value.aspectRatio,

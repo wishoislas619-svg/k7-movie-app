@@ -15,12 +15,22 @@ import 'core/services/notification_service.dart';
 import 'core/services/foreground_service.dart';
 import 'features/auth/domain/entities/user.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: ".env");
   await NotificationService.init();
   await ForegroundService.init();
+  await MobileAds.instance.initialize();
+  
+  // Agregamos tus IDs de prueba para que veas anuncios mientras desarrollas
+  MobileAds.instance.updateRequestConfiguration(
+    RequestConfiguration(testDeviceIds: [
+      "D4401ED3C883864E683E2DD7DD51098B", // ID de los logs
+      "52ed6a0e-d948-41d1-b035-3ed4dbd701cf" // Tu Advertising ID real
+    ]),
+  );
 
   // Inicializar Supabase (reemplaza SQLite + SharedPreferences para auth)
   await SupabaseService.initialize();

@@ -596,7 +596,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       width: 140,
       margin: const EdgeInsets.only(right: 16),
       child: GestureDetector(
-        onTap: () => _showHistoryOptionsModal(context, item),
+        onTap: () => _launchMedia(context, item, resume: true),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

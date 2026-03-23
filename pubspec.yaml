@@ -61,6 +61,7 @@ dependencies:
   supabase_flutter: ^2.5.0
   device_info_plus: ^11.3.3
   google_sign_in: 6.2.1
+  google_mobile_ads: ^7.0.0
 
 dev_dependencies:
   flutter_test:
