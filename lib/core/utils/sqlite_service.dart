@@ -15,7 +15,7 @@ class SqliteService {
     String path = join(await getDatabasesPath(), 'movie_app.db');
     return await openDatabase(
       path,
-      version: 18,
+      version: 19,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -165,6 +165,9 @@ class SqliteService {
         )
       ''');
     }
+    if (oldVersion < 19) {
+      try { await db.execute('ALTER TABLE watch_history ADD COLUMN videoOptionId TEXT'); } catch (_) {}
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -310,7 +313,8 @@ class SqliteService {
         lastWatchedAt TEXT NOT NULL,
         title TEXT,
         subtitle TEXT,
-        imagePath TEXT
+        imagePath TEXT,
+        videoOptionId TEXT
       )
     ''');
   }

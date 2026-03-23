@@ -19,7 +19,17 @@ import 'package:uuid/uuid.dart';
 
 class SeriesDetailsPage extends ConsumerStatefulWidget {
   final Series series;
-  const SeriesDetailsPage({super.key, required this.series});
+  final String? autoPlayEpisodeId;
+  final String? autoPlayVideoOptionId;
+  final Duration? autoPlayStartPosition;
+
+  const SeriesDetailsPage({
+    super.key,
+    required this.series,
+    this.autoPlayEpisodeId,
+    this.autoPlayVideoOptionId,
+    this.autoPlayStartPosition,
+  });
 
   @override
   ConsumerState<SeriesDetailsPage> createState() => _SeriesDetailsPageState();
@@ -38,7 +48,12 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
   @override
   void initState() {
     super.initState();
-    _loadSeasons();
+    _loadSeasons().then((_) {
+      // Auto-play desde "Continuar Viendo" si se proporcionan parámetros
+      if (widget.autoPlayEpisodeId != null && mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _autoPlayEpisode());
+      }
+    });
     _scrollController.addListener(_onScroll);
   }
 
@@ -81,6 +96,64 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
         _isLoading = false;
       });
     }
+  }
+
+  /// Lanzamiento directo de episodio desde "Continuar Viendo"
+  void _autoPlayEpisode() {
+    if (!mounted || _videoOptions == null) return;
+
+    // Buscar el episodio en todos los mapas de temporadas
+    Episode? targetEp;
+    Season? targetSeason;
+    for (final season in _seasons) {
+      final eps = _episodesMap[season.id] ?? [];
+      final found = eps.cast<Episode?>().firstWhere(
+        (e) => e!.id == widget.autoPlayEpisodeId,
+        orElse: () => null,
+      );
+      if (found != null) {
+        targetEp = found;
+        targetSeason = season;
+        break;
+      }
+    }
+
+    if (targetEp == null || _videoOptions!.isEmpty) return;
+
+    // Elegir la misma opción que el usuario usó o la primera disponible
+    final opt = widget.autoPlayVideoOptionId != null
+        ? _videoOptions!.firstWhere((o) => o.id == widget.autoPlayVideoOptionId, orElse: () => _videoOptions!.first)
+        : _videoOptions!.first;
+
+    // Buscar la url del episodio para esa opción
+    final eUrl = targetEp.urls.firstWhere(
+      (u) => u.optionId == opt.id,
+      orElse: () => targetEp!.urls.first,
+    );
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerPage(
+          movieName: '${widget.series.name} - S${targetSeason?.seasonNumber ?? 1} E${targetEp!.episodeNumber}',
+          mediaId: widget.series.id,
+          episodeId: targetEp!.id,
+          mediaType: 'series',
+          imagePath: widget.series.imagePath,
+          subtitleLabel: 'S${targetSeason?.seasonNumber ?? 1} E${targetEp!.episodeNumber}: ${targetEp!.name}',
+          startPosition: widget.autoPlayStartPosition,
+          videoOptions: [
+            VideoOption(
+              id: targetEp!.id,
+              movieId: widget.series.id,
+              serverImagePath: opt.imagePath,
+              resolution: opt.name,
+              videoUrl: eUrl.url,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _playEpisode(Episode episode, EpisodeUrl eUrl) {

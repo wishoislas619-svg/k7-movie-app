@@ -66,11 +66,55 @@ class DownloadsPage extends ConsumerWidget {
             ),
           ],
         ),
-        body: TabBarView(
-          physics: const NeverScrollableScrollPhysics(),
+        body: Column(
           children: [
-            _buildList(movieDownloads, context, ref),
-            _buildSeriesMapList(seriesDownloads, context, ref),
+            // Guía de descarga
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    const Color(0xFF00A3FF).withOpacity(0.12),
+                    const Color(0xFFD400FF).withOpacity(0.12),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.3)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.info_outline, color: Color(0xFF00A3FF), size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: RichText(
+                      text: const TextSpan(
+                        style: TextStyle(color: Colors.white70, fontSize: 12.5, height: 1.5),
+                        children: [
+                          TextSpan(text: '¿Cómo descargar? ', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          TextSpan(text: 'Entra a una '),
+                          TextSpan(text: 'película o episodio', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.w600)),
+                          TextSpan(text: ', abre el reproductor y presiona el icono '),
+                          TextSpan(text: '⬇ Descargar', style: TextStyle(color: Color(0xFFD400FF), fontWeight: FontWeight.w600)),
+                          TextSpan(text: ' en el enlace de tu preferencia.'),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: TabBarView(
+                physics: const NeverScrollableScrollPhysics(),
+                children: [
+                  _buildList(movieDownloads, context, ref),
+                  _buildSeriesMapList(seriesDownloads, context, ref),
+                ],
+              ),
+            ),
           ],
         ),
       ),

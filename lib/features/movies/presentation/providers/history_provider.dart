@@ -33,6 +33,7 @@ class HistoryNotifier extends StateNotifier<AsyncValue<List<WatchHistory>>> {
     required String title,
     String? subtitle,
     required String imagePath,
+    String? videoOptionId,
   }) async {
     final id = episodeId ?? mediaId;
     final history = WatchHistory(
@@ -46,6 +47,7 @@ class HistoryNotifier extends StateNotifier<AsyncValue<List<WatchHistory>>> {
       title: title,
       subtitle: subtitle,
       imagePath: imagePath,
+      videoOptionId: videoOptionId,
     );
 
     await ref.read(historyRepositoryProvider).saveHistory(history);

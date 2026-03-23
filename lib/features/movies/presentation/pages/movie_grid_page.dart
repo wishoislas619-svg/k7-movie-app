@@ -18,6 +18,8 @@ import 'package:movie_app/features/series/domain/entities/series.dart';
 import 'package:movie_app/features/series/presentation/pages/series_details_page.dart';
 import 'package:movie_app/features/movies/presentation/pages/history_view_all_page.dart';
 import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
+import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
+import 'package:movie_app/providers.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -586,15 +588,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       width: 140,
       margin: const EdgeInsets.only(right: 16),
       child: GestureDetector(
-        onTap: () async {
-          if (item.mediaType == 'movie') {
-             final movie = (ref.read(moviesProvider).value ?? []).firstWhere((m) => m.id == item.mediaId);
-             Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
-          } else {
-             final series = (ref.read(seriesListProvider).value ?? []).firstWhere((s) => s.id == item.mediaId);
-             Navigator.push(context, MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)));
-          }
-        },
+        onTap: () => _launchContinueWatching(context, item),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -719,5 +713,63 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         ],
       ),
     );
+  }
+
+  /// Método factorizado para "Continuar Viendo".
+  /// Lanza el reproductor directamente con el enlace y posición exacta que el usuario tenía.
+  Future<void> _launchContinueWatching(BuildContext context, WatchHistory item) async {
+    final startPos = Duration(milliseconds: item.lastPosition);
+
+    if (item.mediaType == 'movie') {
+      final allOptions = await ref.read(movieRepositoryProvider).getVideoOptions(item.mediaId);
+      if (allOptions.isEmpty) {
+        if (!context.mounted) return;
+        final movie = (ref.read(moviesProvider).value ?? []).firstWhere(
+          (m) => m.id == item.mediaId,
+          orElse: () => throw Exception('Movie not found'),
+        );
+        Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
+        return;
+      }
+
+      // Preferir el enlace que el usuario eligió la última vez
+      final preferredOption = item.videoOptionId != null
+          ? allOptions.firstWhere((o) => o.id == item.videoOptionId, orElse: () => allOptions.first)
+          : allOptions.first;
+
+      if (!context.mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => VideoPlayerPage(
+            movieName: item.title,
+            mediaId: item.mediaId,
+            mediaType: 'movie',
+            imagePath: item.imagePath,
+            videoOptions: [preferredOption, ...allOptions.where((o) => o.id != preferredOption.id)],
+            startPosition: startPos,
+          ),
+        ),
+      );
+    } else {
+      // Series: ir a detalles con parámetros de auto-play si están disponibles
+      if (!context.mounted) return;
+      final series = (ref.read(seriesListProvider).value ?? []).firstWhere(
+        (s) => s.id == item.mediaId,
+        orElse: () => throw Exception('Series not found'),
+      );
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SeriesDetailsPage(
+            series: series,
+            autoPlayEpisodeId: item.episodeId,
+            autoPlayVideoOptionId: item.videoOptionId,
+            autoPlayStartPosition: startPos,
+          ),
+        ),
+      );
+    }
   }
 }

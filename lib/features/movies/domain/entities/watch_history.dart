@@ -9,6 +9,7 @@ class WatchHistory {
   final String title;
   final String? subtitle; // e.g., "S1 E5: Episode Name"
   final String imagePath;
+  final String? videoOptionId; // Enlace/servidor que el usuario eligió
 
   WatchHistory({
     required this.id,
@@ -21,12 +22,14 @@ class WatchHistory {
     required this.title,
     this.subtitle,
     required this.imagePath,
+    this.videoOptionId,
   });
 
   WatchHistory copyWith({
     int? lastPosition,
     int? totalDuration,
     DateTime? lastWatchedAt,
+    String? videoOptionId,
   }) {
     return WatchHistory(
       id: id,
@@ -39,6 +42,7 @@ class WatchHistory {
       title: title,
       subtitle: subtitle,
       imagePath: imagePath,
+      videoOptionId: videoOptionId ?? this.videoOptionId,
     );
   }
 
@@ -54,6 +58,7 @@ class WatchHistory {
       title: map['title'],
       subtitle: map['subtitle'],
       imagePath: map['imagePath'],
+      videoOptionId: map['videoOptionId'],
     );
   }
 
@@ -69,6 +74,7 @@ class WatchHistory {
       'title': title,
       'subtitle': subtitle,
       'imagePath': imagePath,
+      'videoOptionId': videoOptionId,
     };
   }
 }

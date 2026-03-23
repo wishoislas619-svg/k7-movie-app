@@ -30,6 +30,9 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
   final String imagePath;
   final String? subtitleLabel; // e.g. "S1 E5: Episode Name"
 
+  /// Si se provee, el reproductor saltará directamente a esta posición sin preguntar.
+  final Duration? startPosition;
+
   const VideoPlayerPage({
     super.key, 
     required this.movieName, 
@@ -42,6 +45,7 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.subtitleUrl,
     this.isLocal = false,
     this.onVideoStarted,
+    this.startPosition,
   });
 
   @override
@@ -138,12 +142,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       title: widget.movieName.split(' - ').first, // Get base title
       subtitle: widget.subtitleLabel,
       imagePath: widget.imagePath,
+      videoOptionId: _currentOption.id,
     );
   }
 
   Future<void> _checkResume(VideoPlayerController controller) async {
     if (_hasCheckedResume) return;
     _hasCheckedResume = true;
+
+    // Si venimos desde "Continuar Viendo" con posición inyectada, reproducir directo sin diálogo
+    if (widget.startPosition != null && widget.startPosition!.inMilliseconds > 0) {
+      await controller.seekTo(widget.startPosition!);
+      controller.play();
+      return;
+    }
 
     final history = await ref.read(historyProvider.notifier).getProgress(widget.episodeId ?? widget.mediaId);
     
