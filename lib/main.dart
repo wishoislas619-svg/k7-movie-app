@@ -14,6 +14,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/foreground_service.dart';
 import 'features/auth/domain/entities/user.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();

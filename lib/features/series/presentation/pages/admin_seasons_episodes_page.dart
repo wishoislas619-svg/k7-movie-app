@@ -245,54 +245,72 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
     );
 
     if (result != null && result is Map) {
-      final seasonNum = result['seasonNumber'] as int;
-      final extractions = result['episodes'] as List;
-
-      // Find or create Season
-      final repo = ref.read(seriesRepositoryProvider);
-      Season? targetSeason;
       try {
-        targetSeason = _seasons.firstWhere((s) => s.seasonNumber == seasonNum);
-      } catch (_) {
-        targetSeason = Season(
-          id: const Uuid().v4(),
-          seriesId: widget.series.id,
-          name: 'Temporada $seasonNum',
-          seasonNumber: seasonNum,
-        );
-        await repo.addSeason(targetSeason);
-      }
+        final seasonNum = result['seasonNumber'] as int;
+        final List extractions = result['episodes'] as List;
 
-      final existingEps = await repo.getEpisodesForSeason(targetSeason.id);
-
-      int episodeCounter = existingEps.length;
-      for (var scraped in extractions) {
-        Episode? existing;
+        // Find or create Season
+        final repo = ref.read(seriesRepositoryProvider);
+        Season? targetSeason;
         try {
-           existing = existingEps.firstWhere((e) => e.name.toLowerCase() == scraped.title.toLowerCase() || e.url == scraped.url);
-        } catch(_) {}
-
-        if (existing != null) {
-          final currentUrls = List<EpisodeUrl>.from(existing.urls);
-          if (!currentUrls.any((u) => u.url == scraped.url)) {
-            currentUrls.add(EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution));
-            await repo.updateEpisode(existing.copyWith(urls: currentUrls));
-          }
-        } else {
-          episodeCounter++;
-          final newEp = Episode(
+          targetSeason = _seasons.firstWhere((s) => s.seasonNumber == seasonNum);
+        } catch (_) {
+          targetSeason = Season(
             id: const Uuid().v4(),
-            seasonId: targetSeason.id,
-            episodeNumber: episodeCounter,
-            name: 'Capítulo $episodeCounter',
-            url: scraped.url,
-            urls: [EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution)],
+            seriesId: widget.series.id,
+            name: 'Temporada $seasonNum',
+            seasonNumber: seasonNum,
           );
-          await repo.addEpisode(newEp);
+          await repo.addSeason(targetSeason);
+        }
+
+        final existingEps = await repo.getEpisodesForSeason(targetSeason.id);
+
+        int addedCount = 0;
+        int updatedCount = 0;
+        int episodeCounter = existingEps.length;
+
+        for (var scraped in extractions) {
+          Episode? existing;
+          try {
+            existing = existingEps.firstWhere((e) => e.name.toLowerCase() == scraped.title.toLowerCase() || e.url == scraped.url);
+          } catch (_) {}
+
+          if (existing != null) {
+            final currentUrls = List<EpisodeUrl>.from(existing.urls);
+            if (!currentUrls.any((u) => u.url == scraped.url)) {
+              currentUrls.add(EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution));
+              await repo.updateEpisode(existing.copyWith(urls: currentUrls));
+              updatedCount++;
+            }
+          } else {
+            episodeCounter++;
+            final newEp = Episode(
+              id: const Uuid().v4(),
+              seasonId: targetSeason.id,
+              episodeNumber: episodeCounter,
+              name: 'Capítulo $episodeCounter',
+              url: scraped.url,
+              urls: [EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution)],
+            );
+            await repo.addEpisode(newEp);
+            addedCount++;
+          }
+        }
+
+        await _loadData();
+        if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(
+             SnackBar(content: Text('¡Proceso finalizado! Añadidos: $addedCount, Actualizados: $updatedCount'))
+           );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error al guardar mapeo: $e'), backgroundColor: Colors.redAccent)
+          );
         }
       }
-
-      _loadData();
     }
   }
 

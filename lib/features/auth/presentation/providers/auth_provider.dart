@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide User;
 import '../../domain/repositories/auth_repository.dart';
@@ -152,6 +153,18 @@ class AuthController extends StateNotifier<User?> {
       return true;
     } catch (_) {
       return false;
+    }
+  }
+
+  Future<void> signInWithGoogle() async {
+    try {
+      final user = await _repository.signInWithGoogle();
+      if (user != null) {
+        state = user;
+      }
+    } catch (e) {
+      debugPrint('Error Google Sign-In Provider: $e');
+      rethrow;
     }
   }
 }

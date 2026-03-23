@@ -130,7 +130,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                           child: _buildCarousel(popularMovies),
                         ),
                       SliverPadding(
-                        padding: const EdgeInsets.only(top: 20, bottom: 100),
+                        padding: const EdgeInsets.only(top: 0, bottom: 100),
                         sliver: SliverList(
                           delegate: SliverChildListDelegate([
                             if (filteredMovies.isNotEmpty && !_isSearching && _selectedCategoryFilter == null) ...[

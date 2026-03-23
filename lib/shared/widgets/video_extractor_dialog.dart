@@ -70,93 +70,140 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
     return AlertDialog(
       backgroundColor: const Color(0xFF0F0F0F),
       insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 20),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: const Color(0xFF00A3FF).withOpacity(0.2), width: 1.5)
+      ),
       content: SizedBox(
         width: double.maxFinite,
-        height: 500,
+        height: 520,
         child: Column(
           children: [
-            // Status Header
-            Row(
-              children: [
-                const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00A3FF)),
+            // K7 Branding & Status
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [const Color(0xFF00A3FF).withOpacity(0.1), const Color(0xFFD400FF).withOpacity(0.1)],
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    _statusText ?? "Localizando...",
-                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withOpacity(0.05)),
+              ),
+              child: Column(
+                children: [
+                   Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)]),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text('K7', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white)),
+                      ),
+                      const SizedBox(width: 10),
+                      const Text('EXTRACTOR INTELIGENTE', style: TextStyle(letterSpacing: 2, fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF00A3FF)),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          _statusText ?? "Localizando...",
+                          style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            
+            // Hidden WebView (Minimal footprint but active)
+            SizedBox(
+              height: _showWebView ? 180 : 0.1,
+              width: _showWebView ? double.infinity : 0.1,
+              child: Opacity(
+                opacity: _showWebView ? 1.0 : 0.01,
+                child: Container(
+                  margin: const EdgeInsets.only(top: 12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.3)),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(11),
+                    child: InAppWebView(
+                      initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+                      initialSettings: InAppWebViewSettings(
+                        javaScriptEnabled: true,
+                        domStorageEnabled: true,
+                        mediaPlaybackRequiresUserGesture: false,
+                        useShouldInterceptRequest: true,
+                        contentBlockers: _contentBlockers,
+                        javaScriptCanOpenWindowsAutomatically: false,
+                        supportMultipleWindows: false,
+                        useShouldOverrideUrlLoading: true,
+                        userAgent: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+                      ),
+                      onWebViewCreated: (controller) => _webViewController = controller,
+                      onLoadResource: (controller, resource) {
+                        final url = resource.url.toString();
+                        if (_isVideoUrl(url)) _handleFoundVideo(url);
+                      },
+                      shouldInterceptRequest: (controller, request) async {
+                        final url = request.url.toString();
+                        if (_isVideoUrl(url)) _handleFoundVideo(url, customHeaders: request.headers);
+                        return null;
+                      },
+                      onLoadStop: (controller, url) async {
+                         _startSniffingTimer();
+                         _injectNetworkSniffer();
+                         controller.evaluateJavascript(source: _cleanerJs);
+                      },
+                      shouldOverrideUrlLoading: (controller, navigationAction) async {
+                        var uri = navigationAction.request.url;
+                        if (uri != null) {
+                          final initialHost = Uri.parse(widget.url).host;
+                          if (uri.host != initialHost && !uri.host.contains('google') && !uri.host.contains('facebook')) {
+                            return NavigationActionPolicy.CANCEL;
+                          }
+                        }
+                        return NavigationActionPolicy.ALLOW;
+                      },
+                    ),
                   ),
                 ),
-                Text(
-                  "${_foundMedia.length} detectados",
-                  style: const TextStyle(color: Color(0xFF00A3FF), fontSize: 12),
+              ),
+            ),
+            
+            if (!_showWebView)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: TextButton.icon(
+                  onPressed: () => setState(() => _showWebView = true),
+                  icon: const Icon(Icons.visibility_rounded, size: 16, color: Colors.white38),
+                  label: const Text("MOSTRAR NAVEGADOR (SOLO SI ES NECESARIO)", style: TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)),
                 ),
+              ),
+
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text("FLUJOS DETECTADOS", style: TextStyle(color: Color(0xFF00A3FF), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+                Text("${_foundMedia.length} archivos", style: const TextStyle(color: Colors.white24, fontSize: 10)),
               ],
             ),
-            const SizedBox(height: 16),
-            
-            // WebView Container (Responsive)
-            Container(
-              height: 150,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white10),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(11),
-                child: InAppWebView(
-                  initialUrlRequest: URLRequest(url: WebUri(widget.url)),
-                  initialSettings: InAppWebViewSettings(
-                    javaScriptEnabled: true,
-                    domStorageEnabled: true,
-                    mediaPlaybackRequiresUserGesture: false,
-                    useShouldInterceptRequest: true,
-                    contentBlockers: _contentBlockers,
-                    javaScriptCanOpenWindowsAutomatically: false,
-                    supportMultipleWindows: false,
-                    useShouldOverrideUrlLoading: true,
-                    userAgent: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
-                  ),
-                  onWebViewCreated: (controller) => _webViewController = controller,
-                  onLoadResource: (controller, resource) {
-                    final url = resource.url.toString();
-                    if (_isVideoUrl(url)) _handleFoundVideo(url);
-                  },
-                  shouldInterceptRequest: (controller, request) async {
-                    final url = request.url.toString();
-                    if (_isVideoUrl(url)) _handleFoundVideo(url, customHeaders: request.headers);
-                    return null;
-                  },
-                  onLoadStop: (controller, url) async {
-                     _startSniffingTimer();
-                     _injectNetworkSniffer();
-                     controller.evaluateJavascript(source: _cleanerJs);
-                  },
-                  shouldOverrideUrlLoading: (controller, navigationAction) async {
-                    var uri = navigationAction.request.url;
-                    if (uri != null) {
-                      final initialHost = Uri.parse(widget.url).host;
-                      if (uri.host != initialHost && !uri.host.contains('google') && !uri.host.contains('facebook')) {
-                        return NavigationActionPolicy.CANCEL;
-                      }
-                    }
-                    return NavigationActionPolicy.ALLOW;
-                  },
-                ),
-              ),
-            ),
-            
-            const SizedBox(height: 16),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text("ENLACES ENCONTRADOS (Lógica 1DM):", 
-                style: TextStyle(color: Colors.white54, fontSize: 10, letterSpacing: 1.2)),
-            ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             
             // Results List
             Expanded(
@@ -165,13 +212,23 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const CircularProgressIndicator(strokeWidth: 2, color: Colors.white10),
-                        const SizedBox(height: 16),
-                        const Text("Navega o dale PLAY al video...", 
-                          style: TextStyle(color: Colors.white24, fontSize: 13)),
+                         Container(
+                          width: 60,
+                          height: 60,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.1), width: 4),
+                          ),
+                          child: const Center(
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00A3FF)),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        const Text("Analizando protocolos de red...", 
+                          style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.w500)),
                         const SizedBox(height: 4),
-                        const Text("Capturando enlaces de red...", 
-                          style: TextStyle(color: Colors.white10, fontSize: 10)),
+                        const Text("Esto puede tardar unos segundos", 
+                          style: TextStyle(color: Colors.white12, fontSize: 10)),
                       ],
                     ),
                   )
@@ -183,42 +240,40 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
                       return Container(
                         margin: const EdgeInsets.only(bottom: 10),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF1A1A1A),
-                          borderRadius: BorderRadius.circular(12),
+                          color: const Color(0xFF161616),
+                          borderRadius: BorderRadius.circular(16),
                           border: Border.all(color: Colors.white.withOpacity(0.05)),
                         ),
                         child: ListTile(
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           leading: Container(
-                            padding: const EdgeInsets.all(8),
+                            padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
-                              color: isHls ? Colors.orange.withOpacity(0.1) : Colors.blue.withOpacity(0.1),
+                              gradient: LinearGradient(
+                                colors: isHls 
+                                  ? [Colors.orange.withOpacity(0.2), Colors.deepOrange.withOpacity(0.2)]
+                                  : [const Color(0xFF00A3FF).withOpacity(0.2), const Color(0xFFD400FF).withOpacity(0.2)],
+                              ),
                               shape: BoxShape.circle,
                             ),
                             child: Icon(
-                              isHls ? Icons.waves_rounded : Icons.play_circle_filled_rounded, 
+                              isHls ? Icons.waves_rounded : Icons.play_arrow_rounded, 
                               color: isHls ? Colors.orange : const Color(0xFF00A3FF),
-                              size: 20
+                              size: 24
                             ),
                           ),
                           title: Text(
-                             item.qualities.isNotEmpty ? item.qualities.first.resolution : "Video Detectado",
-                             style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                             item.qualities.isNotEmpty ? item.qualities.first.resolution : "Multimedia Detectada",
+                             style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
                           ),
-                          subtitle: Text(
-                            item.videoUrl.split('?').first,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: Colors.white38, fontSize: 10),
+                          subtitle: Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              isHls ? "Streaming Adaptativo (HLS)" : "Archivo Directo (MP4/MKV)",
+                              style: TextStyle(color: isHls ? Colors.orange.withOpacity(0.6) : const Color(0xFF00A3FF).withOpacity(0.6), fontSize: 11),
+                            ),
                           ),
-                          trailing: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              if (item.qualities.first.resolution.contains('MB') || item.qualities.first.resolution.contains('GB'))
-                                const Icon(Icons.stars_rounded, color: Colors.amber, size: 20),
-                              const Icon(Icons.download_for_offline_rounded, color: Color(0xFFD400FF), size: 24),
-                            ],
-                          ),
+                          trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white12, size: 14),
                           onTap: () => Navigator.pop(context, item),
                         ),
                       );
@@ -231,7 +286,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text("CERRAR", style: TextStyle(color: Colors.white54)),
+          child: const Text("CANCELAR", style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
         ),
       ],
     );

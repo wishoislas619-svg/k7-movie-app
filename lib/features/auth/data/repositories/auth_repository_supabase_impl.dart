@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as sb;
 import 'package:flutter/foundation.dart';
+import 'package:google_sign_in/google_sign_in.dart' show GoogleSignIn;
 import '../../domain/entities/user.dart';
 import '../../domain/repositories/auth_repository.dart';
 import '../../../../core/services/supabase_service.dart';
@@ -196,15 +197,24 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
 
   @override
   Future<void> logout() async {
-    final user = _client.auth.currentUser;
-    if (user != null) {
-      await _client.from('profiles').update({
-        'is_online': false,
-        'login_request_status': null,
-      }).eq('id', user.id);
+    try {
+      final user = _client.auth.currentUser;
+      if (user != null) {
+        await _client.from('profiles').update({
+          'is_online': false,
+          'login_request_status': null,
+        }).eq('id', user.id);
+      }
+      await StorageService.setAutoLoginEnabled(false);
+      
+      // Cerrar sesión en Google para poder elegir otra cuenta después
+      await GoogleSignIn().signOut();
+      
+      await _client.auth.signOut();
+    } catch (_) {
+      // Intentar cerrar sesión de todos modos
+      await _client.auth.signOut();
     }
-    await StorageService.setAutoLoginEnabled(false);
-    await _client.auth.signOut();
   }
 
   @override
@@ -369,6 +379,49 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
       return false;
     } catch (_) {
       return false;
+    }
+  }
+
+  @override
+  Future<User?> signInWithGoogle() async {
+    try {
+      final GoogleSignIn googleSignIn = GoogleSignIn(
+        serverClientId: '541436463482-1pic1gbh1sbcl1uojf6i6hg5bdig4glr.apps.googleusercontent.com',
+      );
+      final googleUser = await googleSignIn.signIn();
+      if (googleUser == null) return null;
+
+      final googleAuth = await googleUser.authentication;
+      final accessToken = googleAuth.accessToken;
+      final idToken = googleAuth.idToken;
+
+      if (idToken == null) {
+        throw 'No se pudo obtener el ID Token de Google.';
+      }
+
+      final response = await _client.auth.signInWithIdToken(
+        provider: sb.OAuthProvider.google,
+        idToken: idToken,
+        accessToken: accessToken,
+      );
+
+      if (response.user != null) {
+        final deviceId = await _getDeviceId();
+        await _client.from('profiles').upsert({
+          'id': response.user!.id,
+          'email': response.user!.email,
+          'username': response.user!.email?.split('@')[0] ?? 'user',
+          'is_online': true,
+          'active_device_id': deviceId,
+          'last_active_at': DateTime.now().toUtc().toIso8601String(),
+        });
+
+        return _toUser(response.user);
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Error en Google Sign-In Repositorio: $e');
+      rethrow;
     }
   }
 }

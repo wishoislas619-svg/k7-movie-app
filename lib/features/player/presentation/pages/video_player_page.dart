@@ -591,95 +591,106 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                         ),
                     ],
                   ),
-                ),
               ),
+            ),
 
             // The InAppWebView: Hidden by default, visible ONLY for subtitle scraping or if manually requested
             Offstage(
               offstage: !_isScrapingSubtitles && !_isSwitchingStream,
-              child: Positioned.fill(
-                child: Container(
-                  color: Colors.black,
-                  child: SafeArea(
-                    child: Column(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          color: const Color(0xFF00A3FF),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Row(
-                                children: [
-                                  SizedBox(
-                                    width: 20, height: 20,
-                                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                                  ),
-                                  SizedBox(width: 15),
-                                  Text("Acción Manual / Navegador", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                                ],
+              child: Container(
+                color: Colors.black.withOpacity(0.95),
+                child: SafeArea(
+                  child: Stack(
+                    children: [
+                      // Invisible but active WebView
+                      Positioned(
+                        top: 0, left: 0,
+                        child: SizedBox(
+                          width: 0.1,
+                          height: 0.1,
+                          child: Opacity(
+                            opacity: 0.01,
+                            child: InAppWebView(
+                              initialUrlRequest: URLRequest(url: WebUri(_currentOption.videoUrl)),
+                              initialSettings: InAppWebViewSettings(
+                                javaScriptEnabled: true,
+                                domStorageEnabled: true,
+                                useOnDownloadStart: true,
+                                supportMultipleWindows: true,
+                                javaScriptCanOpenWindowsAutomatically: true,
+                                userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
                               ),
-                              Row(
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.refresh, color: Colors.white),
-                                    onPressed: () => _webViewController?.reload(),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.close, color: Colors.white),
-                                    onPressed: () {
-                                      setState(() {
-                                        _isScrapingSubtitles = false;
-                                        _isSwitchingStream = false;
-                                        _controller?.play();
-                                      });
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                        Expanded(
-                          child: InAppWebView(
-                            initialUrlRequest: URLRequest(url: WebUri(_currentOption.videoUrl)),
-                            initialSettings: InAppWebViewSettings(
-                              javaScriptEnabled: true,
-                              domStorageEnabled: true,
-                              useOnDownloadStart: true,
-                              supportMultipleWindows: true,
-                              javaScriptCanOpenWindowsAutomatically: true,
-                              userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-                            ),
-                            onWebViewCreated: (controller) => _webViewController = controller,
-                            onLoadStop: (controller, url) async {
-                              // Automatically extract video source if we need it
-                              if (_isWebViewExtracting || _isSwitchingStream) {
-                                _runScraper();
-                              }
-                            },
-                            onDownloadStartRequest: (controller, downloadRequest) async {
-                              final url = downloadRequest.url.toString();
-                              if (url.contains(".srt") || url.contains(".vtt") || url.contains("/download/")) {
-                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Descarga detectada...")));
-                                try {
-                                  final response = await http.get(Uri.parse(url), headers: {
-                                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-                                  }).timeout(const Duration(seconds: 20));
-
-                                  if (response.statusCode == 200) {
-                                    await _saveAndLoadLocalSubtitle(response.bodyBytes);
-                                    _closeScraperSuccess();
-                                  }
-                                } catch (e) {
-                                  print("Download error: $e");
+                              onWebViewCreated: (controller) => _webViewController = controller,
+                              onLoadStop: (controller, url) async {
+                                if (_isWebViewExtracting || _isSwitchingStream) {
+                                  _runScraper();
                                 }
-                              }
-                            },
+                              },
+                              onDownloadStartRequest: (controller, downloadRequest) async {
+                                final url = downloadRequest.url.toString();
+                                if (url.contains(".srt") || url.contains(".vtt") || url.contains("/download/")) {
+                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Descarga detectada...")));
+                                  try {
+                                    final response = await http.get(Uri.parse(url), headers: {
+                                      "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                                    }).timeout(const Duration(seconds: 20));
+
+                                    if (response.statusCode == 200) {
+                                      await _saveAndLoadLocalSubtitle(response.bodyBytes);
+                                      _closeScraperSuccess();
+                                    }
+                                  } catch (e) {
+                                    print("Download error: $e");
+                                  }
+                                }
+                              },
+                            ),
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                      
+                      // K7 Modern Scanning UI
+                      Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(colors: [Color(0xFF00A3FF), Color(0xFFD400FF)]),
+                                borderRadius: BorderRadius.circular(16),
+                                boxShadow: [BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.4), blurRadius: 20)],
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text('K7', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 22)),
+                                  SizedBox(width: 12),
+                                  Text('ANÁLISIS INTELIGENTE', style: TextStyle(color: Colors.white, fontSize: 13, letterSpacing: 2, fontWeight: FontWeight.w600)),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 40),
+                            const CircularProgressIndicator(color: Color(0xFF00A3FF), strokeWidth: 3),
+                            const SizedBox(height: 25),
+                            const Text("Buscando la mejor calidad y subtítulos...", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500)),
+                            const SizedBox(height: 8),
+                            const Text("Este proceso es automático y seguro", style: TextStyle(color: Colors.white38, fontSize: 12)),
+                            const SizedBox(height: 50),
+                            TextButton(
+                              onPressed: () {
+                                setState(() {
+                                  _isScrapingSubtitles = false;
+                                  _isSwitchingStream = false;
+                                  _controller?.play();
+                                });
+                              },
+                              child: const Text("CANCELAR", style: TextStyle(color: Colors.white24, fontWeight: FontWeight.bold)),
+                            )
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),

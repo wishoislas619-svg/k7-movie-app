@@ -235,15 +235,20 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
 
   Widget _buildMetaIcon(IconData icon, String text, {Color color = Colors.grey}) {
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         Icon(icon, color: color, size: 18),
         const SizedBox(width: 8),
-        Text(
-          text,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
+        Flexible(
+          child: Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       ],
@@ -383,27 +388,6 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  if (curSeries.rating > 0)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                      margin: const EdgeInsets.only(bottom: 8),
-                                      decoration: BoxDecoration(
-                                        color: Colors.amber.withOpacity(0.2),
-                                        borderRadius: BorderRadius.circular(8),
-                                        border: Border.all(color: Colors.amber.withOpacity(0.5)),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.star_rounded, color: Colors.amber, size: 16),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            curSeries.rating.toStringAsFixed(1),
-                                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
                                   Text(
                                     curSeries.name,
                                     style: const TextStyle(
@@ -421,11 +405,37 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                   const SizedBox(height: 8),
-                                  if (curSeries.year != null)
-                                    Text(
-                                      curSeries.year!,
-                                      style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 14, fontWeight: FontWeight.w500),
-                                    ),
+                                  Row(
+                                    children: [
+                                      if (curSeries.year != null)
+                                        Text(
+                                          curSeries.year!,
+                                          style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 14, fontWeight: FontWeight.w500),
+                                        ),
+                                      if (curSeries.year != null && curSeries.rating > 0)
+                                        const SizedBox(width: 12),
+                                      if (curSeries.rating > 0)
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: Colors.amber.withOpacity(0.2),
+                                            borderRadius: BorderRadius.circular(8),
+                                            border: Border.all(color: Colors.amber.withOpacity(0.5)),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(Icons.star_rounded, color: Colors.amber, size: 16),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                curSeries.rating.toStringAsFixed(1),
+                                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                    ],
+                                  ),
                                 ],
                               ),
                             ),
@@ -457,17 +467,16 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                       Row(
                         children: [
                           _buildMetaIcon(Icons.remove_red_eye, '${curSeries.views} Views'),
-                          const SizedBox(width: 20),
-                          _buildMetaIcon(Icons.star, '${curSeries.rating.toStringAsFixed(1)} Rating', color: Colors.amber),
                           if (curSeries.categoryId != null) ...[
                             const SizedBox(width: 20),
-                            ref.watch(seriesCategoriesProvider).when(
+                            Expanded(child: ref.watch(seriesCategoriesProvider).when(
                               data: (categories) {
                                 final category = categories.firstWhere((c) => c.id == curSeries.categoryId, orElse: () => SeriesCategory(id: '', name: 'Serie'));
                                 return _buildMetaIcon(Icons.live_tv_outlined, category.name);
                               },
                               loading: () => const SizedBox.shrink(),
                               error: (_, __) => const SizedBox.shrink(),
+                             ),
                             ),
                           ],
                         ],

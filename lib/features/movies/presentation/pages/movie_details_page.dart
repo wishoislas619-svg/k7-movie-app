@@ -164,20 +164,89 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                   bottom: 25,
                   left: 20,
                   right: 20,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Text(
-                        currentMovie.name,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 34,
-                          fontWeight: FontWeight.bold,
-                          shadows: [
-                            Shadow(
-                              color: Colors.black45,
-                              offset: Offset(0, 2),
-                              blurRadius: 10,
+                      // Poster Image on the left
+                      Hero(
+                        tag: 'poster_${currentMovie.id}',
+                        child: Container(
+                          width: 120,
+                          height: 180,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.3), blurRadius: 15, spreadRadius: 1),
+                            ],
+                            border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.5), width: 1.5),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(11),
+                            child: Image.network(
+                              currentMovie.imagePath,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => Container(color: Colors.white12, child: const Icon(Icons.movie, color: Colors.white24)),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 20),
+                      // Title and Rating Card
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              currentMovie.name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 28,
+                                fontWeight: FontWeight.bold,
+                                height: 1.1,
+                                shadows: [
+                                  Shadow(
+                                    color: Colors.black45,
+                                    offset: Offset(0, 2),
+                                    blurRadius: 10,
+                                  ),
+                                  Shadow(color: Color(0xFF00A3FF), blurRadius: 10),
+                                ],
+                              ),
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                if (currentMovie.year != null)
+                                  Text(
+                                    currentMovie.year!,
+                                    style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 14, fontWeight: FontWeight.w500),
+                                  ),
+                                if (currentMovie.year != null && currentRating > 0)
+                                  const SizedBox(width: 12),
+                                if (currentRating > 0)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: Colors.amber.withOpacity(0.2),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: Colors.amber.withOpacity(0.5)),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.star_rounded, color: Colors.amber, size: 16),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          currentRating.toStringAsFixed(1),
+                                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                              ],
                             ),
                           ],
                         ),
@@ -215,9 +284,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                     children: [
                       _buildMetaIcon(Icons.remove_red_eye, '${currentMovie.views} Views'),
                       const SizedBox(width: 20),
-                      _buildMetaIcon(Icons.star, '${currentRating.toStringAsFixed(1)} Rating', color: Colors.amber),
-                      const SizedBox(width: 20),
-                      _buildMetaIcon(Icons.movie_creation_outlined, category.name),
+                      Expanded(child: _buildMetaIcon(Icons.movie_creation_outlined, category.name)),
                     ],
                   ),
                   const SizedBox(height: 25),
@@ -400,15 +467,20 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
 
   Widget _buildMetaIcon(IconData icon, String text, {Color color = Colors.grey}) {
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         Icon(icon, color: color, size: 18),
         const SizedBox(width: 8),
-        Text(
-          text,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
+        Flexible(
+          child: Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       ],

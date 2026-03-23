@@ -45,6 +45,20 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     // Hide keyboard
     FocusScope.of(context).unfocus();
 
+    final password = _passwordController.text;
+    if (password.length < 6) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('La contraseña debe tener al menos 6 caracteres', style: TextStyle(color: Colors.white)),
+            backgroundColor: Colors.redAccent.withOpacity(0.8),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() => _isLoading = true);
     final success = await ref.read(authStateProvider.notifier).login(
       _emailController.text.trim(),
@@ -62,6 +76,28 @@ class _LoginPageState extends ConsumerState<LoginPage> {
           ),
         );
       }
+    }
+  }
+
+  void _loginWithGoogle() async {
+    FocusScope.of(context).unfocus();
+    setState(() => _isLoading = true);
+    try {
+      await ref.read(authStateProvider.notifier).signInWithGoogle();
+    } catch (e) {
+       // Log info useful for debugging
+       debugPrint('Error en login con Google: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al iniciar con Google: $e', style: const TextStyle(color: Colors.white)),
+            backgroundColor: Colors.redAccent.withOpacity(0.8),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -90,15 +126,15 @@ class _LoginPageState extends ConsumerState<LoginPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 10),
                   // App Logo
                   _buildLogo(),
-                  const SizedBox(height: 50),
+                  const SizedBox(height: 10),
                   
                   // Login Card
                   _buildLoginCard(),
                   
-                  const SizedBox(height: 60),
+                  const SizedBox(height: 40),
                   
                   // Bottom Icons
                   Row(
@@ -175,12 +211,12 @@ class _LoginPageState extends ConsumerState<LoginPage> {
           color: const Color(0xFF08080B), // Very dark background
           borderRadius: BorderRadius.circular(23),
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 25),
         child: Column(
           children: [
             // Title
             const Text(
-              'BIENVENIDO DE\nVUELTA',
+              'BIENVENIDO',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.white,
@@ -190,89 +226,30 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                 height: 1.2,
               ),
             ),
-            const SizedBox(height: 40),
+            const SizedBox(height: 16),
             
             // Username/Email Field
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  "NOMBRE DE USUARIO O CORREO",
-                  style: TextStyle(color: Color(0xFF00A3FF), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _emailController,
-                  keyboardType: TextInputType.emailAddress,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: InputDecoration(
-                    hintText: 'Introduce tu usuario',
-                    hintStyle: const TextStyle(color: Colors.white38),
-                    filled: true,
-                    fillColor: Colors.white.withOpacity(0.04),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: const BorderSide(color: Color(0xFF00A3FF)),
-                    ),
-                  ),
-                ),
-              ],
+            TextField(
+              controller: _emailController,
+              keyboardType: TextInputType.emailAddress,
+              style: const TextStyle(color: Colors.white),
+              decoration: _buildInputDecoration('NOMBRE DE USUARIO O CORREO', Icons.person_outline),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
             
             // Password Field
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  "CONTRASEÑA",
-                  style: TextStyle(color: Color(0xFF00A3FF), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+            TextField(
+              controller: _passwordController,
+              obscureText: _obscurePassword,
+              style: const TextStyle(color: Colors.white),
+              decoration: _buildInputDecoration('CONTRASEÑA', Icons.lock_outline).copyWith(
+                suffixIcon: IconButton(
+                  icon: Icon(_obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined, color: Colors.white24, size: 20),
+                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                 ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _passwordController,
-                  obscureText: _obscurePassword,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: InputDecoration(
-                    hintText: '••••••••',
-                    hintStyle: const TextStyle(color: Colors.white38),
-                    filled: true,
-                    fillColor: Colors.white.withOpacity(0.04),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: const BorderSide(color: Color(0xFF00A3FF)),
-                    ),
-                    suffixIcon: IconButton(
-                      icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off, color: Colors.white38),
-                      onPressed: () {
-                        setState(() {
-                          _obscurePassword = !_obscurePassword;
-                        });
-                      },
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
-            const SizedBox(height: 36),
+            const SizedBox(height: 24),
             
             // Entrar Button
             Container(
@@ -314,7 +291,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                 ),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             
             // Crear Cuenta Button
             Container(
@@ -329,7 +306,6 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                 color: Colors.transparent,
                 child: InkWell(
                   onTap: () {
-                    // Navigate to register view, or implement slide animation
                     Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterPage()));
                   },
                   borderRadius: BorderRadius.circular(12),
@@ -342,7 +318,40 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                 ),
               ),
             ),
-            const SizedBox(height: 30),
+
+            const SizedBox(height: 12),
+
+            // Iniciar Sesión con Google
+            Container(
+              width: double.infinity,
+              height: 55,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                color: Colors.white,
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: _isLoading ? null : _loginWithGoogle,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Text(
+                        'CONTINUAR CON GOOGLE',
+                        style: TextStyle(color: Colors.black, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1),
+                      ),
+                      const SizedBox(width: 12),
+                      Image.network(
+                        'https://static.vecteezy.com/system/resources/previews/022/613/027/non_2x/google-icon-logo-symbol-free-png.png',
+                        height: 24,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
             
             // Forgot Password
             TextButton(
@@ -397,7 +406,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                         controller: emailController,
                         keyboardType: TextInputType.emailAddress,
                         style: const TextStyle(color: Colors.white),
-                        decoration: _dialogInputDecoration('ejemplo@correo.com', Icons.email),
+                        decoration: _dialogInputDecoration('CORREO ELECTRÓNICO', Icons.email),
                       ),
                     ] else if (step == 2) ...[
                       Text('Ingresa el código de 6 dígitos enviado a ${emailController.text}:', style: const TextStyle(color: Colors.white70, fontSize: 13)),
@@ -408,7 +417,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                         maxLength: 6,
                         style: const TextStyle(color: Colors.white, fontSize: 24, letterSpacing: 8),
                         textAlign: TextAlign.center,
-                        decoration: _dialogInputDecoration('000000', null).copyWith(counterText: ''),
+                        decoration: _dialogInputDecoration('CÓDIGO (000000)', null).copyWith(counterText: ''),
                       ),
                     ] else ...[
                       const Text('Ingresa tu nueva contraseña para completar el proceso:', style: TextStyle(color: Colors.white70, fontSize: 13)),
@@ -417,14 +426,14 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                         controller: passController,
                         obscureText: true,
                         style: const TextStyle(color: Colors.white),
-                        decoration: _dialogInputDecoration('Nueva contraseña', Icons.lock),
+                        decoration: _dialogInputDecoration('NUEVA CONTRASEÑA', Icons.lock),
                       ),
                       const SizedBox(height: 12),
                       TextField(
                         controller: confirmPassController,
                         obscureText: true,
                         style: const TextStyle(color: Colors.white),
-                        decoration: _dialogInputDecoration('Confirmar contraseña', Icons.lock_outline),
+                        decoration: _dialogInputDecoration('CONFIRMAR CONTRASEÑA', Icons.lock_outline),
                       ),
                     ],
                   ],
@@ -476,14 +485,33 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     );
   }
 
-  InputDecoration _dialogInputDecoration(String hint, IconData? icon) {
+  InputDecoration _buildInputDecoration(String hint, IconData icon) {
     return InputDecoration(
       hintText: hint,
-      hintStyle: const TextStyle(color: Colors.white10),
+      prefixIcon: Icon(icon, color: const Color(0xFF00A3FF).withOpacity(0.6), size: 20),
+      hintStyle: const TextStyle(color: Colors.white24, fontSize: 12, letterSpacing: 1.2, fontWeight: FontWeight.bold),
       filled: true,
-      fillColor: Colors.white.withOpacity(0.05),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-      prefixIcon: icon != null ? Icon(icon, color: Colors.white24, size: 18) : null,
+      fillColor: Colors.white.withOpacity(0.03),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: BorderSide(color: Colors.white.withOpacity(0.06)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: BorderSide(color: Colors.white.withOpacity(0.06)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: const BorderSide(color: Color(0xFF00A3FF), width: 1.5),
+      ),
+    );
+  }
+
+  InputDecoration _dialogInputDecoration(String hint, IconData? icon) {
+    return _buildInputDecoration(hint, icon ?? Icons.code).copyWith(
+      fillColor: Colors.white.withOpacity(0.04),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
     );
   }
 
@@ -507,26 +535,24 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Ingresa el correo de tu cuenta (del dispositivo perdido):', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                    const Text('Correo del dispositivo perdido:', style: TextStyle(color: Colors.white70, fontSize: 13)),
                     const SizedBox(height: 12),
                     TextField(
                       controller: emailController,
                       keyboardType: TextInputType.emailAddress,
                       style: const TextStyle(color: Colors.white, fontSize: 14),
-                      decoration: _dialogInputDecoration('ejemplo@correo.com', Icons.email),
+                      decoration: _dialogInputDecoration('CORREO ELECTRÓNICO', Icons.email),
                     ),
-                    const SizedBox(height: 20),
-                    const Text('Enviaremos un código de 6 dígitos a este correo:', style: TextStyle(color: Colors.white38, fontSize: 11)),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 16),
                     TextField(
                       controller: codeController,
                       keyboardType: TextInputType.number,
                       maxLength: 6,
                       style: const TextStyle(color: Colors.white, fontSize: 24, letterSpacing: 8),
                       textAlign: TextAlign.center,
-                      decoration: _dialogInputDecoration('000000', null).copyWith(counterText: ''),
+                      decoration: _dialogInputDecoration('CÓDIGO', null).copyWith(counterText: ''),
                     ),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 16),
                     const Text('¿No tienes acceso al correo? Contáctanos:', style: TextStyle(color: Colors.white38, fontSize: 11)),
                     TextButton(
                       onPressed: () {}, // WhatsApp link

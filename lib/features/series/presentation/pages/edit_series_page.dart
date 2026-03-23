@@ -157,7 +157,12 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
               TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR', style: TextStyle(color: Colors.white54))),
               ElevatedButton(
                 onPressed: () async {
-                  if (resController.text.isNotEmpty && urlController.text.isNotEmpty) {
+                  if (resController.text.isEmpty || urlController.text.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Por favor, rellena al menos la Resolución y la URL')));
+                    return;
+                  }
+                  
+                  try {
                     final newOption = SeriesOption(
                       id: option?.id ?? const Uuid().v4(),
                       seriesId: widget.series!.id,
@@ -173,6 +178,10 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
                     }
                     _loadOptions();
                     if (context.mounted) Navigator.pop(context);
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al guardar la opción: $e')));
+                    }
                   }
                 },
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF), foregroundColor: Colors.white),

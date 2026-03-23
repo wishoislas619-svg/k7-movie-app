@@ -233,13 +233,16 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
 
   @override
   Future<void> addSeriesOption(SeriesOption option) async {
-    await _client.from('series_options').insert({
+    final row = {
       'series_id': option.seriesId,
       'server_image_path': option.serverImagePath,
       'resolution': option.resolution,
       'video_url': option.videoUrl,
       'language': option.language,
-    });
+      'label': option.resolution, // Mapeamos resolución a 'label' para evitar el error not-null
+    };
+    if (option.id.isNotEmpty && option.id.length == 36) row['id'] = option.id;
+    await _client.from('series_options').insert(row);
   }
 
   @override
@@ -250,6 +253,7 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
       'resolution': option.resolution,
       'video_url': option.videoUrl,
       'language': option.language,
+      'label': option.resolution, // Mapeamos resolución a 'label' para evitar el error not-null
     }).eq('id', option.id);
   }
 
