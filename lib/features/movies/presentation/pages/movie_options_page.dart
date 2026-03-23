@@ -41,6 +41,7 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
           mediaId: widget.movie.id,
           mediaType: 'movie',
           imagePath: widget.movie.imagePath,
+          creditsStartTime: widget.movie.creditsStartTime,
         ),
       ),
     );

@@ -139,7 +139,15 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                               ref.watch(historyProvider).when(
                                 data: (history) {
                                   if (history.isEmpty) return const SizedBox.shrink();
-                                  return _buildHistorySection(context, history.take(20).toList());
+
+                                  final Map<String, WatchHistory> uniqueHistory = {};
+                                  for (var item in history) {
+                                    if (!uniqueHistory.containsKey(item.mediaId)) {
+                                      uniqueHistory[item.mediaId] = item;
+                                    }
+                                  }
+                                  
+                                  return _buildHistorySection(context, uniqueHistory.values.take(20).toList());
                                 },
                                 loading: () => const SizedBox.shrink(),
                                 error: (_, __) => const SizedBox.shrink(),
@@ -588,7 +596,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       width: 140,
       margin: const EdgeInsets.only(right: 16),
       child: GestureDetector(
-        onTap: () => _launchContinueWatching(context, item),
+        onTap: () => _showHistoryOptionsModal(context, item),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -630,11 +638,11 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                 height: 4,
                                 width: double.infinity,
                                 color: Colors.white24,
-                                child: UnconstrainedBox(
-                                  alignment: Alignment.centerLeft,
+                                alignment: Alignment.centerLeft,
+                                child: FractionallySizedBox(
+                                  widthFactor: progress.clamp(0.0, 1.0),
                                   child: Container(
                                     height: 4,
-                                    width: 140 * progress.clamp(0.0, 1.0),
                                     decoration: const BoxDecoration(
                                       gradient: LinearGradient(colors: [Color(0xFF00A3FF), Color(0xFFD400FF)]),
                                     ),
@@ -715,22 +723,92 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     );
   }
 
-  /// Método factorizado para "Continuar Viendo".
-  /// Lanza el reproductor directamente con el enlace y posición exacta que el usuario tenía.
-  Future<void> _launchContinueWatching(BuildContext context, WatchHistory item) async {
-    final startPos = Duration(milliseconds: item.lastPosition);
+  void _showHistoryOptionsModal(BuildContext context, WatchHistory item) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF141414),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (BuildContext ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 10, bottom: 20),
+                height: 4,
+                width: 40,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.play_circle_fill, color: Color(0xFF00A3FF)),
+                title: const Text('Reanudar reproducción', style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _launchMedia(context, item, resume: true);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.replay, color: Colors.white70),
+                title: const Text('Ver desde el principio', style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _launchMedia(context, item, resume: false);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.info_outline, color: Colors.white70),
+                title: const Text('Selecionar Enlace', style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _goToDetails(context, item);
+                },
+              ),
+              const SizedBox(height: 10),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _goToDetails(BuildContext context, WatchHistory item) {
+    if (item.mediaType == 'movie') {
+      final movie = (ref.read(moviesProvider).value ?? []).firstWhere(
+        (m) => m.id == item.mediaId,
+        orElse: () => throw Exception('Movie not found'),
+      );
+      Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
+    } else {
+      final series = (ref.read(seriesListProvider).value ?? []).firstWhere(
+        (s) => s.id == item.mediaId,
+        orElse: () => throw Exception('Series not found'),
+      );
+      Navigator.push(context, MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)));
+    }
+  }
+
+  /// Método factorizado para iniciar el contenido.
+  Future<void> _launchMedia(BuildContext context, WatchHistory item, {required bool resume}) async {
+    final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
 
     if (item.mediaType == 'movie') {
       final allOptions = await ref.read(movieRepositoryProvider).getVideoOptions(item.mediaId);
       if (allOptions.isEmpty) {
         if (!context.mounted) return;
-        final movie = (ref.read(moviesProvider).value ?? []).firstWhere(
-          (m) => m.id == item.mediaId,
-          orElse: () => throw Exception('Movie not found'),
-        );
-        Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
+        _goToDetails(context, item);
         return;
       }
+
+      // Fetch the movie to get creditsStartTime
+      final movie = (ref.read(moviesProvider).value ?? []).firstWhere(
+        (m) => m.id == item.mediaId,
+        orElse: () => throw Exception('Movie not found'),
+      );
 
       // Preferir el enlace que el usuario eligió la última vez
       final preferredOption = item.videoOptionId != null
@@ -748,11 +826,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             imagePath: item.imagePath,
             videoOptions: [preferredOption, ...allOptions.where((o) => o.id != preferredOption.id)],
             startPosition: startPos,
+            creditsStartTime: movie.creditsStartTime,
           ),
         ),
       );
     } else {
-      // Series: ir a detalles con parámetros de auto-play si están disponibles
+      // Series: ir a detalles con parámetros de auto-play
       if (!context.mounted) return;
       final series = (ref.read(seriesListProvider).value ?? []).firstWhere(
         (s) => s.id == item.mediaId,

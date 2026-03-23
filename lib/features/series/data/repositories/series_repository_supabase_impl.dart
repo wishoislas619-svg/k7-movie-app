@@ -70,6 +70,10 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
       name: r['name'] as String,
       url: r['video_url'] as String? ?? '',
       urls: urls,
+      introStartTime: r['intro_start_time'] as int?,
+      introEndTime: r['intro_end_time'] as int?,
+      creditsStartTime: r['credits_start_time'] as int?,
+      isSeriesFinale: r['is_series_finale'] as bool? ?? false,
     );
   }
 
@@ -79,6 +83,10 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
         'name': e.name,
         'video_url': e.url,
         'urls': json.encode(e.urls.map((u) => u.toMap()).toList()),
+        'intro_start_time': e.introStartTime,
+        'intro_end_time': e.introEndTime,
+        'credits_start_time': e.creditsStartTime,
+        'is_series_finale': e.isSeriesFinale,
       };
 
   SeriesOption _optionFromRow(Map<String, dynamic> r) => SeriesOption(

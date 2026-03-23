@@ -57,12 +57,14 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E1E),
         title: Text(season == null ? 'Nueva Temporada' : 'Editar Temporada', style: const TextStyle(color: Colors.white)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
-            TextField(controller: numCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Número', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
-          ],
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
+              TextField(controller: numCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Número', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
+            ],
+          ),
         ),
         actions: [
           if (season != null)
@@ -99,9 +101,14 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
     final currentEps = _episodesCache[season.id] ?? [];
     final nameCtrl = TextEditingController(text: episode?.name ?? 'Capítulo ${currentEps.length + 1}');
     final numCtrl = TextEditingController(text: episode?.episodeNumber.toString() ?? '${currentEps.length + 1}');
+    final introStartCtrl = TextEditingController(text: episode?.introStartTime?.toString() ?? '');
+    final introEndCtrl = TextEditingController(text: episode?.introEndTime?.toString() ?? '');
+    final creditsCtrl = TextEditingController(text: episode?.creditsStartTime?.toString() ?? '');
+
     
     // Copy existing urls or start empty
     List<EpisodeUrl> tempUrls = episode != null ? List.from(episode.urls) : [];
+    bool isFinale = episode?.isSeriesFinale ?? false;
 
     showDialog(
       context: context,
@@ -116,6 +123,28 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
                 children: [
                   TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
                   TextField(controller: numCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Número', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
+                  const SizedBox(height: 16),
+                  const Text('Tiempos (segundos)', style: TextStyle(color: Color(0xFFD400FF), fontWeight: FontWeight.bold, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  TextField(controller: introStartCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Inicio Intro (seg)', labelStyle: TextStyle(color: Colors.white54, fontSize: 11)), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  TextField(controller: introEndCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Fin Intro (seg)', labelStyle: TextStyle(color: Colors.white54, fontSize: 11)), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  TextField(controller: creditsCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Créditos/Outro (seg)', labelStyle: TextStyle(color: Colors.white54, fontSize: 11)), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  const SizedBox(height: 16),
+                  Container(
+                    decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(8)),
+                    child: CheckboxListTile(
+                      title: const Text('Es el Capítulo Final de la Serie', style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.bold)),
+                      subtitle: const Text('Activa esto para lanzar el menú de recomendaciones exclusivas al finalizar.', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                      value: isFinale,
+                      activeColor: Colors.amber,
+                      checkColor: Colors.black,
+                      onChanged: (val) {
+                        setState(() => isFinale = val ?? false);
+                      },
+                    ),
+                  ),
                   const SizedBox(height: 16),
                   const Text('Servidores / Enlaces', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
@@ -192,7 +221,24 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
                     episodeNumber: int.tryParse(numCtrl.text) ?? currentEps.length + 1,
                     url: tempUrls.isNotEmpty ? tempUrls.first.url : '',
                     urls: tempUrls,
+                    introStartTime: int.tryParse(introStartCtrl.text),
+                    introEndTime: int.tryParse(introEndCtrl.text),
+                    creditsStartTime: int.tryParse(creditsCtrl.text),
+                    isSeriesFinale: isFinale,
                   );
+
+                  if (isFinale) {
+                    // Update all other episodes in cache to false to keep singularity
+                    final repo = ref.read(seriesRepositoryProvider);
+                    for (var sEps in _episodesCache.values) {
+                      for (var ep in sEps) {
+                        if (ep.isSeriesFinale && ep.id != newEp.id) {
+                          await repo.updateEpisode(ep.copyWith(isSeriesFinale: false, introStartTime: ep.introStartTime, introEndTime: ep.introEndTime, creditsStartTime: ep.creditsStartTime)); // Need to provide these so they don't get overwritten wrongly if the copyWith does strange null passing, though our copyWith handles it.
+                        }
+                      }
+                    }
+                  }
+
                   if (episode == null) await ref.read(seriesRepositoryProvider).addEpisode(newEp);
                   else await ref.read(seriesRepositoryProvider).updateEpisode(newEp);
                   _loadData();
@@ -349,7 +395,8 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
                   children: [
                     Text(season.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                     const Spacer(),
-                    IconButton(icon: const Icon(Icons.edit, size: 18, color: Colors.blueAccent), onPressed: () => _showAddSeasonDialog(season)),
+                    IconButton(icon: const Icon(Icons.timer_outlined, size: 18, color: Color(0xFFD400FF)), tooltip: 'Aplicar Tiempos a Toda la Temporada', onPressed: () => _showBulkTimeUpdateDialog(season)),
+                    IconButton(icon: const Icon(Icons.edit, size: 18, color: Colors.blueAccent), tooltip: 'Editar Temporada', onPressed: () => _showAddSeasonDialog(season)),
                   ]
                 ),
                 collapsedIconColor: Colors.white,
@@ -371,6 +418,58 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
               );
             },
           ),
+    );
+  }
+
+  void _showBulkTimeUpdateDialog(Season season) {
+    final introStartCtrl = TextEditingController();
+    final introEndCtrl = TextEditingController();
+    final creditsCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Aplicar Tiempos Masivamente', style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Aplica los mismos segundos a todos los episodios de esta temporada (útil si los intros/outros duran igual en todos).', style: TextStyle(color: Colors.white54, fontSize: 13)),
+              const SizedBox(height: 16),
+              TextField(controller: introStartCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Inicio Intro (seg)', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
+              TextField(controller: introEndCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Fin Intro (seg)', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
+              TextField(controller: creditsCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Créditos/Outro (seg)', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () async {
+              final iStart = int.tryParse(introStartCtrl.text);
+              final iEnd = int.tryParse(introEndCtrl.text);
+              final cStart = int.tryParse(creditsCtrl.text);
+              
+              final eps = _episodesCache[season.id] ?? [];
+              final repo = ref.read(seriesRepositoryProvider);
+              
+              for (var ep in eps) {
+                final updatedEp = ep.copyWith(
+                  introStartTime: iStart ?? ep.introStartTime,
+                  introEndTime: iEnd ?? ep.introEndTime,
+                  creditsStartTime: cStart ?? ep.creditsStartTime,
+                );
+                await repo.updateEpisode(updatedEp);
+              }
+              
+              _loadData();
+              if (mounted) Navigator.pop(context);
+            },
+            child: const Text('Aplicar a todos'),
+          )
+        ],
+      ),
     );
   }
 }

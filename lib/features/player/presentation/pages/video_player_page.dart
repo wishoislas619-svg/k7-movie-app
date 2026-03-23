@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:screen_brightness/screen_brightness.dart';
@@ -15,6 +16,14 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:movie_app/features/movies/presentation/providers/history_provider.dart';
 import 'package:movie_app/features/movies/domain/entities/watch_history.dart';
+import 'package:movie_app/providers.dart';
+import 'package:movie_app/features/series/domain/entities/series.dart';
+import 'package:movie_app/features/series/domain/entities/season.dart';
+import 'package:movie_app/features/series/domain/entities/episode.dart';
+import 'package:movie_app/features/series/domain/entities/series_option.dart';
+import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
+import 'package:movie_app/features/movies/presentation/pages/movie_details_page.dart';
+import 'package:movie_app/features/series/presentation/pages/series_details_page.dart';
 
 class VideoPlayerPage extends ConsumerStatefulWidget {
   final String movieName;
@@ -33,6 +42,10 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
   /// Si se provee, el reproductor saltará directamente a esta posición sin preguntar.
   final Duration? startPosition;
 
+  final int? introStartTime;
+  final int? introEndTime;
+  final int? creditsStartTime;
+
   const VideoPlayerPage({
     super.key, 
     required this.movieName, 
@@ -46,6 +59,9 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.isLocal = false,
     this.onVideoStarted,
     this.startPosition,
+    this.introStartTime,
+    this.introEndTime,
+    this.creditsStartTime,
   });
 
   @override
@@ -91,6 +107,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   String? _currentQualityLabel;
   Timer? _progressSaveTimer;
   bool _hasCheckedResume = false;
+  
+  bool _showSkipIntroButton = false;
+  bool _showCreditsOverlay = false;
+  bool _creditsDataLoaded = false;
+  Episode? _nextEpisode;
+  Season? _nextSeason;
+  List<Movie> _movieRecommendations = [];
+  List<Series> _seriesRecommendations = [];
+  bool _isPushingNextEpisode = false;
 
   @override
   void initState() {
@@ -444,6 +469,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           _controller?.setClosedCaptionFile(Future.value(_captionNotifier.value));
         }
 
+        _controller!.addListener(_onVideoTick);
+
         // Check for resume after initialization
         _checkResume(_controller!);
       }
@@ -455,6 +482,36 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           _errorMessage = e.toString();
         });
       }
+    }
+  }
+
+  void _onVideoTick() {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    
+    final posSecs = _controller!.value.position.inSeconds;
+    
+    bool showSkip = false;
+    bool showCredits = false;
+
+    if (widget.introStartTime != null && widget.introEndTime != null) {
+      if (posSecs >= widget.introStartTime! && posSecs < widget.introEndTime!) {
+        showSkip = true;
+      }
+    }
+
+    if (widget.creditsStartTime != null && posSecs >= widget.creditsStartTime!) {
+        showCredits = true;
+        if (!_creditsDataLoaded) {
+          _creditsDataLoaded = true;
+          _loadCreditsData();
+        }
+    }
+
+    if (_showSkipIntroButton != showSkip || _showCreditsOverlay != showCredits) {
+      setState(() {
+        _showSkipIntroButton = showSkip;
+        _showCreditsOverlay = showCredits;
+      });
     }
   }
 
@@ -536,10 +593,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     _progressSaveTimer?.cancel();
     _controller?.dispose();
     VolumeController.instance.removeListener();
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-    ]);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    if (!_isPushingNextEpisode) {
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+      ]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
     WakelockPlus.disable();
     super.dispose();
   }
@@ -776,10 +835,242 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                   },
                 ),
               ),
+
+              // Skip Intro Button
+              if (_showSkipIntroButton && widget.introEndTime != null)
+                Positioned(
+                  bottom: 40,
+                  right: 50,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.black.withOpacity(0.65),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      elevation: 0,
+                      side: const BorderSide(color: Colors.white30, width: 1),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    onPressed: () {
+                      _controller?.seekTo(Duration(seconds: widget.introEndTime!));
+                    },
+                    icon: const Icon(Icons.skip_next, size: 18),
+                    label: const Text('Saltar Intro', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, letterSpacing: 0.5)),
+                  ),
+                ),
+
+              // Credits / Recommendations / Next Episode Overlay
+              if (_showCreditsOverlay)
+                Positioned(
+                  bottom: 40,
+                  right: 50,
+                  child: _nextEpisode != null
+                      ? ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.black.withOpacity(0.65),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            elevation: 0,
+                            side: const BorderSide(color: Colors.white30, width: 1),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: () {
+                            // Navigator.pop and push Next Episode
+                            _playNextEpisode();
+                          },
+                          icon: const Icon(Icons.fast_forward, size: 18),
+                          label: Text('Siguiente Episodio (${_nextEpisode!.episodeNumber})', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, letterSpacing: 0.5)),
+                        )
+                      : _buildRecommendationsCarousel(),
+                ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _loadCreditsData() async {
+    if (widget.mediaType == 'series' && widget.episodeId != null) {
+      final repo = ref.read(seriesRepositoryProvider);
+      final series = await repo.getSeriesById(widget.mediaId);
+      final seasons = await repo.getSeasonsForSeries(widget.mediaId);
+      
+      String? currentSeasonId;
+      bool isFinale = false;
+      for (var s in seasons) {
+        final eps = await repo.getEpisodesForSeason(s.id);
+        final idx = eps.indexWhere((e) => e.id == widget.episodeId);
+        if (idx != -1) {
+          if (eps[idx].isSeriesFinale) {
+            isFinale = true;
+            break;
+          }
+          currentSeasonId = s.id;
+          if (idx + 1 < eps.length) {
+            _nextEpisode = eps[idx + 1];
+            _nextSeason = s;
+            break;
+          } else {
+            // Next season
+            final sIdx = seasons.indexWhere((se) => se.id == s.id);
+            if (sIdx != -1 && sIdx + 1 < seasons.length) {
+              final nextS = seasons[sIdx + 1];
+              final nextEps = await repo.getEpisodesForSeason(nextS.id);
+              if (nextEps.isNotEmpty) {
+                _nextEpisode = nextEps.first;
+                _nextSeason = nextS;
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      if (isFinale || _nextEpisode == null) {
+        _nextEpisode = null; // Ensure no next episode button appears
+        // No more episodes, load series recommendations
+        if (series?.categoryId != null) {
+          final allSeries = await repo.getSeries();
+          _seriesRecommendations = allSeries.where((s) => s.categoryId == series!.categoryId && s.id != series.id).take(10).toList();
+        }
+      }
+    } else {
+      // Movie
+      final repo = ref.read(movieRepositoryProvider);
+      final allMovies = await repo.getMovies();
+      final thisMovie = allMovies.where((m) => m.id == widget.mediaId).firstOrNull;
+      if (thisMovie?.categoryId != null) {
+        _movieRecommendations = allMovies.where((m) => m.categoryId == thisMovie!.categoryId && m.id != thisMovie.id).take(10).toList();
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _playNextEpisode() async {
+    if (_nextEpisode == null || _nextSeason == null) return;
+    
+    // Increment views
+    ref.read(seriesListProvider.notifier).incrementViews(widget.mediaId);
+
+    // Save history manually to be sure
+    await _saveProgress();
+
+    // Find option
+    final repo = ref.read(seriesRepositoryProvider);
+    final options = await repo.getSeriesOptions(widget.mediaId);
+    
+    SeriesOption? option;
+    if (_nextEpisode!.urls.isNotEmpty) {
+      try {
+        option = options.firstWhere((o) => o.id == _nextEpisode!.urls.first.optionId);
+      } catch (_) {
+        if (options.isNotEmpty) option = options.first;
+      }
+    }
+
+    if (option == null && options.isNotEmpty) {
+      option = options.first;
+    }
+
+    if (!mounted) return;
+
+    _isPushingNextEpisode = true;
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerPage(
+          movieName: '${widget.movieName.split(' - ').first} - S${_nextSeason!.seasonNumber} E${_nextEpisode!.episodeNumber}',
+          onVideoStarted: () {},
+          mediaId: widget.mediaId,
+          episodeId: _nextEpisode!.id,
+          mediaType: 'series',
+          imagePath: widget.imagePath,
+          subtitleLabel: 'S${_nextSeason!.seasonNumber} E${_nextEpisode!.episodeNumber}: ${_nextEpisode!.name}',
+          introStartTime: _nextEpisode!.introStartTime,
+          introEndTime: _nextEpisode!.introEndTime,
+          creditsStartTime: _nextEpisode!.creditsStartTime,
+          videoOptions: [
+            if (_nextEpisode!.urls.isNotEmpty)
+              VideoOption(
+                id: _nextEpisode!.id,
+                movieId: widget.mediaId,
+                serverImagePath: option?.serverImagePath ?? '',
+                resolution: _nextEpisode!.urls.first.quality ?? option?.resolution ?? 'Auto',
+                videoUrl: _nextEpisode!.urls.first.url,
+              )
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecommendationsCarousel() {
+    final bool isMovie = widget.mediaType == 'movie';
+    final int count = isMovie ? _movieRecommendations.length : _seriesRecommendations.length;
+    
+    if (count == 0) return const SizedBox.shrink();
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+        child: Container(
+          width: 450,
+          height: 200,
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.4),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white24, width: 1),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 20, spreadRadius: 5),
+            ],
+          ),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Tal vez, te interese ver...', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 12),
+              Expanded(
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: count,
+                  itemBuilder: (context, index) {
+                    final dynamic item = isMovie ? _movieRecommendations[index] : _seriesRecommendations[index];
+                    return GestureDetector(
+                      onTap: () {
+                        _controller?.pause();
+                        _saveProgress();
+                        
+                        Navigator.pushReplacement(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => isMovie ? MovieDetailsPage(movie: item) : SeriesDetailsPage(series: item),
+                          ),
+                        );
+                      },
+                      child: Container(
+                        width: 100,
+                        margin: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.white12, width: 1),
+                          image: DecorationImage(image: NetworkImage(item.imagePath), fit: BoxFit.cover),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              )
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _handleCreditsAction() {
+    Navigator.pop(context);
   }
 
   Widget _buildSkipOverlay() {

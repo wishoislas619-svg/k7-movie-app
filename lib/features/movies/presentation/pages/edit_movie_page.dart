@@ -23,6 +23,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
   late TextEditingController _descriptionController;
   late TextEditingController _ratingController;
   late TextEditingController _yearController;
+  late TextEditingController _creditsStartTimeController;
   String? _selectedCategoryId;
   List<VideoOption> _options = [];
   bool _isScraping = false;
@@ -38,6 +39,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     _descriptionController = TextEditingController(text: widget.movie?.description ?? '');
     _ratingController = TextEditingController(text: widget.movie?.rating.toString() ?? '0.0');
     _yearController = TextEditingController(text: widget.movie?.year ?? '');
+    _creditsStartTimeController = TextEditingController(text: widget.movie?.creditsStartTime?.toString() ?? '');
     _selectedCategoryId = widget.movie?.categoryId;
     if (widget.movie != null) {
       _loadOptions();
@@ -61,6 +63,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         description: _descriptionController.text.isNotEmpty ? _descriptionController.text : null,
         rating: double.tryParse(_ratingController.text) ?? 0.0,
         year: _yearController.text.isNotEmpty ? _yearController.text : null,
+        creditsStartTime: int.tryParse(_creditsStartTimeController.text),
       );
     } else {
       final updatedMovie = Movie(
@@ -78,6 +81,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         backdrop: widget.movie!.backdrop,
         subtitleUrl: _subtitleUrlController.text,
         createdAt: widget.movie!.createdAt,
+        creditsStartTime: int.tryParse(_creditsStartTimeController.text),
       );
       await ref.read(moviesProvider.notifier).updateMovie(updatedMovie);
     }
@@ -367,6 +371,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
             ),
             const SizedBox(height: 16),
             _buildTextField(controller: _descriptionController, labelText: 'Descripción de la Película', maxLines: 5),
+            const SizedBox(height: 16),
+            _buildTextField(controller: _creditsStartTimeController, labelText: 'Créditos / Final (segundos) - Para saltar a recomendaciones', keyboardType: TextInputType.number),
             const SizedBox(height: 32),
             const Text('OPCIONES DE VIDEO', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
             const SizedBox(height: 8),

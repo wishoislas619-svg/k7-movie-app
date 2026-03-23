@@ -22,6 +22,7 @@ class MovieRepositorySupabaseImpl implements MovieRepository {
       duration: row['duration'] as String?,
       isPopular: row['is_popular'] as bool? ?? false,
       createdAt: DateTime.parse(row['created_at'] as String),
+      creditsStartTime: row['credits_start_time'] as int?,
     );
   }
 
@@ -38,6 +39,7 @@ class MovieRepositorySupabaseImpl implements MovieRepository {
         'year': m.year,
         'duration': m.duration,
         'is_popular': m.isPopular,
+        'credits_start_time': m.creditsStartTime,
       };
 
   @override

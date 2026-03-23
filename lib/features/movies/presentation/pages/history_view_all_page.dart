@@ -51,7 +51,14 @@ class _HistoryViewAllPageState extends ConsumerState<HistoryViewAllPage> {
       ),
       body: historyAsync.when(
         data: (history) {
-          final filtered = history.where((item) => 
+          final Map<String, WatchHistory> uniqueHistory = {};
+          for (var item in history) {
+            if (!uniqueHistory.containsKey(item.mediaId)) {
+              uniqueHistory[item.mediaId] = item;
+            }
+          }
+
+          final filtered = uniqueHistory.values.where((item) => 
             item.title.toLowerCase().contains(_searchQuery.toLowerCase()) ||
             (item.subtitle?.toLowerCase().contains(_searchQuery.toLowerCase()) ?? false)
           ).toList();

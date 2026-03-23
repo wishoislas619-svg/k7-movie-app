@@ -14,6 +14,7 @@ class Movie {
   final String? subtitleUrl;
   final bool isPopular;
   final DateTime createdAt;
+  final int? creditsStartTime;
 
   Movie({
     required this.id,
@@ -31,6 +32,7 @@ class Movie {
     this.subtitleUrl,
     this.isPopular = false,
     required this.createdAt,
+    this.creditsStartTime,
   });
 }
 

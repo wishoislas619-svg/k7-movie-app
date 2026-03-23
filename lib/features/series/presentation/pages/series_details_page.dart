@@ -146,8 +146,8 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
             VideoOption(
               id: targetEp!.id,
               movieId: widget.series.id,
-              serverImagePath: opt.imagePath,
-              resolution: opt.name,
+              serverImagePath: opt.serverImagePath,
+              resolution: opt.resolution,
               videoUrl: eUrl.url,
             ),
           ],
@@ -182,6 +182,10 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
           mediaType: 'series',
           imagePath: widget.series.imagePath,
           subtitleLabel: 'S${_selectedSeason?.seasonNumber ?? 1} E${episode.episodeNumber}: ${episode.name}',
+          startPosition: widget.autoPlayStartPosition,
+          introStartTime: episode.introStartTime,
+          introEndTime: episode.introEndTime,
+          creditsStartTime: episode.creditsStartTime,
           videoOptions: [
             VideoOption(
               id: episode.id,

@@ -21,7 +21,7 @@ class _SplashPageState extends State<SplashPage> {
 
   void _startLoading() {
     // Total duration around 3 seconds
-    const totalDuration = Duration(milliseconds: 3000);
+    const totalDuration = Duration(milliseconds: 1500);
     const interval = Duration(milliseconds: 30);
     final steps = totalDuration.inMilliseconds / interval.inMilliseconds;
     double increment = 1.0 / steps;
@@ -135,7 +135,7 @@ class _SplashPageState extends State<SplashPage> {
 
                   // 2. Loading Section
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 50),
+                    padding: const EdgeInsets.symmetric(horizontal: 30),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [

@@ -35,6 +35,10 @@ class Episode {
   final String name;
   final String url;
   final List<EpisodeUrl> urls;
+  final int? introStartTime;
+  final int? introEndTime;
+  final int? creditsStartTime;
+  final bool isSeriesFinale;
 
   Episode({
     required this.id,
@@ -43,6 +47,10 @@ class Episode {
     required this.name,
     required this.url,
     this.urls = const [],
+    this.introStartTime,
+    this.introEndTime,
+    this.creditsStartTime,
+    this.isSeriesFinale = false,
   });
 
   factory Episode.fromMap(Map<String, dynamic> map) {
@@ -65,6 +73,10 @@ class Episode {
       name: map['name'],
       url: map['url'],
       urls: urlsList,
+      introStartTime: map['introStartTime'],
+      introEndTime: map['introEndTime'],
+      creditsStartTime: map['creditsStartTime'],
+      isSeriesFinale: map['isSeriesFinale'] ?? false,
     );
   }
 
@@ -76,6 +88,10 @@ class Episode {
       'name': name,
       'url': url,
       'urls': json.encode(urls.map((u) => u.toMap()).toList()),
+      'introStartTime': introStartTime,
+      'introEndTime': introEndTime,
+      'creditsStartTime': creditsStartTime,
+      'isSeriesFinale': isSeriesFinale,
     };
   }
 
@@ -86,6 +102,10 @@ class Episode {
     String? name,
     String? url,
     List<EpisodeUrl>? urls,
+    int? introStartTime,
+    int? introEndTime,
+    int? creditsStartTime,
+    bool? isSeriesFinale,
   }) {
     return Episode(
       id: id ?? this.id,
@@ -94,6 +114,10 @@ class Episode {
       name: name ?? this.name,
       url: url ?? this.url,
       urls: urls ?? this.urls,
+      introStartTime: introStartTime ?? this.introStartTime,
+      introEndTime: introEndTime ?? this.introEndTime,
+      creditsStartTime: creditsStartTime ?? this.creditsStartTime,
+      isSeriesFinale: isSeriesFinale ?? this.isSeriesFinale,
     );
   }
 }
