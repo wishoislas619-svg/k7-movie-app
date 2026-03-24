@@ -19,21 +19,26 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: ".env");
-  await NotificationService.init();
-  await ForegroundService.init();
-  await MobileAds.instance.initialize();
   
-  // Agregamos tus IDs de prueba para que veas anuncios mientras desarrollas
-  MobileAds.instance.updateRequestConfiguration(
-    RequestConfiguration(testDeviceIds: [
-      "D4401ED3C883864E683E2DD7DD51098B", // ID de los logs
-      "52ed6a0e-d948-41d1-b035-3ed4dbd701cf" // Tu Advertising ID real
-    ]),
-  );
+  // Cargamos Solo lo CRÍTICO para ver la primera pantalla
+  try {
+    await dotenv.load(fileName: ".env");
+    await SupabaseService.initialize();
+  } catch (e) {
+    debugPrint("Error crítico en arranque: $e");
+  }
 
-  // Inicializar Supabase (reemplaza SQLite + SharedPreferences para auth)
-  await SupabaseService.initialize();
+  // Servicios secundarios: Se lanzan "en paralelo" sin bloquear el dibujo de la App
+  unawaited(NotificationService.init().catchError((e) => debugPrint("Error Notify: $e")));
+  unawaited(ForegroundService.init().catchError((e) => debugPrint("Error Foreground: $e")));
+  unawaited(MobileAds.instance.initialize().then((_) {
+    MobileAds.instance.updateRequestConfiguration(
+      RequestConfiguration(testDeviceIds: [
+        "D4401ED3C883864E683E2DD7DD51098B",
+        "52ed6a0e-d948-41d1-b035-3ed4dbd701cf"
+      ]),
+    );
+  }).catchError((e) => debugPrint("Error Ads: $e")));
 
   runApp(
     const ProviderScope(
@@ -48,7 +53,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'K7 Movie App',
+      title: 'K7 MOVIE',
       theme: AppTheme.darkTheme,
       debugShowCheckedModeBanner: false,
       home: const AuthWrapper(),

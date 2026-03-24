@@ -12,7 +12,7 @@ import 'features/movies/data/repositories/movie_repository_supabase_impl.dart';
 import 'features/movies/domain/repositories/movie_repository.dart';
 import 'features/movies/data/repositories/category_repository_supabase_impl.dart';
 import 'features/movies/domain/repositories/category_repository.dart';
-import 'features/movies/data/repositories/history_repository_impl.dart';
+import 'features/movies/data/repositories/history_repository_supabase_impl.dart';
 import 'features/movies/domain/repositories/history_repository.dart';
 
 // Series
@@ -29,9 +29,9 @@ final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
   throw UnimplementedError();
 });
 
-// ── History (SQLite) ──────────────────────────────────────────────────────────
+// ── History (Supabase) ──────────────────────────────────────────────────────────
 final historyRepositoryProvider = Provider<HistoryRepository>((ref) {
-  return HistoryRepositoryImpl(ref.read(sqliteServiceProvider));
+  return HistoryRepositorySupabaseImpl();
 });
 
 // ── Auth (Supabase) ───────────────────────────────────────────────────────────

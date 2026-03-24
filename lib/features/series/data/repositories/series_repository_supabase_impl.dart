@@ -136,11 +136,19 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
   @override
   Future<void> incrementViews(String id) async {
     try {
+      print('--- [VISTAS] Incrementando vistas para serie: $id ---');
       await _client.rpc('increment_series_views', params: {'p_id': id});
-    } catch (_) {
-      final row = await _client.from('series').select('views').eq('id', id).single();
-      final current = (row['views'] as int?) ?? 0;
-      await _client.from('series').update({'views': current + 1}).eq('id', id);
+      print('--- [VISTAS] Vistas de serie incrementadas con éxito (RPC) ---');
+    } catch (e) {
+      print('--- [VISTAS] RPC de serie falló ($e), usando UPDATE directo ---');
+      try {
+        final row = await _client.from('series').select('views').eq('id', id).single();
+        final current = (row['views'] as int?) ?? 0;
+        await _client.from('series').update({'views': current + 1}).eq('id', id);
+        print('--- [VISTAS] Vistas de serie incrementadas con UPDATE directo ---');
+      } catch (e2) {
+        print('--- [VISTAS] ERROR TOTAL al incrementar vistas de serie: $e2 ---');
+      }
     }
   }
 

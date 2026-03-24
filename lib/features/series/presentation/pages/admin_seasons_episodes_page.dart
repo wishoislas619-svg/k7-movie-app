@@ -48,6 +48,35 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
     }
   }
 
+  /// Convierte segundos a HH:MM:SS (ej: 3661 → "01:01:01")
+  String _secondsToTime(int? seconds) {
+    if (seconds == null) return '';
+    final h = seconds ~/ 3600;
+    final m = (seconds % 3600) ~/ 60;
+    final s = seconds % 60;
+    return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  /// Convierte HH:MM:SS a segundos. Acepta también número puro.
+  int? _parseTime(String value) {
+    if (value.trim().isEmpty) return null;
+    if (value.contains(':')) {
+      final parts = value.trim().split(':');
+      if (parts.length == 3) {
+        final h = int.tryParse(parts[0]) ?? 0;
+        final m = int.tryParse(parts[1]) ?? 0;
+        final s = int.tryParse(parts[2]) ?? 0;
+        return h * 3600 + m * 60 + s;
+      }
+      if (parts.length == 2) {
+        final m = int.tryParse(parts[0]) ?? 0;
+        final s = int.tryParse(parts[1]) ?? 0;
+        return m * 60 + s;
+      }
+    }
+    return int.tryParse(value);
+  }
+
   void _showAddSeasonDialog([Season? season]) {
     final nameCtrl = TextEditingController(text: season?.name ?? 'Temporada ${_seasons.length + 1}');
     final numCtrl = TextEditingController(text: season?.seasonNumber.toString() ?? '${_seasons.length + 1}');
@@ -101,9 +130,9 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
     final currentEps = _episodesCache[season.id] ?? [];
     final nameCtrl = TextEditingController(text: episode?.name ?? 'Capítulo ${currentEps.length + 1}');
     final numCtrl = TextEditingController(text: episode?.episodeNumber.toString() ?? '${currentEps.length + 1}');
-    final introStartCtrl = TextEditingController(text: episode?.introStartTime?.toString() ?? '');
-    final introEndCtrl = TextEditingController(text: episode?.introEndTime?.toString() ?? '');
-    final creditsCtrl = TextEditingController(text: episode?.creditsStartTime?.toString() ?? '');
+    final introStartCtrl = TextEditingController(text: _secondsToTime(episode?.introStartTime));
+    final introEndCtrl = TextEditingController(text: _secondsToTime(episode?.introEndTime));
+    final creditsCtrl = TextEditingController(text: _secondsToTime(episode?.creditsStartTime));
 
     
     // Copy existing urls or start empty
@@ -124,13 +153,13 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
                   TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
                   TextField(controller: numCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Número', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
                   const SizedBox(height: 16),
-                  const Text('Tiempos (segundos)', style: TextStyle(color: Color(0xFFD400FF), fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Text('Tiempos (formato HH:MM:SS)', style: TextStyle(color: Color(0xFFD400FF), fontWeight: FontWeight.bold, fontSize: 13)),
                   const SizedBox(height: 8),
-                  TextField(controller: introStartCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Inicio Intro (seg)', labelStyle: TextStyle(color: Colors.white54, fontSize: 11)), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  TextField(controller: introStartCtrl, keyboardType: TextInputType.text, decoration: const InputDecoration(labelText: 'Inicio Intro (ej: 00:01:30)', labelStyle: TextStyle(color: Colors.white54, fontSize: 11), hintText: '00:00:00', hintStyle: TextStyle(color: Colors.white24)), style: const TextStyle(color: Colors.white, fontSize: 12)),
                   const SizedBox(height: 8),
-                  TextField(controller: introEndCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Fin Intro (seg)', labelStyle: TextStyle(color: Colors.white54, fontSize: 11)), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  TextField(controller: introEndCtrl, keyboardType: TextInputType.text, decoration: const InputDecoration(labelText: 'Fin Intro (ej: 00:02:10)', labelStyle: TextStyle(color: Colors.white54, fontSize: 11), hintText: '00:00:00', hintStyle: TextStyle(color: Colors.white24)), style: const TextStyle(color: Colors.white, fontSize: 12)),
                   const SizedBox(height: 8),
-                  TextField(controller: creditsCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Créditos/Outro (seg)', labelStyle: TextStyle(color: Colors.white54, fontSize: 11)), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                  TextField(controller: creditsCtrl, keyboardType: TextInputType.text, decoration: const InputDecoration(labelText: 'Inicio Créditos (ej: 00:42:00)', labelStyle: TextStyle(color: Colors.white54, fontSize: 11), hintText: '00:00:00', hintStyle: TextStyle(color: Colors.white24)), style: const TextStyle(color: Colors.white, fontSize: 12)),
                   const SizedBox(height: 16),
                   Container(
                     decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(8)),
@@ -221,9 +250,9 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
                     episodeNumber: int.tryParse(numCtrl.text) ?? currentEps.length + 1,
                     url: tempUrls.isNotEmpty ? tempUrls.first.url : '',
                     urls: tempUrls,
-                    introStartTime: int.tryParse(introStartCtrl.text),
-                    introEndTime: int.tryParse(introEndCtrl.text),
-                    creditsStartTime: int.tryParse(creditsCtrl.text),
+                    introStartTime: _parseTime(introStartCtrl.text),
+                    introEndTime: _parseTime(introEndCtrl.text),
+                    creditsStartTime: _parseTime(creditsCtrl.text),
                     isSeriesFinale: isFinale,
                   );
 
@@ -435,11 +464,43 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('Aplica los mismos segundos a todos los episodios de esta temporada (útil si los intros/outros duran igual en todos).', style: TextStyle(color: Colors.white54, fontSize: 13)),
+              const Text('Aplica los mismos tiempos a todos los episodios de esta temporada (útil si los intros/outros duran igual en todos).', style: TextStyle(color: Colors.white54, fontSize: 13)),
+              const SizedBox(height: 8),
+              const Text('Formato: HH:MM:SS (ej: 00:01:30)', style: TextStyle(color: Color(0xFFD400FF), fontSize: 12, fontWeight: FontWeight.bold)),
               const SizedBox(height: 16),
-              TextField(controller: introStartCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Inicio Intro (seg)', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
-              TextField(controller: introEndCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Fin Intro (seg)', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
-              TextField(controller: creditsCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Créditos/Outro (seg)', labelStyle: TextStyle(color: Colors.white70)), style: const TextStyle(color: Colors.white)),
+              TextField(
+                controller: introStartCtrl,
+                keyboardType: TextInputType.text,
+                decoration: const InputDecoration(
+                  labelText: 'Inicio Intro (ej: 00:01:30)',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  hintText: '00:00:00',
+                  hintStyle: TextStyle(color: Colors.white24),
+                ),
+                style: const TextStyle(color: Colors.white),
+              ),
+              TextField(
+                controller: introEndCtrl,
+                keyboardType: TextInputType.text,
+                decoration: const InputDecoration(
+                  labelText: 'Fin Intro (ej: 00:02:10)',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  hintText: '00:00:00',
+                  hintStyle: TextStyle(color: Colors.white24),
+                ),
+                style: const TextStyle(color: Colors.white),
+              ),
+              TextField(
+                controller: creditsCtrl,
+                keyboardType: TextInputType.text,
+                decoration: const InputDecoration(
+                  labelText: 'Inicio Créditos (ej: 00:42:00)',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  hintText: '00:00:00',
+                  hintStyle: TextStyle(color: Colors.white24),
+                ),
+                style: const TextStyle(color: Colors.white),
+              ),
             ],
           ),
         ),
@@ -447,9 +508,9 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
           ElevatedButton(
             onPressed: () async {
-              final iStart = int.tryParse(introStartCtrl.text);
-              final iEnd = int.tryParse(introEndCtrl.text);
-              final cStart = int.tryParse(creditsCtrl.text);
+              final iStart = _parseTime(introStartCtrl.text);
+              final iEnd = _parseTime(introEndCtrl.text);
+              final cStart = _parseTime(creditsCtrl.text);
               
               final eps = _episodesCache[season.id] ?? [];
               final repo = ref.read(seriesRepositoryProvider);

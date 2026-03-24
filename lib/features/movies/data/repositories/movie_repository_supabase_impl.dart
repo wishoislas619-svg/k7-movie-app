@@ -73,14 +73,20 @@ class MovieRepositorySupabaseImpl implements MovieRepository {
 
   @override
   Future<void> incrementViews(String id) async {
-    // Incremento atómico usando una función RPC
     try {
+      print('--- [VISTAS] Incrementando vistas para película: $id ---');
       await _client.rpc('increment_movie_views', params: {'p_id': id});
-    } catch (_) {
-      // Si la función RPC no existe, hacemos una actualización normal
-      final row = await _client.from('movies').select('views').eq('id', id).single();
-      final current = (row['views'] as int?) ?? 0;
-      await _client.from('movies').update({'views': current + 1}).eq('id', id);
+      print('--- [VISTAS] Vistas incrementadas con éxito (RPC) ---');
+    } catch (e) {
+      print('--- [VISTAS] RPC falló ($e), usando UPDATE directo ---');
+      try {
+        final row = await _client.from('movies').select('views').eq('id', id).single();
+        final current = (row['views'] as int?) ?? 0;
+        await _client.from('movies').update({'views': current + 1}).eq('id', id);
+        print('--- [VISTAS] Vistas incrementadas con UPDATE directo ---');
+      } catch (e2) {
+        print('--- [VISTAS] ERROR TOTAL al incrementar vistas de película: $e2 ---');
+      }
     }
   }
 

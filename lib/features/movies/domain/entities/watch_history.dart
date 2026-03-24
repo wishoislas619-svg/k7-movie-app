@@ -48,17 +48,19 @@ class WatchHistory {
 
   factory WatchHistory.fromMap(Map<String, dynamic> map) {
     return WatchHistory(
-      id: map['id'],
-      mediaId: map['mediaId'],
-      episodeId: map['episodeId'],
-      mediaType: map['mediaType'],
-      lastPosition: map['lastPosition'],
-      totalDuration: map['totalDuration'],
-      lastWatchedAt: DateTime.parse(map['lastWatchedAt']),
-      title: map['title'],
-      subtitle: map['subtitle'],
-      imagePath: map['imagePath'],
-      videoOptionId: map['videoOptionId'],
+      id: map['id']?.toString() ?? '',
+      mediaId: map['mediaId']?.toString() ?? '',
+      episodeId: map['episodeId']?.toString(),
+      mediaType: map['mediaType']?.toString() ?? 'movie',
+      lastPosition: map['lastPosition'] as int? ?? 0,
+      totalDuration: map['totalDuration'] as int? ?? 0,
+      lastWatchedAt: map['lastWatchedAt'] != null 
+          ? DateTime.parse(map['lastWatchedAt']) 
+          : DateTime.now(),
+      title: map['title']?.toString() ?? 'Sin título',
+      subtitle: map['subtitle']?.toString(),
+      imagePath: map['imagePath']?.toString() ?? '',
+      videoOptionId: map['videoOptionId']?.toString(),
     );
   }
 

@@ -223,30 +223,30 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
     if (sbUser == null) return null;
 
     // Verificar que la sesión no haya expirado por inactividad o por otro dispositivo
-    final profile = await _client
-        .from('profiles')
-        .select('active_device_id, last_active_at, role')
-        .eq('id', sbUser.id)
-        .maybeSingle();
-
-    if (profile == null) return null;
-
-    // 1. Verificar sesión de un solo dispositivo
-    final deviceId = await _getDeviceId();
-    final activeDevice = profile['active_device_id'] as String?;
-    if (activeDevice != null && activeDevice != deviceId) {
-      // Otro dispositivo inició sesión — cerrar esta sesión
-      await _client.auth.signOut();
-      return null;
-    }
-
-    // Sesión válida — intentar actualizar timestamp de última actividad inmediatamente
+    // 0. Timeout de seguridad para evitar carga infinita
     try {
+      final profile = await _client
+          .from('profiles')
+          .select('active_device_id, last_active_at, role')
+          .eq('id', sbUser.id)
+          .maybeSingle()
+          .timeout(const Duration(seconds: 5));
+
+      if (profile == null) return null;
+      
+      // 1. Verificar sesión de un solo dispositivo
+      final deviceId = await _getDeviceId();
+      final activeDevice = profile['active_device_id'] as String?;
+      if (activeDevice != null && activeDevice != deviceId) {
+        await _client.auth.signOut();
+        return null;
+      }
+      
       final lastActiveDate = DateTime.now().toUtc();
       await _client.from('profiles').update({
         'last_active_at': lastActiveDate.toIso8601String(),
         'active_device_id': deviceId,
-      }).eq('id', sbUser.id);
+      }).eq('id', sbUser.id).timeout(const Duration(seconds: 3));
 
       // Ahora verificamos la inactividad pero comparando con el dato que TRAÍA el perfil antes del update.
       // Si el dato anterior era muy viejo (> 2 horas), permitimos que siga SOLO si la sesión es nueva.
@@ -386,19 +386,21 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
   Future<User?> signInWithGoogle() async {
     try {
       final GoogleSignIn googleSignIn = GoogleSignIn(
-        serverClientId: '541436463482-1pic1gbh1sbcl1uojf6i6hg5bdig4glr.apps.googleusercontent.com',
+        clientId: '541436463482-m9nqe9ljvmgk1j83fmbjlrcqrn05etv4.apps.googleusercontent.com', // ID Android
+        serverClientId: '541436463482-1pic1gbh1sbcl1uojf6i6hg5bdig4glr.apps.googleusercontent.com', // ID Web
       );
       final googleUser = await googleSignIn.signIn();
       if (googleUser == null) return null;
-
+ 
       final googleAuth = await googleUser.authentication;
       final accessToken = googleAuth.accessToken;
       final idToken = googleAuth.idToken;
-
+ 
       if (idToken == null) {
-        throw 'No se pudo obtener el ID Token de Google.';
+        debugPrint('--- [LOGIN_DEBUG] El token de Google es nulo. Revisa SHA-1 y el ID de Cliente Web ---');
+        throw 'Error: Token de Google no disponible. Revisa la consola de Google Cloud.';
       }
-
+ 
       final response = await _client.auth.signInWithIdToken(
         provider: sb.OAuthProvider.google,
         idToken: idToken,

@@ -127,6 +127,8 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
                     items: const [
                       DropdownMenuItem(value: 'Latino', child: Text('Latino', style: TextStyle(color: Colors.white))),
                       DropdownMenuItem(value: 'Castellano', child: Text('Castellano', style: TextStyle(color: Colors.white))),
+                      DropdownMenuItem(value: 'Inglés', child: Text('Inglés', style: TextStyle(color: Colors.white))),
+                      DropdownMenuItem(value: 'Japonés', child: Text('Japonés', style: TextStyle(color: Colors.white))),
                       DropdownMenuItem(value: 'Subtitulado', child: Text('Subtitulado', style: TextStyle(color: Colors.white))),
                     ],
                     onChanged: (val) {

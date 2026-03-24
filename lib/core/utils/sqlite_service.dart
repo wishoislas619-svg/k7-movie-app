@@ -13,12 +13,28 @@ class SqliteService {
 
   Future<Database> _initDatabase() async {
     String path = join(await getDatabasesPath(), 'movie_app.db');
-    return await openDatabase(
-      path,
-      version: 19,
-      onCreate: _onCreate,
-      onUpgrade: _onUpgrade,
-    );
+    print('--- [SQLITE] Iniciando base de datos en: $path ---');
+    
+    try {
+      return await openDatabase(
+        path,
+        version: 19,
+        onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
+        onOpen: (db) {
+          print('--- [SQLITE] Base de datos abierta con éxito ---');
+        },
+      );
+    } catch (e) {
+      print('--- [SQLITE] ERROR CRÍTICO al abrir DB: $e ---');
+      print('--- [SQLITE] Intentando borrar base de datos corrupta para resetear ---');
+      await deleteDatabase(path);
+      return await openDatabase(
+        path,
+        version: 19,
+        onCreate: _onCreate,
+      );
+    }
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {

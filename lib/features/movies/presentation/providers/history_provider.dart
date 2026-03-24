@@ -52,19 +52,8 @@ class HistoryNotifier extends StateNotifier<AsyncValue<List<WatchHistory>>> {
 
     await ref.read(historyRepositoryProvider).saveHistory(history);
     
-    // Refresh local state efficiently
-    state.whenData((currentHistory) {
-      final updatedList = List<WatchHistory>.from(currentHistory);
-      final index = updatedList.indexWhere((h) => h.id == id);
-      if (index != -1) {
-        updatedList[index] = history;
-      } else {
-        updatedList.insert(0, history);
-      }
-      // Re-sort to keep most recent first
-      updatedList.sort((a, b) => b.lastWatchedAt.compareTo(a.lastWatchedAt));
-      state = AsyncValue.data(updatedList);
-    });
+    // Recargar la lista completa desde la DB para asegurar sincronización total
+    await loadHistory();
   }
 
   Future<void> removeHistory(String id) async {

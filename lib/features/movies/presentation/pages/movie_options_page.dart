@@ -230,6 +230,7 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
                                     child: Image.asset(
                                       option.language == 'Latino' ? 'assets/images/flags/latino.png' :
                                       option.language == 'Castellano' ? 'assets/images/flags/castellano.png' :
+                                      option.language == 'Japonés' ? 'assets/images/flags/japones.png' :
                                       'assets/images/flags/ingles.png',
                                       fit: BoxFit.cover,
                                     ),

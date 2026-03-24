@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -11,12 +14,13 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
         isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
+        @Suppress("DEPRECATION")
         jvmTarget = "17"
     }
 
@@ -31,24 +35,40 @@ android {
         versionName = flutter.versionName
     }
 
-    val keystoreProperties = java.util.Properties()
+    val keystoreProperties = Properties()
     val keystorePropertiesFile = rootProject.file("key.properties")
+    
     if (keystorePropertiesFile.exists()) {
-        keystoreProperties.load(java.io.FileInputStream(keystorePropertiesFile))
+        println("--- [SIGNING] Cargando key.properties desde: ${keystorePropertiesFile.absolutePath} ---")
+        keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+    } else {
+        println("--- [SIGNING] ERROR: No se encontró key.properties en ${keystorePropertiesFile.absolutePath} ---")
     }
 
     signingConfigs {
         create("release") {
-            keyAlias = keystoreProperties["keyAlias"] as String?
-            keyPassword = keystoreProperties["keyPassword"] as String?
-            storeFile = keystoreProperties["storeFile"]?.let { file(it) }
-            storePassword = keystoreProperties["storePassword"] as String?
+            val alias = keystoreProperties.getProperty("keyAlias")
+            val pass = keystoreProperties.getProperty("keyPassword")
+            val sFile = keystoreProperties.getProperty("storeFile")
+            val sPass = keystoreProperties.getProperty("storePassword")
+
+            if (alias != null && pass != null && sFile != null && sPass != null) {
+                keyAlias = alias
+                keyPassword = pass
+                storeFile = file(sFile)
+                storePassword = sPass
+                println("--- [SIGNING] Configuración de firma cargada para alias: $alias ---")
+            } else {
+                println("--- [SIGNING] ADVERTENCIA: Datos de firma incompletos en key.properties ---")
+            }
         }
     }
 
     buildTypes {
-        release {
-            signingConfig = signingConfigs.getByName("release")
+        getByName("release") {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("release") 
         }
     }
 }

@@ -77,6 +77,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   bool _isLoadingAd = false;
   String? _adError;
   bool _isMidrollShown = false;
+  // Segundos REALES vistos (no posición). Para no disparar el midroll al hacer seek.
+  int _realWatchedSeconds = 0;
+  DateTime? _lastTickTime;
 
   VideoPlayerController? _controller;
   bool _isLoading = true;
@@ -125,6 +128,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   List<Movie> _movieRecommendations = [];
   List<Series> _seriesRecommendations = [];
   bool _isPushingNextEpisode = false;
+  double _skipIntroOpacity = 1.0;
+  Timer? _skipFadeTimer;
 
   @override
   void initState() {
@@ -153,8 +158,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       return;
     }
 
-    if (mounted) setState(() => _isLoadingAd = true);
-
+    if (mounted) {
+      setState(() {
+        _isLoadingAd = true;
+        _controller?.pause(); // Pausar si ya estaba reproduciendo
+      });
+      // Poner pantalla completa total (ocultar notificaciones/hora)
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      
+      // Detener el audio del controlador si ya existía
+      if (_controller != null && _controller!.value.isPlaying) {
+        _controller!.pause();
+      }
+    }
+    
     try {
       final ticketId = const Uuid().v4();
       await Supabase.instance.client.from('ad_tickets').insert({
@@ -167,7 +184,22 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       print('--- [AD_DEBUG] TICKET_ID: $ticketId ---');
       AdService.showRewardedAd(
         ticketId: ticketId,
-        onAdWatched: (String completedTicketId) => _pollVerification(completedTicketId),
+        onAdWatched: (String completedTicketId) {
+          if (mounted) {
+            setState(() {
+              _isLoadingAd = false;
+              _isAdVerified = true;
+              _adError = null;
+            });
+            // AUTO-PLAY INMEDIATO
+            if (_controller != null && _controller!.value.isInitialized) {
+              _controller!.play();
+            } else {
+              _startPlayback();
+            }
+            _pollVerification(completedTicketId);
+          }
+        },
         onAdFailed: (String error) {
           if (mounted) {
             setState(() {
@@ -181,8 +213,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           if (mounted) {
             setState(() {
               _isLoadingAd = false;
+              _isAdVerified = false;
               _adError = 'Cancelaste el anuncio. Debes verlo completo para desbloquear el video.';
             });
+            // Restaurar modo inmersivo cinemático (por si se salió)
+            SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
           }
         },
       );
@@ -217,10 +252,16 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               _isLoadingAd = false;
               _adError = null;
             });
+            // Reanudar o iniciar según el caso
             if (_isMidrollShown) {
-              _controller?.play();
+               _controller?.play();
             } else {
-              _startPlayback();
+               // Si ya está inicializado, dar play. Si no, iniciar proceso.
+               if (_controller != null && _controller!.value.isInitialized) {
+                 _controller!.play();
+               } else {
+                 _startPlayback();
+               }
             }
           }
           return;
@@ -253,6 +294,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
          _isAdVerified = false;
          _isLoadingAd = true;
       });
+      // Poner pantalla completa total
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     }
 
     try {
@@ -266,7 +309,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
       AdService.showRewardedAd(
         ticketId: ticketId,
-        onAdWatched: (String ct) => _pollVerification(ct),
+        onAdWatched: (String ct) {
+          if (mounted) {
+            setState(() {
+              _isLoadingAd = false;
+              _isAdVerified = true;
+              _adError = null;
+            });
+            // AUTO-PLAY INMEDIATO
+            if (_controller != null && _controller!.value.isInitialized) {
+              _controller!.play();
+            }
+            _pollVerification(ct);
+          }
+        },
         onAdFailed: (String error) {
           if (mounted) {
             setState(() {
@@ -280,6 +336,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           if (mounted) {
             setState(() {
               _isLoadingAd = false;
+              _isAdVerified = false;
               _adError = 'Cancelaste el anuncio. Debes verlo completo para continuar.';
             });
           }
@@ -292,6 +349,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
   void _startPlayback() {
     _isAdVerified = true;
+    // Asegurar modo inmersivo al empezar la peli
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    
     if (widget.isLocal) {
       _isLoading = false;
       _isWebViewExtracting = false;
@@ -309,7 +369,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   void _startProgressTimer() {
-    _progressSaveTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+    _progressSaveTimer?.cancel();
+    _progressSaveTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
       _saveProgress();
     });
   }
@@ -385,7 +446,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       if (resume == true) {
         await controller.seekTo(Duration(milliseconds: history.lastPosition));
       }
-      controller.play();
+      
+      // SOLO dar play si NO hay un anuncio cargándose y está verificado
+      if (!_isLoadingAd && _isAdVerified) {
+        controller.play();
+      }
     }
   }
 
@@ -622,10 +687,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         if (lastPosition != null) {
           _controller?.seekTo(lastPosition);
         }
-        _controller?.play();
+        
+        // SOLO dar play si NO hay un anuncio cargándose y está verificado
+        if (!_isLoadingAd && _isAdVerified) {
+          _controller?.play();
+        }
 
         if (!_hasIncrementedView) {
           _hasIncrementedView = true;
+          // Increment views in Supabase
+          if (widget.mediaType == 'series') {
+            ref.read(seriesRepositoryProvider).incrementViews(widget.mediaId);
+          } else {
+            ref.read(movieRepositoryProvider).incrementViews(widget.mediaId);
+          }
           widget.onVideoStarted?.call();
         }
 
@@ -634,6 +709,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         }
 
         _controller!.addListener(_onVideoTick);
+
+        // Iniciar el temporizador para guardar progreso automáticamente
+        _startProgressTimer();
 
         // Check for resume after initialization
         _checkResume(_controller!);
@@ -651,11 +729,28 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
   void _onVideoTick() {
     if (_controller == null || !_controller!.value.isInitialized) return;
-    
+
     final posSecs = _controller!.value.position.inSeconds;
-    
+    final isPlaying = _controller!.value.isPlaying;
+
+    // Acumular tiempo REAL de reproducción (excluye seek y pausa)
+    if (isPlaying && !_isLoadingAd) {
+      final now = DateTime.now();
+      if (_lastTickTime != null) {
+        final elapsed = now.difference(_lastTickTime!).inSeconds;
+        if (elapsed >= 1 && elapsed < 5) { // Evitar saltos grandes por seek
+          _realWatchedSeconds += elapsed;
+        }
+      }
+      _lastTickTime = now;
+    } else {
+      _lastTickTime = null;
+    }
+
+    // Disparar midroll al llegar a la mitad del tiempo REAL visto (no posición)
     if (widget.mediaType == 'movie' && !_isMidrollShown && _controller!.value.duration.inSeconds > 0) {
-      if (posSecs >= _controller!.value.duration.inSeconds / 2) {
+      final halfDuration = _controller!.value.duration.inSeconds ~/ 2;
+      if (_realWatchedSeconds >= halfDuration) {
         _showMidrollAd();
         return;
       }
@@ -680,6 +775,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
     if (_showSkipIntroButton != showSkip || _showCreditsOverlay != showCredits) {
       setState(() {
+        if (showSkip && !_showSkipIntroButton) {
+          _skipIntroOpacity = 1.0;
+          _startSkipFadeTimer();
+        }
         _showSkipIntroButton = showSkip;
         _showCreditsOverlay = showCredits;
       });
@@ -697,6 +796,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     });
   }
 
+  void _startSkipFadeTimer() {
+    _skipFadeTimer?.cancel();
+    _skipFadeTimer = Timer(const Duration(seconds: 10), () {
+      if (mounted) {
+        setState(() => _skipIntroOpacity = 0.0);
+      }
+    });
+  }
+
   void _toggleControls() {
     if (_isLocked) {
       setState(() => _showControls = !_showControls);
@@ -710,6 +818,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     });
     
     if (newShow) {
+      if (_showSkipIntroButton) {
+        _skipIntroOpacity = 1.0;
+        _startSkipFadeTimer();
+      }
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       _startHideTimer();
     } else {
@@ -736,6 +848,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       _volume = (_volume + delta).clamp(0.0, 1.0);
       _showVolumeLabel = true;
       _showBrightnessLabel = false;
+      VolumeController.instance.showSystemUI = false;
       VolumeController.instance.setVolume(_volume);
     } else {
       _isDraggingBrightness = true;
@@ -758,19 +871,23 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
   @override
   void dispose() {
-    _saveProgress(); // Final save
+    _saveProgress(); // Guardar progreso final al salir
+    _progressSaveTimer?.cancel();
     _hideTimer?.cancel();
     _labelHideTimer?.cancel();
-    _progressSaveTimer?.cancel();
+    _controller?.removeListener(_onVideoTick);
     _controller?.dispose();
+    _webViewController = null;
     VolumeController.instance.removeListener();
+    WakelockPlus.disable();
+    
     if (!_isPushingNextEpisode) {
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
       ]);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
-    WakelockPlus.disable();
     super.dispose();
   }
 
@@ -1055,20 +1172,24 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                 Positioned(
                   bottom: 40,
                   right: 50,
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.black.withOpacity(0.65),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      elevation: 0,
-                      side: const BorderSide(color: Colors.white30, width: 1),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  child: AnimatedOpacity(
+                    opacity: _skipIntroOpacity,
+                    duration: const Duration(milliseconds: 500),
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.black.withOpacity(0.65),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        elevation: 0,
+                        side: const BorderSide(color: Colors.white30, width: 1),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      onPressed: _skipIntroOpacity < 0.1 ? null : () {
+                        _controller?.seekTo(Duration(seconds: widget.introEndTime!));
+                      },
+                      icon: const Icon(Icons.skip_next, size: 18),
+                      label: const Text('Saltar Intro', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, letterSpacing: 0.5)),
                     ),
-                    onPressed: () {
-                      _controller?.seekTo(Duration(seconds: widget.introEndTime!));
-                    },
-                    icon: const Icon(Icons.skip_next, size: 18),
-                    label: const Text('Saltar Intro', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, letterSpacing: 0.5)),
                   ),
                 ),
 

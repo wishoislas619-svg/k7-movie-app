@@ -39,7 +39,9 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     _descriptionController = TextEditingController(text: widget.movie?.description ?? '');
     _ratingController = TextEditingController(text: widget.movie?.rating.toString() ?? '0.0');
     _yearController = TextEditingController(text: widget.movie?.year ?? '');
-    _creditsStartTimeController = TextEditingController(text: widget.movie?.creditsStartTime?.toString() ?? '');
+    _creditsStartTimeController = TextEditingController(
+      text: _secondsToTime(widget.movie?.creditsStartTime),
+    );
     _selectedCategoryId = widget.movie?.categoryId;
     if (widget.movie != null) {
       _loadOptions();
@@ -49,6 +51,35 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
   void _loadOptions() async {
     final opts = await ref.read(movieRepositoryProvider).getVideoOptions(widget.movie!.id);
     setState(() => _options = opts);
+  }
+
+  /// Convierte segundos a HH:MM:SS (ej: 3661 → "01:01:01")
+  String _secondsToTime(int? seconds) {
+    if (seconds == null) return '';
+    final h = seconds ~/ 3600;
+    final m = (seconds % 3600) ~/ 60;
+    final s = seconds % 60;
+    return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  /// Convierte HH:MM:SS  a segundos (ej: "01:01:01" → 3661). Acepta también número puro.
+  int? _parseTime(String value) {
+    if (value.trim().isEmpty) return null;
+    if (value.contains(':')) {
+      final parts = value.trim().split(':');
+      if (parts.length == 3) {
+        final h = int.tryParse(parts[0]) ?? 0;
+        final m = int.tryParse(parts[1]) ?? 0;
+        final s = int.tryParse(parts[2]) ?? 0;
+        return h * 3600 + m * 60 + s;
+      }
+      if (parts.length == 2) {
+        final m = int.tryParse(parts[0]) ?? 0;
+        final s = int.tryParse(parts[1]) ?? 0;
+        return m * 60 + s;
+      }
+    }
+    return int.tryParse(value);
   }
 
   void _saveMovie() async {
@@ -63,7 +94,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         description: _descriptionController.text.isNotEmpty ? _descriptionController.text : null,
         rating: double.tryParse(_ratingController.text) ?? 0.0,
         year: _yearController.text.isNotEmpty ? _yearController.text : null,
-        creditsStartTime: int.tryParse(_creditsStartTimeController.text),
+        creditsStartTime: _parseTime(_creditsStartTimeController.text),
       );
     } else {
       final updatedMovie = Movie(
@@ -81,7 +112,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         backdrop: widget.movie!.backdrop,
         subtitleUrl: _subtitleUrlController.text,
         createdAt: widget.movie!.createdAt,
-        creditsStartTime: int.tryParse(_creditsStartTimeController.text),
+        creditsStartTime: _parseTime(_creditsStartTimeController.text),
       );
       await ref.read(moviesProvider.notifier).updateMovie(updatedMovie);
     }
@@ -118,7 +149,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                   _buildDialogTextField(urlController, 'URL Video'),
                   const SizedBox(height: 8),
                   DropdownButtonFormField<String>(
-                    value: ['Latino', 'Castellano', 'Inglés'].contains(selectedLanguage) ? selectedLanguage : 'Latino',
+                    value: ['Latino', 'Castellano', 'Inglés', 'Japonés'].contains(selectedLanguage) ? selectedLanguage : 'Latino',
                     dropdownColor: const Color(0xFF1E1E1E),
                     style: const TextStyle(color: Colors.white),
                     decoration: InputDecoration(
@@ -130,7 +161,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                       enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
                       focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF00A3FF))),
                     ),
-                    items: ['Latino', 'Castellano', 'Inglés'].map((String value) {
+                    items: ['Latino', 'Castellano', 'Inglés', 'Japonés'].map((String value) {
                       return DropdownMenuItem<String>(
                         value: value,
                         child: Text(value),
@@ -372,7 +403,11 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
             const SizedBox(height: 16),
             _buildTextField(controller: _descriptionController, labelText: 'Descripción de la Película', maxLines: 5),
             const SizedBox(height: 16),
-            _buildTextField(controller: _creditsStartTimeController, labelText: 'Créditos / Final (segundos) - Para saltar a recomendaciones', keyboardType: TextInputType.number),
+            _buildTextField(
+              controller: _creditsStartTimeController,
+              labelText: 'Inicio Créditos / Final (formato HH:MM:SS)',
+              keyboardType: TextInputType.text,
+            ),
             const SizedBox(height: 32),
             const Text('OPCIONES DE VIDEO', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
             const SizedBox(height: 8),
