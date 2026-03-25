@@ -58,10 +58,12 @@ dependencies:
   wakelock_plus: ^1.2.8
   background_downloader: ^9.5.4
   flutter_foreground_task: ^9.2.0
+  package_info_plus: ^8.1.1
   supabase_flutter: ^2.5.0
   device_info_plus: ^11.3.3
   google_sign_in: 6.2.1
   google_mobile_ads: ^7.0.0
+  unity_ads_plugin: ^0.3.11
 
 dev_dependencies:
   flutter_test:

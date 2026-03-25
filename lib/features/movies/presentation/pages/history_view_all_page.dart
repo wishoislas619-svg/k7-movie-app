@@ -102,12 +102,32 @@ class _HistoryViewAllPageState extends ConsumerState<HistoryViewAllPage> {
 
     return GestureDetector(
       onTap: () {
+        final startPos = Duration(milliseconds: item.lastPosition);
         if (item.mediaType == 'movie') {
-           final movie = (ref.read(moviesProvider).value ?? []).firstWhere((m) => m.id == item.mediaId);
-           Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
+          final movie = (ref.read(moviesProvider).value ?? []).firstWhere((m) => m.id == item.mediaId);
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => MovieDetailsPage(
+                movie: movie,
+                autoPlayVideoOptionId: item.videoOptionId,
+                autoPlayStartPosition: startPos,
+              ),
+            ),
+          );
         } else {
-           final series = (ref.read(seriesListProvider).value ?? []).firstWhere((s) => s.id == item.mediaId);
-           Navigator.push(context, MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)));
+          final series = (ref.read(seriesListProvider).value ?? []).firstWhere((s) => s.id == item.mediaId);
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => SeriesDetailsPage(
+                series: series,
+                autoPlayEpisodeId: item.episodeId,
+                autoPlayVideoOptionId: item.videoOptionId,
+                autoPlayStartPosition: startPos,
+              ),
+            ),
+          );
         }
       },
       child: Column(

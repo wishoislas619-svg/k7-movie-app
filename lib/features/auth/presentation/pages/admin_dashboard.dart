@@ -5,6 +5,7 @@ import '../../../../features/movies/presentation/pages/admin_categories_page.dar
 import '../../../../features/movies/presentation/pages/admin_popular_movies_page.dart';
 import '../../../../features/series/presentation/pages/admin_series_page.dart';
 import '../../../../features/series/presentation/pages/admin_series_categories_page.dart';
+import 'admin_settings_page.dart';
 
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
@@ -22,6 +23,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     const AdminSeriesPage(),
     const AdminSeriesCategoriesPage(),
     const AdminUsersPage(),
+    const AdminSettingsPage(),
   ];
 
   @override
@@ -69,6 +71,11 @@ class _AdminDashboardState extends State<AdminDashboard> {
               icon: Icon(Icons.people_outline),
               activeIcon: Icon(Icons.people),
               label: 'USUARIOS',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.settings_outlined),
+              activeIcon: Icon(Icons.settings),
+              label: 'AJUSTES',
             ),
           ],
         ),

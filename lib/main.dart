@@ -16,6 +16,8 @@ import 'core/services/foreground_service.dart';
 import 'features/auth/domain/entities/user.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:unity_ads_plugin/unity_ads_plugin.dart';
+import 'dart:io';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,6 +41,13 @@ void main() async {
       ]),
     );
   }).catchError((e) => debugPrint("Error Ads: $e")));
+
+  unawaited(UnityAds.init(
+    gameId: Platform.isAndroid ? '6074470' : '6074471',
+    testMode: false,
+    onComplete: () => debugPrint('Unity Ads Init Complete'),
+    onFailed: (error, message) => debugPrint('Unity Ads Init Failed: $error $message'),
+  ));
 
   runApp(
     const ProviderScope(

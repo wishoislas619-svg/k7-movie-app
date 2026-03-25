@@ -11,7 +11,15 @@ import '../../../../providers.dart';
 
 class MovieDetailsPage extends ConsumerStatefulWidget {
   final Movie movie;
-  const MovieDetailsPage({super.key, required this.movie});
+  final String? autoPlayVideoOptionId;
+  final Duration? autoPlayStartPosition;
+
+  const MovieDetailsPage({
+    super.key, 
+    required this.movie,
+    this.autoPlayVideoOptionId,
+    this.autoPlayStartPosition,
+  });
 
   @override
   ConsumerState<MovieDetailsPage> createState() => _MovieDetailsPageState();
@@ -93,6 +101,29 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
     } else {
       if (mounted) setState(() => _isLoadingMetadata = false);
     }
+
+    // Auto-play logic
+    if (widget.autoPlayVideoOptionId != null && _videoOptions != null && _videoOptions!.isNotEmpty && mounted) {
+      _playWithParams(widget.autoPlayVideoOptionId!, widget.autoPlayStartPosition ?? Duration.zero);
+    }
+  }
+
+  void _playWithParams(String optionId, Duration startPos) {
+    final option = _videoOptions!.firstWhere((o) => o.id == optionId, orElse: () => _videoOptions!.first);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerPage(
+          movieName: widget.movie.name,
+          mediaId: widget.movie.id,
+          mediaType: 'movie',
+          imagePath: widget.movie.imagePath,
+          videoOptions: [option, ..._videoOptions!.where((o) => o.id != option.id)],
+          startPosition: startPos,
+          creditsStartTime: widget.movie.creditsStartTime,
+        ),
+      ),
+    );
   }
 
   void _playMovie() {

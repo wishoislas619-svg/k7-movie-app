@@ -194,6 +194,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
             // AUTO-PLAY INMEDIATO
             if (_controller != null && _controller!.value.isInitialized) {
               _controller!.play();
+              _startHideTimer();
             } else {
               _startPlayback();
             }
@@ -319,6 +320,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
             // AUTO-PLAY INMEDIATO
             if (_controller != null && _controller!.value.isInitialized) {
               _controller!.play();
+              _startHideTimer();
             }
             _pollVerification(ct);
           }
@@ -403,7 +405,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     // Si venimos desde "Continuar Viendo" con posición inyectada, reproducir directo sin diálogo
     if (widget.startPosition != null && widget.startPosition!.inMilliseconds > 0) {
       await controller.seekTo(widget.startPosition!);
-      controller.play();
+      if (!_isLoadingAd && _isAdVerified) {
+        controller.play();
+        _startHideTimer();
+      }
       return;
     }
 
@@ -448,8 +453,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       }
       
       // SOLO dar play si NO hay un anuncio cargándose y está verificado
-      if (!_isLoadingAd && _isAdVerified) {
+      if (!_isLoadingAd && _isAdVerified && mounted) {
         controller.play();
+        _startHideTimer();
+      }
+    } else {
+      // Si no hay historial y ya pasaron los checks de anuncios
+      if (!_isLoadingAd && _isAdVerified && mounted) {
+        controller.play();
+        _startHideTimer();
       }
     }
   }

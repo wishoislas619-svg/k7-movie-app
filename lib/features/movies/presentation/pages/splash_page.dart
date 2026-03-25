@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'package:movie_app/core/services/update_service.dart';
 
 class SplashPage extends StatefulWidget {
   final VoidCallback onFinished;
@@ -33,7 +34,13 @@ class _SplashPageState extends State<SplashPage> {
           if (_progress >= 1.0) {
             _progress = 1.0;
             timer.cancel();
-            Future.delayed(const Duration(milliseconds: 800), widget.onFinished);
+            
+            // Check for updates before finishing
+            UpdateService.checkVersion(context).then((_) {
+              if (mounted) {
+                Future.delayed(const Duration(milliseconds: 800), widget.onFinished);
+              }
+            });
           }
         });
       }

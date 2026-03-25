@@ -815,18 +815,13 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           ? allOptions.firstWhere((o) => o.id == item.videoOptionId, orElse: () => allOptions.first)
           : allOptions.first;
 
-      if (!context.mounted) return;
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => VideoPlayerPage(
-            movieName: item.title,
-            mediaId: item.mediaId,
-            mediaType: 'movie',
-            imagePath: item.imagePath,
-            videoOptions: [preferredOption, ...allOptions.where((o) => o.id != preferredOption.id)],
-            startPosition: startPos,
-            creditsStartTime: movie.creditsStartTime,
+          builder: (_) => MovieDetailsPage(
+            movie: movie,
+            autoPlayVideoOptionId: item.videoOptionId,
+            autoPlayStartPosition: startPos,
           ),
         ),
       );

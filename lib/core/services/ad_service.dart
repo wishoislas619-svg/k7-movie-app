@@ -1,10 +1,8 @@
 import 'dart:io';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
-import 'package:uuid/uuid.dart';
+import 'package:unity_ads_plugin/unity_ads_plugin.dart';
 
 class AdService {
-  // ATENCIÓN: Estos son los IDs de prueba oficiales de Google.
-  // Cuando lances la app a producción, debes cambiarlos por tus bloques de AdMob reales.
   static String get rewardedAdUnitId {
     if (Platform.isAndroid) {
       return 'ca-app-pub-3088460333344148/9605033713';
@@ -21,48 +19,67 @@ class AdService {
     required Function() onAdDismissedIncomplete, 
   }) async {
 
+    // 1. INTENTO PRIMARIO: Google AdMob
     RewardedAd.load(
       adUnitId: rewardedAdUnitId,
       request: const AdRequest(),
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (RewardedAd ad) {
-          // ------ EL BLINDAJE SSV DE GOOGLE ADMOB ------
-          // Esto le dice a Google que, cuando termine el anuncio, 
-          // debe llamar a tu Edge Function y enviarle este 'ticketId' en secreto.
           ad.setServerSideOptions(ServerSideVerificationOptions(customData: ticketId));
-
           bool userEarnedReward = false;
 
           ad.fullScreenContentCallback = FullScreenContentCallback(
-            onAdShowedFullScreenContent: (RewardedAd ad) {},
             onAdDismissedFullScreenContent: (RewardedAd ad) {
               ad.dispose();
               if (userEarnedReward) {
-                onAdWatched(ticketId); // Notificamos que terminó de verlo
+                onAdWatched(ticketId); 
               } else {
-                onAdDismissedIncomplete(); // Lo cerró a la mitad
+                onAdDismissedIncomplete(); 
               }
             },
             onAdFailedToShowFullScreenContent: (RewardedAd ad, AdError error) {
               ad.dispose();
-              onAdFailed(error.message);
+              print('AdMob FullScreen Falló (${error.message}). -> Fallback a Unity Ads');
+              _showUnityFallback(ticketId, onAdWatched, onAdFailed, onAdDismissedIncomplete);
             },
           );
 
           ad.show(onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
-             // Este flag se vuelve 'true' solo si agota el timer del Rewarded Video
              userEarnedReward = true; 
           });
         },
         onAdFailedToLoad: (LoadAdError error) {
-          // Si el código es 3, es que AdMob todavía no tiene anuncios para tus nuevos IDs
-          if (error.code == 3) {
-            onAdFailed('AdMob aún está procesando tus nuevos IDs (Error 3: No Fill). Esto puede tardar unas horas en activarse.');
-          } else {
-            onAdFailed('Error al cargar anuncio: ${error.message} (Código: ${error.code})');
-          }
+          print('AdMob Falló al Cargar (Código: ${error.code}). -> Fallback a Unity Ads');
+          // 2. INTENTO SECUNDARIO (FALLBACK): Unity Ads
+          _showUnityFallback(ticketId, onAdWatched, onAdFailed, onAdDismissedIncomplete);
         },
       ),
+    );
+  }
+
+  static void _showUnityFallback(
+    String ticketId,
+    Function(String ticketId) onAdWatched, 
+    Function(String error) onAdFailed, 
+    Function() onAdDismissedIncomplete,
+  ) {
+    print('Intentando mostrar Unity Ads...');
+    UnityAds.showVideoAd(
+      placementId: Platform.isAndroid ? 'Rewarded_Android' : 'Rewarded_iOS',
+      onComplete: (placementId) {
+        print('Unity Ads Completado ($placementId)');
+        onAdWatched(ticketId); // Recompensa otorgada
+      },
+      onFailed: (placementId, error, message) {
+        print('Unity Ads Falló: $message ($error)');
+        onAdFailed('No hay anuncios de AdMob ni de Unity disponibles en este momento. Intenta más tarde.');
+      },
+      onStart: (placementId) => print('Unity Ads Iniciado ($placementId)'),
+      onClick: (placementId) => print('Unity Ads Clic ($placementId)'),
+      onSkipped: (placementId) {
+        print('Unity Ads Saltado ($placementId)');
+        onAdDismissedIncomplete();
+      },
     );
   }
 }
