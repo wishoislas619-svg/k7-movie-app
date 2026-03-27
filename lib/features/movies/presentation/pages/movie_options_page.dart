@@ -42,6 +42,7 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
           mediaType: 'movie',
           imagePath: widget.movie.imagePath,
           creditsStartTime: widget.movie.creditsStartTime,
+          extractionAlgorithm: option.extractionAlgorithm,
         ),
       ),
     );

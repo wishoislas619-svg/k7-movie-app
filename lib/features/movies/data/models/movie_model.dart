@@ -68,6 +68,7 @@ class VideoOptionModel extends VideoOption {
     required super.resolution,
     required super.videoUrl,
     super.language,
+    super.extractionAlgorithm = 1,
   });
 
   factory VideoOptionModel.fromMap(Map<String, dynamic> map) {
@@ -78,6 +79,7 @@ class VideoOptionModel extends VideoOption {
       resolution: map['resolution'],
       videoUrl: map['videoUrl'],
       language: map['language'],
+      extractionAlgorithm: map['extraction_algorithm'] ?? 1,
     );
   }
 
@@ -89,6 +91,7 @@ class VideoOptionModel extends VideoOption {
       'resolution': resolution,
       'videoUrl': videoUrl,
       'language': language,
+      'extraction_algorithm': extractionAlgorithm,
     };
   }
 }

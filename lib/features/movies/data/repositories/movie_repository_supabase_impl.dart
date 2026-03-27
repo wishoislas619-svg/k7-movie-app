@@ -100,6 +100,7 @@ class MovieRepositorySupabaseImpl implements MovieRepository {
       resolution: row['resolution'] as String? ?? '',
       videoUrl: row['video_url'] as String? ?? '',
       language: row['language'] as String?,
+      extractionAlgorithm: row['extraction_algorithm'] as int? ?? 1,
     );
   }
 
@@ -120,6 +121,7 @@ class MovieRepositorySupabaseImpl implements MovieRepository {
       'resolution': option.resolution,
       'video_url': option.videoUrl,
       'language': option.language,
+      'extraction_algorithm': option.extractionAlgorithm,
     });
   }
 
@@ -131,6 +133,7 @@ class MovieRepositorySupabaseImpl implements MovieRepository {
       'resolution': option.resolution,
       'video_url': option.videoUrl,
       'language': option.language,
+      'extraction_algorithm': option.extractionAlgorithm,
     }).eq('id', option.id);
   }
 

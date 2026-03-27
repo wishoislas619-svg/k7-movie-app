@@ -48,6 +48,7 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
   final int? introStartTime;
   final int? introEndTime;
   final int? creditsStartTime;
+  final int extractionAlgorithm;
 
   const VideoPlayerPage({
     super.key, 
@@ -65,6 +66,7 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.introStartTime,
     this.introEndTime,
     this.creditsStartTime,
+    this.extractionAlgorithm = 1,
   });
 
   @override
@@ -107,9 +109,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   bool _hasIncrementedView = false;
 
   InAppWebViewController? _webViewController;
+  final GlobalKey _webViewKey = GlobalKey();
   bool _isWebViewExtracting = true;
   List<String> _extractedQualities = [];
+  Map<String, String> _qualityToUrl = {};
+  bool _isQualityMenuOpen = false;
+  bool _hasInitialUrl = false;
+  bool _hasAttemptedQualityOptimization = false;
   String? _extractedVideoUrl;
+  static const _webviewTouchChannel = MethodChannel('com.luis.movieapp/webview_touch');
 
   bool _isSwitchingStream = false;
   bool _isScrapingSubtitles = false;
@@ -119,6 +127,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   String? _currentQualityLabel;
   Timer? _progressSaveTimer;
   bool _hasCheckedResume = false;
+  bool _isInitialLoading = true;
   
   bool _showSkipIntroButton = false;
   bool _showCreditsOverlay = false;
@@ -128,13 +137,21 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   List<Movie> _movieRecommendations = [];
   List<Series> _seriesRecommendations = [];
   bool _isPushingNextEpisode = false;
+  Timer? _scraperTimer;
+  int _autoClickCount = 0;
   double _skipIntroOpacity = 1.0;
   Timer? _skipFadeTimer;
 
   @override
   void initState() {
     super.initState();
-    _currentOption = widget.videoOptions.first;
+    if (widget.videoOptions.isNotEmpty) {
+      _currentOption = widget.videoOptions.first;
+    } else {
+      // Evitar crash si la lista está vacía
+      _errorMessage = "No hay opciones de video disponibles para este contenido.";
+      _isLoading = false;
+    }
     
     // Auto landscape mode
     SystemChrome.setPreferredOrientations([
@@ -354,10 +371,16 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     // Asegurar modo inmersivo al empezar la peli
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     
-    if (widget.isLocal) {
+    final videoUrl = _currentOption.videoUrl;
+    final isDirect = videoUrl.contains('.mp4') || 
+                   videoUrl.contains('.m3u8') || 
+                   videoUrl.contains('.m3u') ||
+                   (videoUrl.contains('cf-master') && videoUrl.contains('.txt'));
+
+    if (widget.isLocal || isDirect) {
       _isLoading = false;
-      _isWebViewExtracting = false;
-      _initializeVideoPlayer(_currentOption.videoUrl);
+      _isInitialLoading = false;
+      _initializeVideoPlayer(videoUrl);
     } else {
       _initWebViewController();
     }
@@ -481,51 +504,272 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Future<void> _runScraper() async {
-    const jsCode = '''
+    if (!mounted || _webViewController == null || !_isWebViewExtracting) return;
+    
+    // --- ALGORITMO 2: EXTRACCIÓN ORIGINAL (CLICKS NATIVOS + PASIVO) ---
+    // Este es el algoritmo que funcionaba perfecto antes de intentar buscar calidades.
+    if (widget.extractionAlgorithm == 2) {
+       try {
+         final dpr = MediaQuery.of(context).devicePixelRatio;
+         final box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
+         if (box != null) {
+           final offset = box.localToGlobal(Offset.zero);
+           final w = box.size.width;
+           final h = box.size.height;
+           
+           print("🤖 ALGORITMO 2 (MODO NATIVO): Simulando interacciones humanas...");
+           
+           // Secuencia de 4 clicks en cruz/centro para asegurar que se quiten Ads y se active el video
+           final points = [
+              Offset(w/2, h/2),
+              Offset(w/2 + 20, h/2),
+              Offset(w/2, h/2 + 20),
+              Offset(w/2, h/2)
+           ];
+
+           for (var p in points) {
+              await _webviewTouchChannel.invokeMethod('tapAt', {
+                'x': (offset.dx + p.dx) * dpr,
+                'y': (offset.dy + p.dy) * dpr
+              });
+              await Future.delayed(const Duration(milliseconds: 400));
+           }
+
+           // Escaneo ultra-simple: ¿Hay video ya?
+           final script = r'''
+              (function() {
+                 var v = document.querySelector('video');
+                 if (v && v.src && v.src.length > 10) return v.src;
+                 var sources = document.querySelectorAll('source');
+                 for (var s of sources) { if (s.src) return s.src; }
+                 return null;
+              })();
+           ''';
+           
+           final result = await _webViewController?.evaluateJavascript(source: script);
+           if (result != null) {
+              String vUrl = result.toString();
+              if (vUrl.startsWith('"') && vUrl.endsWith('"')) vUrl = vUrl.substring(1, vUrl.length - 1);
+              if (vUrl.startsWith('http') || vUrl.startsWith('blob:')) {
+                  print("🎯 ALGORITMO 2 ÉXITO: $vUrl");
+                  _hasInitialUrl = true;
+                  setState(() {
+                    _isInitialLoading = false;
+                    _isWebViewExtracting = false;
+                  });
+                  _initializeVideoPlayer(vUrl);
+                  return;
+              }
+           }
+         }
+       } catch(e) { print("Log: Error Algoritmo 2: $e"); }
+       return; // El Algoritmo 2 no continúa hacia la lógica de calidades (Algoritmo 1)
+    }
+
+    // --- ALGORITMO 1: BUSQUEDA INTELIGENTE DE CALIDADES (MODERNO) ---
+    print('🔵 DEBUG: _runScraper() llamado (Algoritmo 1), autoClickCount=$_autoClickCount');
+    
+    // Step 1: Detect and return coordinates for interaction targets
+    // Note: We use _hasInitialUrl to decide if we should look for Play or Qualities
+    final bool lookingForInitial = !_hasInitialUrl;
+    
+    final String coordsJs = r'''
       (function() {
-         var results = { videoUrl: null, qualities: [], subtitles: [], highestQuality: null };
-         
-         function scan(win) {
-            try {
-               var all = win.document.querySelectorAll('*');
-               for (var i=0; i<all.length; i++) {
-                  var el = all[i];
-                  if(el.children.length === 0 && el.textContent) {
-                     var text = el.textContent.trim();
-                     // Qualities
-                     if (/^([0-9]{3,4}p|[0-9]{3,4}P|HD|SD|4K|FHD)\$/i.test(text)) {
-                        if (results.qualities.indexOf(text) === -1) results.qualities.push(text);
-                     }
-                     // Subtitle Triggers
-                     if (/^(español|spanish|english|inglés|latino|castellano|français|italiano|portugués|cc)\$/i.test(text)) {
-                        if (results.subtitles.indexOf(text) === -1) results.subtitles.push(text);
-                     }
-                  }
-               }
-               for (var j=0; j<win.frames.length; j++) scan(win.frames[j]);
-            } catch(e) {}
-         }
+        var isInitial = ''' + lookingForInitial.toString() + r''';
+        
+        // --- PHASE 1: INITIAL PLAY ---
+        if (isInitial) {
+           var v = document.querySelector('video');
+           if (!v || v.paused) {
+              var playSelectors = ['media-play-button', '.vds-play-button', '.vjs-big-play-button', '.play-button', '[aria-label="Play"]', '.plyr__control--overlaid'];
+              for (var s of playSelectors) {
+                 var btn = document.querySelector(s);
+                 if (btn && btn.offsetParent !== null) {
+                    var r = btn.getBoundingClientRect();
+                    return JSON.stringify({ x: r.left + r.width/2, y: r.top + r.height/2, found: true, type: 'play' });
+                 }
+              }
+           }
+           return JSON.stringify({ found: false });
+        }
 
-         var v = document.querySelector('video');
-         if(v) results.videoUrl = v.src;
-         
-         scan(window);
-         
-         if (results.qualities.length > 0) {
-            var qSorted = [...results.qualities].sort((a, b) => {
-              var numA = parseInt(a) || 0;
-              var numB = parseInt(b) || 0;
-              return numB - numA;
-            });
-            results.highestQuality = qSorted[0];
-         }
+        // --- PHASE 2: QUALITY OPTIMIZATION ---
+        // Plan A: Buscar por etiquetas de calidad conocidas
+        var all = document.querySelectorAll('button, div, span, a');
+        var qualityItems = [];
 
-         return JSON.stringify(results);
+        for (var i=0; i<all.length; i++) {
+           var el = all[i];
+           if (el.offsetParent !== null) {
+              var text = (el.innerText || el.textContent || "").trim();
+              if (/^([0-9]{3,4}p|HD|SD|4K|FHD)$/i.test(text)) {
+                 var r = el.getBoundingClientRect();
+                 if (r.width > 0 && r.height > 0) {
+                    qualityItems.push({ label: text, x: r.left + r.width/2, y: r.top + r.height/2, top: r.top });
+                 }
+              }
+           }
+        }
+
+        if (qualityItems.length > 0) {
+           if (qualityItems.length === 1) {
+              var q = qualityItems[0];
+              return JSON.stringify({ x: q.x, y: q.y, found: true, type: 'open-menu', label: q.label });
+           } else {
+              qualityItems.sort((a, b) => {
+                  var valA = parseInt(a.label) || (a.label.toLowerCase().includes('hd') ? 720 : 0);
+                  var valB = parseInt(b.label) || (b.label.toLowerCase().includes('hd') ? 720 : 0);
+                  return valB - valA;
+              });
+              var top = qualityItems[0];
+              return JSON.stringify({ x: top.x, y: top.y, found: true, type: 'select-quality', label: top.label });
+           }
+        }
+        
+        // Plan B: Buscar el ícono del engranaje si no encontramos etiquetas
+        var gearSelectors = ['media-menu-button', '.vds-menu-button', '.gear-icon', '[aria-label="Settings"]', '.vjs-settings-control', '.icon-settings'];
+        for (var s of gearSelectors) {
+           var gear = document.querySelector(s);
+           if (gear && gear.offsetParent !== null) {
+              var r = gear.getBoundingClientRect();
+              return JSON.stringify({ x: r.left + r.width/2, y: r.top + r.height/2, found: true, type: 'open-menu', label: 'Gear Settings' });
+           }
+        }
+        
+        return JSON.stringify({ found: false });
       })();
     ''';
     
     try {
-      final dynamic jsResult = await _webViewController?.evaluateJavascript(source: jsCode);
+      if (!mounted || _webViewController == null) return;
+      final dynamic coordsResult = await _webViewController!.evaluateJavascript(source: coordsJs);
+      if (coordsResult != null) {
+        String raw = coordsResult is String ? coordsResult : coordsResult.toString();
+        // Limpiar comillas si el resultado viene envuelto
+        if (raw.startsWith('"') && raw.endsWith('"')) {
+          raw = raw.substring(1, raw.length - 1).replaceAll(r'\"', '"');
+        }
+        
+        final data = jsonDecode(raw);
+        if (data != null && data['found'] == true) {
+          final String targetType = data['type'] ?? 'unknown';
+          final String? label = data['label'];
+
+          if (targetType == 'select-quality' && _autoClickCount > 15) {
+             print('💡 INFO: Max auto-clicks reached for quality.');
+             return;
+          }
+
+          final jsX = data['x'];
+          final jsY = data['y'];
+          
+          if (jsX == null || jsY == null) return;
+
+          final double dx = (jsX as num).toDouble();
+          final double dy = (jsY as num).toDouble();
+          
+          final RenderBox? box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
+          if (box != null && dx > 0 && dy > 0) {
+            final Offset offset = box.localToGlobal(Offset.zero);
+            // Uso flexible de dpr para evitar errores tras desmontar
+            final double dpr = View.of(context).devicePixelRatio;
+            final double screenX = (offset.dx + dx) * dpr;
+            final double screenY = (offset.dy + dy) * dpr;
+            
+            print('🎯 AUTO-ACTION [$targetType]: ${label ?? ""} at ($screenX, $screenY)');
+            
+            if (targetType == 'select-quality') _hasAttemptedQualityOptimization = true;
+
+            await _webviewTouchChannel.invokeMethod('tapAt', { 'x': screenX, 'y': screenY });
+            
+            if (targetType == 'open-menu') {
+               await Future.delayed(const Duration(milliseconds: 1500));
+               _runScraper();
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('⚠️ Scraper execution error: $e');
+    }
+
+    // Step 2: Get video URL for interception
+    const videoJs = r'''
+      (function() {
+        var results = { videoUrl: null, qualities: [], subtitles: [], highestQuality: null };
+        
+        function scan(win) {
+          try {
+            // Find video directly
+            var v = win.document.querySelector('video');
+            if (v && v.src && !results.videoUrl) results.videoUrl = v.src;
+            
+            // Scan for quality and subtitle labels
+            var all = win.document.querySelectorAll('*');
+            for (var i=0; i<all.length; i++) {
+              var el = all[i];
+              if(el.children.length === 0 && el.textContent) {
+                var text = el.textContent.trim();
+                // Match quality tags
+                if (/^([0-9]{3,4}p|HD|SD|4K|FHD)$/i.test(text)) {
+                   if (results.qualities.indexOf(text) === -1) results.qualities.push(text);
+                }
+                // Match subtitle labels (roughly English, Spanish, etc.)
+                if (/^(English|Spanish|Español|Castellano|Italian|French|German|Portuguese|Latino)$/i.test(text)) {
+                   if (results.subtitles.indexOf(text) === -1) results.subtitles.push(text);
+                }
+              }
+            }
+            // Recursive scan iframes
+            for (var j=0; j<win.frames.length; j++) scan(win.frames[j]);
+          } catch(e) {}
+        }
+
+        scan(window);
+
+        if (results.qualities.length > 0) {
+          var qSorted = [...results.qualities].sort((a, b) => (parseInt(b) || 0) - (parseInt(a) || 0));
+          results.highestQuality = qSorted[0];
+        }
+        return JSON.stringify(results);
+      })();
+    ''';
+    
+    try {
+      // Step A: Target detection and native interaction
+      final dynamic coordsResult = await _webViewController?.evaluateJavascript(source: coordsJs);
+      if (coordsResult != null) {
+        String raw = coordsResult is String ? coordsResult : coordsResult.toString();
+        if (raw.startsWith('"') && raw.endsWith('"')) {
+          raw = raw.substring(1, raw.length - 1).replaceAll(r'\"', '"');
+        }
+        final data = jsonDecode(raw);
+        if (data['found'] == true) {
+          final double jsX = (data['x'] as num).toDouble();
+          final double jsY = (data['y'] as num).toDouble();
+          final String targetType = data['type'] ?? 'unknown';
+          final String? label = data['label'];
+
+          final RenderBox? box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
+          if (box != null && jsX > 0 && jsY > 0) {
+            final Offset offset = box.localToGlobal(Offset.zero);
+            final double dpr = MediaQueryData.fromView(View.of(context)).devicePixelRatio;
+            final double screenX = (offset.dx + jsX) * dpr;
+            final double screenY = (offset.dy + jsY) * dpr;
+            
+            print('🎯 AUTO-ACTION: $targetType ${label ?? ""} at ($screenX, $screenY)');
+            
+            try {
+              await _webviewTouchChannel.invokeMethod('tapAt', {'x': screenX, 'y': screenY});
+            } catch (e) {
+              print('⚠️ MethodChannel error: $e');
+            }
+          }
+        }
+      }
+
+      // Step B: Data scraping and extraction logic
+      final dynamic jsResult = await _webViewController?.evaluateJavascript(source: videoJs);
       if (jsResult != null) {
         Map<String, dynamic> data;
         
@@ -555,8 +799,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
             _extractedSubtitlesNotifier.value = List<String>.from(data['subtitles'] ?? []);
             
             if (url != null && url.isNotEmpty) {
-                print("Scraper successfully found direct URL: $url");
-                _isWebViewExtracting = false;
+                print("🎯 Scraper URL encontrada: $url");
+                _hasInitialUrl = true; // Phase 1 Complete
+                _isInitialLoading = false;
                 _isSwitchingStream = false;
                 _initializeVideoPlayer(url);
             }
@@ -673,6 +918,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Future<void> _initializeVideoPlayer(String videoUrl) async {
+    // Ya no cancelamos el scraper aquí para permitir que siga buscando calidades en segundo plano.
+    // _scraperTimer solo se cancela tras el timeout de clics o éxito total.
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -686,10 +933,22 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       if (widget.isLocal) {
         _controller = VideoPlayerController.file(File(videoUrl));
       } else {
-        _controller = VideoPlayerController.networkUrl(Uri.parse(videoUrl));
+        // Intercept 4meplayer (.txt but it is HLS)
+        final isHls = videoUrl.contains('cf-master') || videoUrl.contains('.m3u8');
+        _controller = VideoPlayerController.networkUrl(
+          Uri.parse(videoUrl),
+          formatHint: isHls ? VideoFormat.hls : null,
+          httpHeaders: {
+            'Referer': _currentOption.videoUrl.split('#')[0],
+            'Origin': Uri.tryParse(_currentOption.videoUrl)?.origin ?? '',
+            'User-Agent': "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+          },
+        );
       }
 
-      await _controller!.initialize();
+      if (_controller != null) {
+        await _controller!.initialize();
+      }
       
       if (mounted) {
         setState(() {
@@ -720,7 +979,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           _controller?.setClosedCaptionFile(Future.value(_captionNotifier.value));
         }
 
-        _controller!.addListener(_onVideoTick);
+        _controller?.addListener(_onVideoTick);
 
         // Iniciar el temporizador para guardar progreso automáticamente
         _startProgressTimer();
@@ -1010,62 +1269,18 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
             // The InAppWebView: Hidden by default, visible ONLY for subtitle scraping or if manually requested
             Offstage(
-              offstage: !_isScrapingSubtitles && !_isSwitchingStream,
+              offstage: !_isScrapingSubtitles && !_isSwitchingStream && !_isWebViewExtracting,
               child: Container(
-                color: Colors.black.withOpacity(0.95),
+                color: _hasInitialUrl ? Colors.transparent : Colors.black.withOpacity(0.95),
                 child: SafeArea(
                   child: Stack(
                     children: [
-                      // Invisible but active WebView
-                      Positioned(
-                        top: 0, left: 0,
-                        child: SizedBox(
-                          width: 0.1,
-                          height: 0.1,
-                          child: Opacity(
-                            opacity: 0.01,
-                            child: InAppWebView(
-                              initialUrlRequest: URLRequest(url: WebUri(_currentOption.videoUrl)),
-                              initialSettings: InAppWebViewSettings(
-                                javaScriptEnabled: true,
-                                domStorageEnabled: true,
-                                useOnDownloadStart: true,
-                                supportMultipleWindows: true,
-                                javaScriptCanOpenWindowsAutomatically: true,
-                                userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-                              ),
-                              onWebViewCreated: (controller) => _webViewController = controller,
-                              onLoadStop: (controller, url) async {
-                                if (_isWebViewExtracting || _isSwitchingStream) {
-                                  _runScraper();
-                                }
-                              },
-                              onDownloadStartRequest: (controller, downloadRequest) async {
-                                final url = downloadRequest.url.toString();
-                                if (url.contains(".srt") || url.contains(".vtt") || url.contains("/download/")) {
-                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Descarga detectada...")));
-                                  try {
-                                    final response = await http.get(Uri.parse(url), headers: {
-                                      "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-                                    }).timeout(const Duration(seconds: 20));
-
-                                    if (response.statusCode == 200) {
-                                      await _saveAndLoadLocalSubtitle(response.bodyBytes);
-                                      _closeScraperSuccess();
-                                    }
-                                  } catch (e) {
-                                    print("Download error: $e");
-                                  }
-                                }
-                              },
-                            ),
-                          ),
-                        ),
-                      ),
+                      // Invisible but active WebView (Now visible for debugging)
                       
                       // K7 Modern Scanning UI
-                      Center(
-                        child: Column(
+                      if (!_hasInitialUrl)
+                        Center(
+                          child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Container(
@@ -1075,7 +1290,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                 borderRadius: BorderRadius.circular(16),
                                 boxShadow: [BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.4), blurRadius: 20)],
                               ),
-                              child: const Row(
+                              child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Text('K7', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 22)),
@@ -1104,6 +1319,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                           ],
                         ),
                       ),
+
+
                     ],
                   ),
                 ),
@@ -1111,7 +1328,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
             ),
 
             // Loading / Error Overlay
-            if ((_isLoading || _isWebViewExtracting) && !_isSwitchingStream)
+            if (_isLoading && !_isWebViewExtracting && !_isSwitchingStream)
               Container(
                 color: Colors.black,
                 child: Center(
@@ -1229,6 +1446,159 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                         )
                       : _buildRecommendationsCarousel(),
                 ),
+            // Extractor Interactivo para Depuración (Visible en la capa más externa)
+            if (_isWebViewExtracting || _isScrapingSubtitles)
+               Positioned(
+                 top: 40, 
+                 left: 20,
+                 right: 20,
+                 child: IgnorePointer(
+                   ignoring: !_isInitialLoading,
+                   child: AnimatedOpacity(
+                     duration: const Duration(milliseconds: 300),
+                     opacity: _isInitialLoading ? 1.0 : 0.0,
+                     child: Column(
+                       children: [
+                         Container(
+                           width: double.infinity,
+                       padding: EdgeInsets.all(8),
+                       decoration: BoxDecoration(
+                          color: Color(0xFF00A3FF), 
+                          borderRadius: BorderRadius.vertical(top: Radius.circular(12))
+                       ),
+                       child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                             Icon(Icons.bug_report, color: Colors.white, size: 16),
+                             SizedBox(width: 8),
+                              Expanded(child: Text("VISTA TECNICA")), IconButton(icon: Icon(Icons.close, color: Colors.white, size: 16), padding: EdgeInsets.zero, constraints: BoxConstraints(), onPressed: () => setState(() { _isInitialLoading = false; _isWebViewExtracting = false; })),
+                          ],
+                       ),
+                     ),
+                     Container(
+                       height: 250,
+                       decoration: BoxDecoration(
+                         border: Border.all(color: Color(0xFF00A3FF), width: 2),
+                         borderRadius: BorderRadius.vertical(bottom: Radius.circular(12)),
+                         color: Colors.black,
+                       ),
+                       child: InAppWebView(
+                          key: _webViewKey,
+                          initialUrlRequest: URLRequest(
+                            url: WebUri(_currentOption.videoUrl),
+                            headers: {
+                              'Referer': _currentOption.videoUrl.split('#')[0],
+                              'Origin': Uri.tryParse(_currentOption.videoUrl)?.origin ?? '',
+                            },
+                          ),
+                          onWebViewCreated: (controller) async {
+                            _webViewController = controller;
+                            // Limpiamos caché y cookies previas para evitar bloqueos por sesión
+                            await controller.clearCache();
+                            await CookieManager.instance().deleteAllCookies();
+                          },
+                         initialSettings: InAppWebViewSettings(
+                           javaScriptEnabled: true,
+                           domStorageEnabled: true,
+                           useOnDownloadStart: true,
+                           supportMultipleWindows: false,
+                           javaScriptCanOpenWindowsAutomatically: false,
+                           allowsInlineMediaPlayback: true,
+                           mediaPlaybackRequiresUserGesture: false,
+                           userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                         ),
+                         onCreateWindow: (controller, action) async => false,
+                         shouldOverrideUrlLoading: (controller, navigationAction) async {
+                           var uri = navigationAction.request.url;
+                           if (uri != null && navigationAction.isForMainFrame) {
+                             final initialHost = Uri.tryParse(_currentOption.videoUrl)?.host ?? '';
+                             final host = uri.host.toLowerCase();
+                             bool isSafe = host == initialHost || host.contains('google') || host.contains('facebook') || host.contains('cloudflare') || host.contains('jsdelivr');
+                             if (!isSafe) return NavigationActionPolicy.CANCEL;
+                           }
+                           return NavigationActionPolicy.ALLOW;
+                         },
+                          // --- ALGORITMO HIBRIDO (REPO + CLICKS) ---
+                         onLoadResource: (controller, resource) {
+                           final url = resource.url?.toString() ?? '';
+                           final lcUrl = url.toLowerCase();
+                           bool isJunk = lcUrl.contains('analytics') || lcUrl.contains('google-analytics') || lcUrl.contains('doubleclick') || lcUrl.contains('collect?') || lcUrl.contains('facebook.com/tr/') || lcUrl.contains('yandex') || lcUrl.contains('yastatic') || lcUrl.contains('loading.mp4') || lcUrl.contains('mc.yandex.ru') || lcUrl.contains('hotjar') || lcUrl.contains('/pixel') || lcUrl.contains('popads') || lcUrl.contains('mixpanel');
+                           if (isJunk) return;
+                           bool hasVideoExt = lcUrl.contains('.mp4?') || lcUrl.endsWith('.mp4') || lcUrl.contains('.m3u8?') || lcUrl.endsWith('.m3u8') || lcUrl.contains('.m3u?') || lcUrl.endsWith('.m3u') || lcUrl.contains('.webm') || lcUrl.contains('.ts') || lcUrl.contains('.mov') || lcUrl.contains('.avi') || lcUrl.contains('.mkv');
+                           bool is4meStream = lcUrl.contains('cf-master') && lcUrl.contains('.txt');
+                            if ((hasVideoExt || is4meStream) && (_isWebViewExtracting || _isSwitchingStream)) {
+                              print("🎯 VIDEO_DETECTADO: $url");
+                              if (!_hasInitialUrl) {
+                                  _hasInitialUrl = true; 
+                                   setState(() { 
+                                     _isInitialLoading = false; 
+                                     if (widget.extractionAlgorithm == 2) {
+                                       _isWebViewExtracting = false; 
+                                     }
+                                   }); // Cerramos pantalla de carga para ver el video inicial
+                                  _initializeVideoPlayer(url);
+                              } else {
+                                  _initializeVideoPlayer(url); // Actualizamos a mayor calidad si aparece
+                              }
+                            }
+                         },
+                         onLoadStop: (controller, url) async {
+                           if (_isWebViewExtracting || _isSwitchingStream) {
+                             _autoClickCount = 0;
+                             _scraperTimer?.cancel();
+                              _scraperTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+                                if (!_isWebViewExtracting && !_isSwitchingStream) { timer.cancel(); return; }
+                                if (_autoClickCount < 4) {
+                                   _webViewController?.evaluateJavascript(source: "(function(){ var v=document.querySelector('video'); return (v && v.src) ? v.src : null; })();").then((v) {
+                                      if (v != null && v.toString().startsWith('http')) {
+                                          _hasInitialUrl = true;
+                                          setState(() { _isInitialLoading = false; });
+                                          _initializeVideoPlayer(v.toString());
+                                      }
+                                   });
+                                } else {
+                                   _runScraper();
+                                }
+                                _autoClickCount++;
+                              });
+                            }
+                          },
+                         onDownloadStartRequest: (controller, downloadRequest) async {
+                           final url = downloadRequest.url.toString();
+                           if (url.contains(".srt") || url.contains(".vtt") || url.contains("/download/")) {
+                             try {
+                               final response = await http.get(Uri.parse(url), headers: { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" }).timeout(const Duration(seconds: 20));
+                               if (response.statusCode == 200) { await _saveAndLoadLocalSubtitle(response.bodyBytes); _closeScraperSuccess(); }
+                             } catch (e) { print("Download error: $e"); }
+                           }
+                         },
+                       ),
+                     ),
+                   ],
+                 ),
+               ),
+             ),
+           ),
+            // Pantalla negra que oculta la vista técnica al usuario
+            if ((_isWebViewExtracting || _isScrapingSubtitles) && _isInitialLoading)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.black,
+                  child: const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(color: Color(0xFF00A3FF)),
+                        SizedBox(height: 20),
+                        Text(
+                          'Cargando video...',
+                          style: TextStyle(color: Colors.white70, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),

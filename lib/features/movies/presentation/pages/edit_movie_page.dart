@@ -131,6 +131,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     final urlController = TextEditingController(text: option?.videoUrl ?? '');
     final imgController = TextEditingController(text: option?.serverImagePath ?? '');
     String? selectedLanguage = option?.language ?? 'Latino';
+    int selectedAlgorithm = option?.extractionAlgorithm ?? 1;
 
     showDialog(
       context: context,
@@ -173,6 +174,30 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                       });
                     },
                   ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<int>(
+                    value: [1, 2].contains(selectedAlgorithm) ? selectedAlgorithm : 1,
+                    dropdownColor: const Color(0xFF1E1E1E),
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: 'Algoritmo de Extracción',
+                      labelStyle: const TextStyle(color: Color(0xFF00A3FF), fontSize: 13, fontWeight: FontWeight.bold),
+                      filled: true,
+                      fillColor: Colors.white.withOpacity(0.04),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF00A3FF))),
+                    ),
+                    items: const [
+                       DropdownMenuItem(value: 1, child: Text('Algoritmo 1: DOM + Calidades')),
+                       DropdownMenuItem(value: 2, child: Text('Algoritmo 2: Clicks Nativos')),
+                    ],
+                    onChanged: (newValue) {
+                      setState(() {
+                        selectedAlgorithm = newValue ?? 1;
+                      });
+                    },
+                  ),
                 ],
               ),
             ),
@@ -196,6 +221,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                     resolution: resController.text,
                     videoUrl: urlController.text,
                     language: selectedLanguage,
+                    extractionAlgorithm: selectedAlgorithm,
                   );
                   if (option == null) {
                     await ref.read(movieRepositoryProvider).addVideoOption(newOpt);

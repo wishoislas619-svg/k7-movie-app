@@ -43,6 +43,7 @@ class VideoOption {
   final String resolution;
   final String videoUrl;
   final String? language;
+  final int extractionAlgorithm;
 
   VideoOption({
     required this.id,
@@ -51,6 +52,7 @@ class VideoOption {
     required this.resolution,
     required this.videoUrl,
     this.language,
+    this.extractionAlgorithm = 1,
   });
 }
 class VideoQuality {

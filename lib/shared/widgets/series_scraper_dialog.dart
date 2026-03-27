@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../../features/series/domain/entities/episode.dart';
@@ -24,6 +25,19 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
   bool _isLoading = true;
   List<ScrapedEpisode> _foundEpisodes = [];
   int _targetSeason = 1;
+  late TextEditingController _seasonController;
+
+  @override
+  void initState() {
+    super.initState();
+    _seasonController = TextEditingController(text: '1');
+  }
+
+  @override
+  void dispose() {
+    _seasonController.dispose();
+    super.dispose();
+  }
 
   final String _scraperJs = '''
     (function() {
@@ -42,7 +56,8 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
       function findEpisodes() {
         const episodes = [];
         const links = document.querySelectorAll('a');
-        const regex = /(capitulo|episodio|ep|cap)\\s*\\d+/i;
+        const regex = /(capitulo|episodio|ep|cap|parte)\\s*\\d+/i;
+        const videoExtRegex = /\\.(mp4|m3u8|m3u|mkv|webm|txt\\?.*cf-master)/i;
         const numRegex = /^\\d+\\s*\$/;
 
         links.forEach(a => {
@@ -50,12 +65,31 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
           const href = a.href;
           if (!href || href.startsWith('javascript:')) return;
           
-          if (regex.test(text) || numRegex.test(text)) {
+          if (regex.test(text) || numRegex.test(text) || videoExtRegex.test(href)) {
             if (!episodes.find(e => e.url === href)) {
-              episodes.push({title: text, url: href});
+              episodes.push({title: text || 'Enlace detectado', url: href});
             }
           }
         });
+
+        // Search for direct <source> tags
+        document.querySelectorAll('source, video').forEach(v => {
+          const src = v.src || v.getAttribute('src');
+          if (src && videoExtRegex.test(src)) {
+            if (!episodes.find(e => e.url === src)) {
+              episodes.push({title: 'Stream directo detectado', url: src});
+            }
+          }
+        });
+
+        // AUTO-EVASION: Click common close buttons for ads
+        const closers = document.querySelectorAll('.close, .closed, .btn-close, [class*="close-"], [id*="close-"], .cerrar, #close_button');
+        closers.forEach(c => { if(c.offsetParent !== null) c.click(); });
+
+        // AUTO-PLAY: Click play buttons to trigger network traffic
+        const players = document.querySelectorAll('.vjs-big-play-button, .play-button, [aria-label="Play"], .plyr__control--overlaid, .play_icon');
+        players.forEach(p => { if(p.offsetParent !== null) p.click(); });
+
         return episodes;
       }
       return findEpisodes();
@@ -109,12 +143,27 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
                  Row(
                    mainAxisSize: MainAxisSize.min,
                    children: [
-                     const Text('Temporada: ', style: TextStyle(color: Colors.white70)),
-                     DropdownButton<int>(
-                       dropdownColor: const Color(0xFF2C2C2C),
-                       value: _targetSeason,
-                       items: List.generate(10, (i) => DropdownMenuItem(value: i + 1, child: Text('${i + 1}', style: const TextStyle(color: Colors.white)))),
-                       onChanged: (val) => setState(() => _targetSeason = val ?? 1),
+                     const Text('TEMPORADA: ', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11)),
+                     SizedBox(
+                       width: 50,
+                       height: 35,
+                       child: TextField(
+                         controller: _seasonController,
+                         keyboardType: TextInputType.number,
+                         textAlign: TextAlign.center,
+                         style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                         decoration: InputDecoration(
+                           contentPadding: EdgeInsets.zero,
+                           filled: true,
+                           fillColor: Colors.white.withOpacity(0.05),
+                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFF00A3FF))),
+                           enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                         ),
+                         onChanged: (val) {
+                           final n = int.tryParse(val);
+                           if (n != null) _targetSeason = n;
+                         },
+                       ),
                      ),
                    ],
                  ),
@@ -154,23 +203,76 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
                           javaScriptEnabled: true,
                           javaScriptCanOpenWindowsAutomatically: false,
                           supportMultipleWindows: false,
+                          userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
                           contentBlockers: _contentBlockers,
                           useShouldOverrideUrlLoading: true,
+                          mediaPlaybackRequiresUserGesture: false,
+                          allowsInlineMediaPlayback: true,
                         ),
                         onWebViewCreated: (controller) {
                           _webViewController = controller;
                         },
+                        onLoadResource: (controller, resource) {
+                          final url = resource.url?.toString() ?? '';
+                          final lcUrl = url.toLowerCase();
+                          
+                          // Exclude tracker/analytics domains
+                          bool isJunk = lcUrl.contains('analytics') || 
+                                       lcUrl.contains('google-analytics') || 
+                                       lcUrl.contains('doubleclick') || 
+                                       lcUrl.contains('collect?') ||
+                                       lcUrl.contains('facebook.com/tr/') ||
+                                       lcUrl.contains('yandex') ||
+                                       lcUrl.contains('mc.yandex.ru');
+
+                          if (isJunk) return;
+
+                          // Better video detection: extension should be followed by anchor, end, or param
+                          bool hasVideoExt = lcUrl.contains('.mp4?') || lcUrl.endsWith('.mp4') ||
+                                            lcUrl.contains('.m3u8?') || lcUrl.endsWith('.m3u8') ||
+                                            lcUrl.contains('.m3u?') || lcUrl.endsWith('.m3u');
+                          
+                          bool is4meStream = lcUrl.contains('cf-master') && lcUrl.contains('.txt');
+
+                          if (hasVideoExt || is4meStream) {
+                            // Find if already added
+                            if (!_foundEpisodes.any((e) => e.url == url)) {
+                              setState(() {
+                                // Extract a name based on the current page title or similar
+                                String title = 'Video detectado (Red)';
+                                if (is4meStream) title = 'HLS (4meplayer)';
+                                _foundEpisodes.add(ScrapedEpisode(title: title, url: url));
+                              });
+                            }
+                          }
+                        },
+                        onCreateWindow: (controller, createWindowAction) async {
+                          // Prevent ad popups from opening NEW windows
+                          return false; 
+                        },
                         onLoadStop: (controller, url) {
                           setState(() => _isLoading = false);
-                          // Inject cleaner on every load
-                          controller.evaluateJavascript(source: _scraperJs);
+                          // Periodically run cleaner and auto-play logic
+                          Timer.periodic(const Duration(seconds: 2), (t) {
+                            if (!mounted) { t.cancel(); return; }
+                            controller.evaluateJavascript(source: _scraperJs);
+                          });
                         },
                         shouldOverrideUrlLoading: (controller, navigationAction) async {
                           var uri = navigationAction.request.url;
-                          if (uri != null) {
-                            final initialHost = Uri.parse(widget.url).host;
-                            if (uri.host != initialHost && !uri.host.contains('google') && !uri.host.contains('facebook')) {
-                              print('Blocking redirect to: ${uri.host}');
+                          if (uri != null && navigationAction.isForMainFrame) {
+                            final initialHost = Uri.tryParse(widget.url)?.host ?? '';
+                            final host = uri.host.toLowerCase();
+                            
+                            // Allow common CDNs and initial host
+                            bool isSafe = host == initialHost || 
+                                         host.contains('google') || 
+                                         host.contains('facebook') ||
+                                         host.contains('cloudflare') ||
+                                         host.contains('jsdelivr');
+
+                            if (!isSafe) {
+                              print('Blocking main-frame redirect to: ${uri.host}');
                               return NavigationActionPolicy.CANCEL;
                             }
                           }

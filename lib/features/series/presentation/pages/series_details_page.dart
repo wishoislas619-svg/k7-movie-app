@@ -108,7 +108,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
     for (final season in _seasons) {
       final eps = _episodesMap[season.id] ?? [];
       final found = eps.cast<Episode?>().firstWhere(
-        (e) => e!.id == widget.autoPlayEpisodeId,
+        (e) => e != null && e.id == widget.autoPlayEpisodeId,
         orElse: () => null,
       );
       if (found != null) {
@@ -118,7 +118,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
       }
     }
 
-    if (targetEp == null || _videoOptions!.isEmpty) return;
+    if (targetEp == null || _videoOptions == null || _videoOptions!.isEmpty) return;
 
     // Elegir la misma opción que el usuario usó o la primera disponible
     final opt = widget.autoPlayVideoOptionId != null
@@ -126,29 +126,33 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
         : _videoOptions!.first;
 
     // Buscar la url del episodio para esa opción
-    final eUrl = targetEp.urls.firstWhere(
+    final eUrl = targetEp!.urls.firstWhere(
       (u) => u.optionId == opt.id,
       orElse: () => targetEp!.urls.first,
     );
+
+    if (eUrl == null) return;
 
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => VideoPlayerPage(
-          movieName: '${widget.series.name} - S${targetSeason?.seasonNumber ?? 1} E${targetEp!.episodeNumber}',
+          movieName: '${widget.series.name} - S${targetSeason?.seasonNumber ?? 1} E${targetEp?.episodeNumber ?? ""}',
           mediaId: widget.series.id,
-          episodeId: targetEp!.id,
+          episodeId: targetEp?.id ?? "",
           mediaType: 'series',
           imagePath: widget.series.imagePath,
-          subtitleLabel: 'S${targetSeason?.seasonNumber ?? 1} E${targetEp!.episodeNumber}: ${targetEp!.name}',
+          subtitleLabel: 'S${targetSeason?.seasonNumber ?? 1} E${targetEp?.episodeNumber ?? ""}: ${targetEp?.name ?? ""}',
           startPosition: widget.autoPlayStartPosition,
+          extractionAlgorithm: eUrl.extractionAlgorithm,
           videoOptions: [
             VideoOption(
-              id: targetEp!.id,
+              id: targetEp?.id ?? "",
               movieId: widget.series.id,
               serverImagePath: opt.serverImagePath,
               resolution: opt.resolution,
               videoUrl: eUrl.url,
+              extractionAlgorithm: eUrl.extractionAlgorithm,
             ),
           ],
         ),
@@ -186,6 +190,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
           introStartTime: episode.introStartTime,
           introEndTime: episode.introEndTime,
           creditsStartTime: episode.creditsStartTime,
+          extractionAlgorithm: eUrl.extractionAlgorithm,
           videoOptions: [
             VideoOption(
               id: episode.id,
@@ -193,6 +198,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
               serverImagePath: option?.serverImagePath ?? '',
               resolution: eUrl.quality ?? option?.resolution ?? 'Auto',
               videoUrl: eUrl.url,
+              extractionAlgorithm: eUrl.extractionAlgorithm,
             )
           ],
         ),

@@ -13,7 +13,10 @@ class SeriesOption {
     required this.resolution,
     required this.videoUrl,
     this.language,
+    this.extractionAlgorithm = 1,
   });
+
+  final int extractionAlgorithm;
 
   factory SeriesOption.fromMap(Map<String, dynamic> map) {
     return SeriesOption(
@@ -23,6 +26,7 @@ class SeriesOption {
       resolution: map['resolution'],
       videoUrl: map['videoUrl'],
       language: map['language'],
+      extractionAlgorithm: map['extraction_algorithm'] ?? 1,
     );
   }
 
@@ -34,6 +38,7 @@ class SeriesOption {
       'resolution': resolution,
       'videoUrl': videoUrl,
       'language': language,
+      'extraction_algorithm': extractionAlgorithm,
     };
   }
 }

@@ -4,11 +4,13 @@ class EpisodeUrl {
   final String url;
   final String? optionId; // ID of the SeriesOption (server)
   final String? quality;
+  final int extractionAlgorithm;
 
   EpisodeUrl({
     required this.url,
     this.optionId,
     this.quality,
+    this.extractionAlgorithm = 1,
   });
 
   factory EpisodeUrl.fromMap(Map<String, dynamic> map) {
@@ -16,6 +18,7 @@ class EpisodeUrl {
       url: map['url'],
       optionId: map['optionId'],
       quality: map['quality'],
+      extractionAlgorithm: map['extractionAlgorithm'] ?? 1,
     );
   }
 
@@ -24,6 +27,7 @@ class EpisodeUrl {
       'url': url,
       'optionId': optionId,
       'quality': quality,
+      'extractionAlgorithm': extractionAlgorithm,
     };
   }
 }

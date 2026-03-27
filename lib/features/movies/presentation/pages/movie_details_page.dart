@@ -121,6 +121,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
           videoOptions: [option, ..._videoOptions!.where((o) => o.id != option.id)],
           startPosition: startPos,
           creditsStartTime: widget.movie.creditsStartTime,
+          extractionAlgorithm: option.extractionAlgorithm,
         ),
       ),
     );

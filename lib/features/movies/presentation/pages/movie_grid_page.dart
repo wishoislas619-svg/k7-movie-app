@@ -780,13 +780,33 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     if (item.mediaType == 'movie') {
       final movie = (ref.read(moviesProvider).value ?? []).firstWhere(
         (m) => m.id == item.mediaId,
-        orElse: () => throw Exception('Movie not found'),
+        orElse: () => Movie(
+          id: item.mediaId,
+          name: item.title,
+          imagePath: item.imagePath,
+          categoryId: '',
+          description: '',
+          rating: 0,
+          year: '',
+          createdAt: DateTime.now(),
+          isPopular: false,
+        ),
       );
       Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
     } else {
       final series = (ref.read(seriesListProvider).value ?? []).firstWhere(
         (s) => s.id == item.mediaId,
-        orElse: () => throw Exception('Series not found'),
+        orElse: () => Series(
+          id: item.mediaId,
+          name: item.title,
+          imagePath: item.imagePath,
+          categoryId: '',
+          description: '',
+          rating: 0,
+          year: '',
+          createdAt: DateTime.now(),
+          isPopular: false,
+        ),
       );
       Navigator.push(context, MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)));
     }
@@ -807,11 +827,21 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       // Fetch the movie to get creditsStartTime
       final movie = (ref.read(moviesProvider).value ?? []).firstWhere(
         (m) => m.id == item.mediaId,
-        orElse: () => throw Exception('Movie not found'),
+        orElse: () => Movie(
+          id: item.mediaId,
+          name: item.title,
+          imagePath: item.imagePath,
+          categoryId: '',
+          description: '',
+          rating: 0,
+          year: '',
+          createdAt: DateTime.now(),
+          isPopular: false,
+        ),
       );
 
       // Preferir el enlace que el usuario eligió la última vez
-      final preferredOption = item.videoOptionId != null
+      final option = item.videoOptionId != null
           ? allOptions.firstWhere((o) => o.id == item.videoOptionId, orElse: () => allOptions.first)
           : allOptions.first;
 
@@ -820,7 +850,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         MaterialPageRoute(
           builder: (_) => MovieDetailsPage(
             movie: movie,
-            autoPlayVideoOptionId: item.videoOptionId,
+            autoPlayVideoOptionId: option.id,
             autoPlayStartPosition: startPos,
           ),
         ),
@@ -828,16 +858,33 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     } else {
       // Series: ir a detalles con parámetros de auto-play
       if (!context.mounted) return;
-      final series = (ref.read(seriesListProvider).value ?? []).firstWhere(
-        (s) => s.id == item.mediaId,
-        orElse: () => throw Exception('Series not found'),
-      );
+      
+      // Intentamos obtener los detalles completos de la serie desde el repositorio si no está en la lista cacheada.
+      Series? series;
+      final cachedList = ref.read(seriesListProvider).value ?? [];
+      try {
+        series = cachedList.firstWhere((s) => s.id == item.mediaId);
+      } catch (_) {
+        series = await ref.read(seriesRepositoryProvider).getSeriesById(item.mediaId);
+      }
+      
+      series ??= Series(
+          id: item.mediaId,
+          name: item.title,
+          imagePath: item.imagePath,
+          categoryId: '',
+          description: '',
+          rating: 0,
+          year: '',
+          createdAt: DateTime.now(),
+          isPopular: false,
+        );
 
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => SeriesDetailsPage(
-            series: series,
+            series: series!,
             autoPlayEpisodeId: item.episodeId,
             autoPlayVideoOptionId: item.videoOptionId,
             autoPlayStartPosition: startPos,

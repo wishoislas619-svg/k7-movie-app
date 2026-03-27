@@ -96,6 +96,7 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
         resolution: r['resolution'] as String? ?? '',
         videoUrl: r['video_url'] as String? ?? '',
         language: r['language'] as String?,
+        extractionAlgorithm: r['extraction_algorithm'] as int? ?? 1,
       );
 
   // ── Series ─────────────────────────────────────────────────────────────────
@@ -255,6 +256,7 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
       'resolution': option.resolution,
       'video_url': option.videoUrl,
       'language': option.language,
+      'extraction_algorithm': option.extractionAlgorithm,
       'label': option.resolution, // Mapeamos resolución a 'label' para evitar el error not-null
     };
     if (option.id.isNotEmpty && option.id.length == 36) row['id'] = option.id;
@@ -269,6 +271,7 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
       'resolution': option.resolution,
       'video_url': option.videoUrl,
       'language': option.language,
+      'extraction_algorithm': option.extractionAlgorithm,
       'label': option.resolution, // Mapeamos resolución a 'label' para evitar el error not-null
     }).eq('id', option.id);
   }
