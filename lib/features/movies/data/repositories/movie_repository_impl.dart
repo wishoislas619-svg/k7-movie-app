@@ -103,6 +103,7 @@ class MovieRepositorySqliteImpl implements MovieRepository {
       resolution: option.resolution,
       videoUrl: option.videoUrl,
       language: option.language,
+      extractionAlgorithm: option.extractionAlgorithm,
     );
     await db.insert('video_options', model.toMap());
   }
@@ -117,6 +118,7 @@ class MovieRepositorySqliteImpl implements MovieRepository {
       resolution: option.resolution,
       videoUrl: option.videoUrl,
       language: option.language,
+      extractionAlgorithm: option.extractionAlgorithm,
     );
     await db.update(
       'video_options',

@@ -4,6 +4,7 @@ import '../../domain/entities/category.dart';
 import 'movie_details_page.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/widgets/marquee_text.dart';
+import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 
 class CategoryPage extends StatefulWidget {
   final Category category;
@@ -87,23 +88,15 @@ class _CategoryPageState extends State<CategoryPage> {
               children: [
                 Stack(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(1.2),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(16),
-                        gradient: LinearGradient(
-                          colors: [
-                            const Color(0xFF00A3FF).withOpacity(0.5),
-                            const Color(0xFFD400FF).withOpacity(0.5),
-                          ],
-                        ),
-                      ),
+                    EnergyFlowBorder(
+                      borderRadius: 16,
+                      borderWidth: 1.2,
+                      backgroundColor: Colors.white10,
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(15),
                         child: Container(
                           width: double.infinity,
                           height: 170,
-                          color: Colors.white10,
                           child: movie.imagePath.startsWith('http') 
                             ? Image.network(movie.imagePath, fit: BoxFit.cover)
                             : const Icon(Icons.movie, color: Colors.white24, size: 40),

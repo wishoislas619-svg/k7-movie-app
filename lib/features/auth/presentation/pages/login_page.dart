@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
 import 'register_page.dart';
 import '../../../../core/services/storage_service.dart';
+import '../../../../shared/widgets/energy_flow_border.dart';
 
 class LoginPage extends ConsumerStatefulWidget {
   const LoginPage({super.key});
@@ -191,27 +192,11 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   }
 
   Widget _buildLoginCard() {
-    return Container(
-      padding: const EdgeInsets.all(1), // Border width
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(24),
-        gradient: LinearGradient(
-          colors: [
-            Colors.blue.withOpacity(0.6),
-            Colors.purple.withOpacity(0.6),
-            Colors.blue.withOpacity(0.6),
-            Colors.purple.withOpacity(0.6),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF08080B), // Very dark background
-          borderRadius: BorderRadius.circular(23),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 25),
+    return EnergyFlowBorder(
+      borderRadius: 24,
+      borderWidth: 1.5,
+      backgroundColor: const Color(0xFF08080B),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 25),
         child: Column(
           children: [
             // Title
@@ -368,9 +353,8 @@ class _LoginPageState extends ConsumerState<LoginPage> {
             )
           ],
         ),
-      ),
-    );
-  }
+      );
+    }
 
   void _showForgotPasswordDialog() {
     showDialog(

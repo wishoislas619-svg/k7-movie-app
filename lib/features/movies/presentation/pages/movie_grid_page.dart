@@ -20,6 +20,7 @@ import 'package:movie_app/features/movies/presentation/pages/history_view_all_pa
 import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
 import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
 import 'package:movie_app/providers.dart';
+import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -228,6 +229,24 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             value: _selectedCategoryFilter,
             dropdownColor: const Color(0xFF121212),
             icon: const Icon(Icons.filter_list, color: Color(0xFF00A3FF)),
+            selectedItemBuilder: (BuildContext context) {
+              return [
+                const SizedBox(
+                  width: 80,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: Text("Todas", overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.white)),
+                  ),
+                ),
+                ...categories.map((c) => SizedBox(
+                  width: 80,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(c.name, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
+                  ),
+                )),
+              ];
+            },
             items: [
               const DropdownMenuItem(value: null, child: Text("Todas", style: TextStyle(color: Colors.white))),
               ...categories.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name, style: const TextStyle(color: Colors.white)))),
@@ -284,33 +303,23 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       onTap: () {
         Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
       },
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        padding: const EdgeInsets.all(1.5), // Border width for iridescent effect
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(25),
-          gradient: LinearGradient(
-            colors: [
-              Colors.blue.withOpacity(0.7),
-              Colors.purple.withOpacity(0.7),
-              Colors.blue.withOpacity(0.7),
-              Colors.purple.withOpacity(0.7),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(24),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.network((movie.backdropUrl != null && movie.backdropUrl!.isNotEmpty) ? movie.backdropUrl! : movie.imagePath, fit: BoxFit.cover),
-              Container(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        child: EnergyFlowBorder(
+          borderRadius: 25,
+          borderWidth: 1.5,
+          backgroundColor: Colors.transparent,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Image.network((movie.backdropUrl != null && movie.backdropUrl!.isNotEmpty) ? movie.backdropUrl! : movie.imagePath, fit: BoxFit.cover),
+                Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
                     colors: [
                       Colors.transparent,
                       Colors.black.withOpacity(0.4),
@@ -401,8 +410,9 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildMovieSection(BuildContext context, String title, List<Movie> movies, {Category? category}) {
     return Column(
@@ -480,31 +490,23 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           children: [
             Stack(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(1.2),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    gradient: LinearGradient(
-                      colors: [
-                        const Color(0xFF00A3FF).withOpacity(0.5),
-                        const Color(0xFFD400FF).withOpacity(0.5),
-                      ],
-                    ),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(15),
-                    child: Container(
-                      width: 120,
-                      height: 180,
-                      color: Colors.white10,
-                      child: Image.network(
-                        movie.imagePath, 
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white24, size: 50),
-                      ),
-                    ),
+            EnergyFlowBorder(
+              borderRadius: 16,
+              borderWidth: 1.2,
+              backgroundColor: Colors.white10,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(15),
+                child: SizedBox(
+                  width: 120,
+                  height: 180,
+                  child: Image.network(
+                    movie.imagePath, 
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white24, size: 50),
                   ),
                 ),
+              ),
+            ),
                 Positioned(
                   top: 8,
                   left: 8,
@@ -602,25 +604,17 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           children: [
             Stack(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(1.2),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    gradient: LinearGradient(
-                      colors: [
-                        const Color(0xFF00A3FF).withOpacity(0.5),
-                        const Color(0xFFD400FF).withOpacity(0.5),
-                      ],
-                    ),
-                  ),
+                EnergyFlowBorder(
+                  borderRadius: 16,
+                  borderWidth: 1.2,
+                  backgroundColor: Colors.white10,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(15),
                     child: Stack(
                       children: [
-                        Container(
+                        SizedBox(
                           width: 140,
                           height: 200,
-                          color: Colors.white10,
                           child: Image.network(
                             item.imagePath, 
                             fit: BoxFit.cover,

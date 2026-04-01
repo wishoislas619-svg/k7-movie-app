@@ -8,6 +8,7 @@ import '../../../player/presentation/pages/video_player_page.dart';
 import 'movie_options_page.dart';
 import '../../../player/data/datasources/video_service.dart';
 import '../../../../providers.dart';
+import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 
 class MovieDetailsPage extends ConsumerStatefulWidget {
   final Movie movie;
@@ -202,20 +203,15 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                       // Poster Image on the left
                       Hero(
                         tag: 'poster_${currentMovie.id}',
-                        child: Container(
-                          width: 120,
-                          height: 180,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow: [
-                              BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.3), blurRadius: 15, spreadRadius: 1),
-                            ],
-                            border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.5), width: 1.5),
-                          ),
+                        child: EnergyFlowBorder(
+                          borderRadius: 12,
+                          borderWidth: 1.5,
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(11),
                             child: Image.network(
                               currentMovie.imagePath,
+                              width: 120,
+                              height: 180,
                               fit: BoxFit.cover,
                               errorBuilder: (_, __, ___) => Container(color: Colors.white12, child: const Icon(Icons.movie, color: Colors.white24)),
                             ),
@@ -361,42 +357,25 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                   const SizedBox(height: 25),
 
                   // 4. Description Card
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(1.2), // Border width
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(17),
-                      gradient: LinearGradient(
-                        colors: [
-                          Colors.blue.withOpacity(0.5),
-                          Colors.purple.withOpacity(0.5),
-                          Colors.blue.withOpacity(0.5),
-                          Colors.purple.withOpacity(0.5),
-                        ],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                    ),
-                    child: Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF121212),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            (!_isDescriptionExpanded && currentDescription.length > 70)
-                                ? '${currentDescription.substring(0, 70)}...'
-                                : currentDescription,
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.7),
-                              fontSize: 15,
-                              height: 1.6,
-                            ),
-                            textAlign: TextAlign.left,
+                   EnergyFlowBorder(
+                    borderRadius: 17,
+                    borderWidth: 1.2,
+                    backgroundColor: const Color(0xFF121212),
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          (!_isDescriptionExpanded && currentDescription.length > 70)
+                              ? '${currentDescription.substring(0, 70)}...'
+                              : currentDescription,
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.7),
+                            fontSize: 15,
+                            height: 1.6,
                           ),
+                          textAlign: TextAlign.left,
+                        ),
                         if (currentDescription.length > 70)
                           GestureDetector(
                             onTap: () => setState(() => _isDescriptionExpanded = !_isDescriptionExpanded),
@@ -415,8 +394,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                       ],
                     ),
                   ),
-                ),
-                const SizedBox(height: 35),
+                  const SizedBox(height: 35),
 
                   // 5. More Like This Header
                   Row(
@@ -473,15 +451,15 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                       },
                     ),
                   ),
-                  const SizedBox(height: 40),
-                ],
-              ),
+                const SizedBox(height: 40),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildRoundButton(IconData icon, VoidCallback onTap) {
     return GestureDetector(

@@ -67,7 +67,12 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.introEndTime,
     this.creditsStartTime,
     this.extractionAlgorithm = 1,
+    this.initialVolume,
+    this.initialBrightness,
   });
+
+  final double? initialVolume;
+  final double? initialBrightness;
 
   @override
   ConsumerState<VideoPlayerPage> createState() => _VideoPlayerPageState();
@@ -94,6 +99,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   bool _isLocked = false;
   double _volume = 0.5;
   double _brightness = 0.5;
+  double? _initialVolume;
+  double? _initialBrightness;
   bool _showVolumeLabel = false;
   bool _showBrightnessLabel = false;
   bool _isDraggingVolume = false;
@@ -145,6 +152,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   @override
   void initState() {
     super.initState();
+    _initialVolume = widget.initialVolume;
+    _initialBrightness = widget.initialBrightness;
     if (widget.videoOptions.isNotEmpty) {
       _currentOption = widget.videoOptions.first;
     } else {
@@ -159,6 +168,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       DeviceOrientation.landscapeRight,
     ]);
 
+    if (widget.isLocal) {
+      _isWebViewExtracting = false;
+      _isLoading = false;
+      _isInitialLoading = false;
+    }
+
+    _initSettings();
     _checkAdRequirement();
   }
 
@@ -799,11 +815,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
             _extractedSubtitlesNotifier.value = List<String>.from(data['subtitles'] ?? []);
             
             if (url != null && url.isNotEmpty) {
-                print("🎯 Scraper URL encontrada: $url");
-                _hasInitialUrl = true; // Phase 1 Complete
-                _isInitialLoading = false;
-                _isSwitchingStream = false;
-                _initializeVideoPlayer(url);
+                bool isSameBase = false;
+                if (_controller != null && _controller!.dataSource.isNotEmpty) {
+                    final currentBase = _controller!.dataSource.split('?').first;
+                    final newBase = url.split('?').first;
+                    isSameBase = currentBase == newBase;
+                }
+                
+                if (!_hasInitialUrl || (!isSameBase && !url.contains('.ts'))) {
+                    print("🎯 Scraper URL encontrada: $url");
+                    _hasInitialUrl = true; // Phase 1 Complete
+                    _isInitialLoading = false;
+                    _isSwitchingStream = false;
+                    _initializeVideoPlayer(url);
+                }
             }
           });
         }
@@ -900,9 +925,18 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     try {
       // Hide system volume UI
       VolumeController.instance.showSystemUI = false;
-      _volume = await VolumeController.instance.getVolume();
-      _brightness = await ScreenBrightness().current;
-      setState(() {});
+      
+      final vol = await VolumeController.instance.getVolume();
+      final bright = await ScreenBrightness().current;
+      
+      if (mounted) {
+        setState(() {
+          _volume = vol;
+          _brightness = bright;
+          _initialVolume ??= vol;
+          _initialBrightness ??= bright;
+        });
+      }
     } catch (_) {}
     
     // Listen to volume changes (ignore if we are currently dragging to avoid feedback jumps)
@@ -940,7 +974,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           formatHint: isHls ? VideoFormat.hls : null,
           httpHeaders: {
             'Referer': _currentOption.videoUrl.split('#')[0],
-            'Origin': Uri.tryParse(_currentOption.videoUrl)?.origin ?? '',
+            'Origin': (Uri.tryParse(_currentOption.videoUrl)?.hasScheme ?? false) 
+                ? Uri.tryParse(_currentOption.videoUrl)!.origin 
+                : '',
             'User-Agent': "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
           },
         );
@@ -980,6 +1016,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         }
 
         _controller?.addListener(_onVideoTick);
+
+        // Pre-carga inmediata de episodio siguiente/recomendaciones para autoplay
+        if (widget.mediaType == 'series' && !_creditsDataLoaded) {
+          _creditsDataLoaded = true;
+          _loadCreditsData();
+        }
 
         // Iniciar el temporizador para guardar progreso automáticamente
         _startProgressTimer();
@@ -1045,14 +1087,47 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     }
 
     if (_showSkipIntroButton != showSkip || _showCreditsOverlay != showCredits) {
-      setState(() {
-        if (showSkip && !_showSkipIntroButton) {
-          _skipIntroOpacity = 1.0;
-          _startSkipFadeTimer();
+      if (mounted) {
+        setState(() {
+          if (showSkip && !_showSkipIntroButton) {
+            _skipIntroOpacity = 1.0;
+            _startSkipFadeTimer();
+          }
+          _showSkipIntroButton = showSkip;
+          _showCreditsOverlay = showCredits;
+        });
+      }
+    }
+
+    // --- AUTOPLAY LOGIC ---
+    if (!_isPushingNextEpisode && widget.mediaType == 'series' && _controller!.value.isInitialized) {
+      final duration = _controller!.value.duration;
+      final position = _controller!.value.position;
+      
+      // We consider it finished if it's within 500ms of the end or position >= duration
+      final bool reachedEnd = position >= duration || (duration.inMilliseconds > 0 && (duration.inMilliseconds - position.inMilliseconds) < 500);
+
+      if (reachedEnd && position.inMilliseconds > 0) {
+        _isPushingNextEpisode = true; 
+        print('🕒 [AUTOPLAY] Ep. finalizado. Buscando siguiente paso...');
+        
+        if (_nextEpisode != null) {
+          print('🕒 [AUTOPLAY] Iniciando: ${_nextEpisode!.name}');
+          _playNextEpisode();
+        } else if (_seriesRecommendations.isNotEmpty) {
+          print('🕒 [AUTOPLAY] Final de serie. Cargando recomendación: ${_seriesRecommendations.first.name}');
+          final item = _seriesRecommendations.first;
+          _controller?.pause();
+          _saveProgress();
+          
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => SeriesDetailsPage(series: item),
+            ),
+          );
         }
-        _showSkipIntroButton = showSkip;
-        _showCreditsOverlay = showCredits;
-      });
+      }
     }
   }
 
@@ -1149,16 +1224,25 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     _controller?.removeListener(_onVideoTick);
     _controller?.dispose();
     _webViewController = null;
+    
+    // Restore initial volume and brightness
+    if (_initialVolume != null) {
+      VolumeController.instance.setVolume(_initialVolume!);
+    }
+    if (_initialBrightness != null) {
+      ScreenBrightness().setScreenBrightness(_initialBrightness!);
+    }
+    VolumeController.instance.showSystemUI = true;
     VolumeController.instance.removeListener();
     WakelockPlus.disable();
     
-    if (!_isPushingNextEpisode) {
-      SystemChrome.setPreferredOrientations([
-        DeviceOrientation.portraitUp,
-        DeviceOrientation.portraitDown,
-      ]);
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    }
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
@@ -1347,8 +1431,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               _buildErrorContent(),
 
             // Skip Forward/Backward Buttons (ONLY if not locked)
-            if (!_isLocked && _showControls && _errorMessage == null && !(_isLoading || _isWebViewExtracting || _isScrapingSubtitles))
-              _buildSkipOverlay(),
+            if (!_isLocked && _errorMessage == null && !_isInitialLoading)
+              AnimatedOpacity(
+                duration: const Duration(milliseconds: 300),
+                opacity: _showControls ? 1.0 : 0.0,
+                child: IgnorePointer(
+                  ignoring: !_showControls,
+                  child: _buildSkipOverlay(),
+                ),
+              ),
 
             // Gesture Indicators (Volume / Brightness)
             _buildGestureIndicators(),
@@ -1379,21 +1470,30 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
             ),
 
             // Play/Pause Sync
-            if (!_isLocked && _showControls && _errorMessage == null && !(_isLoading || _isWebViewExtracting || _isScrapingSubtitles))
+            if (!_isLocked && _errorMessage == null && !_isInitialLoading)
               Center(
-                child: IconButton(
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 300),
+                  opacity: _showControls ? 1.0 : 0.0,
+                  child: IgnorePointer(
+                    ignoring: !_showControls,
+                    child: IconButton(
                   iconSize: 80,
                   icon: Icon(
                     _controller?.value.isPlaying ?? false ? Icons.pause : Icons.play_arrow,
                     color: Colors.white.withOpacity(0.8),
                   ),
                   onPressed: () {
-                    setState(() {
-                      _controller!.value.isPlaying ? _controller!.pause() : _controller!.play();
-                    });
+                    if (_controller != null && _controller!.value.isInitialized) {
+                      setState(() {
+                        _controller!.value.isPlaying ? _controller!.pause() : _controller!.play();
+                      });
+                    }
                     _startHideTimer();
                   },
                 ),
+                ),
+              ),
               ),
 
               // Skip Intro Button
@@ -1488,7 +1588,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                             url: WebUri(_currentOption.videoUrl),
                             headers: {
                               'Referer': _currentOption.videoUrl.split('#')[0],
-                              'Origin': Uri.tryParse(_currentOption.videoUrl)?.origin ?? '',
+                              'Origin': (Uri.tryParse(_currentOption.videoUrl)?.hasScheme ?? false) 
+                                  ? Uri.tryParse(_currentOption.videoUrl)!.origin 
+                                  : '',
                             },
                           ),
                           onWebViewCreated: (controller) async {
@@ -1538,7 +1640,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                    }); // Cerramos pantalla de carga para ver el video inicial
                                   _initializeVideoPlayer(url);
                               } else {
-                                  _initializeVideoPlayer(url); // Actualizamos a mayor calidad si aparece
+                                  bool isSameBase = false;
+                                  if (_controller != null && _controller!.dataSource.isNotEmpty) {
+                                      final currentBase = _controller!.dataSource.split('?').first;
+                                      final newBase = url.split('?').first;
+                                      isSameBase = currentBase == newBase;
+                                  }
+                                  if (!isSameBase && !url.contains('.ts')) {
+                                      _initializeVideoPlayer(url); // Actualizamos a mayor calidad si aparece
+                                  }
                               }
                             }
                          },
@@ -1551,9 +1661,18 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                 if (_autoClickCount < 4) {
                                    _webViewController?.evaluateJavascript(source: "(function(){ var v=document.querySelector('video'); return (v && v.src) ? v.src : null; })();").then((v) {
                                       if (v != null && v.toString().startsWith('http')) {
-                                          _hasInitialUrl = true;
-                                          setState(() { _isInitialLoading = false; });
-                                          _initializeVideoPlayer(v.toString());
+                                          final foundUrl = v.toString();
+                                          bool isSameBase = false;
+                                          if (_controller != null && _controller!.dataSource.isNotEmpty) {
+                                              final currentBase = _controller!.dataSource.split('?').first;
+                                              final newBase = foundUrl.split('?').first;
+                                              isSameBase = currentBase == newBase;
+                                          }
+                                          if (!_hasInitialUrl || (!isSameBase && !foundUrl.contains('.ts'))) {
+                                              _hasInitialUrl = true;
+                                              setState(() { _isInitialLoading = false; });
+                                              _initializeVideoPlayer(foundUrl);
+                                          }
                                       }
                                    });
                                 } else {
@@ -1706,6 +1825,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           introStartTime: _nextEpisode!.introStartTime,
           introEndTime: _nextEpisode!.introEndTime,
           creditsStartTime: _nextEpisode!.creditsStartTime,
+          initialVolume: _initialVolume,
+          initialBrightness: _initialBrightness,
           videoOptions: [
             if (_nextEpisode!.urls.isNotEmpty)
               VideoOption(

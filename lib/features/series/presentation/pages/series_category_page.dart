@@ -3,6 +3,7 @@ import '../../domain/entities/series.dart';
 import '../../domain/entities/series_category.dart';
 import 'series_details_page.dart';
 import '../../../../shared/widgets/marquee_text.dart';
+import '../../../../shared/widgets/energy_flow_border.dart';
 
 class SeriesCategoryPage extends StatefulWidget {
   final SeriesCategory category;
@@ -86,23 +87,15 @@ class _SeriesCategoryPageState extends State<SeriesCategoryPage> {
               children: [
                 Stack(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(1.2),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(16),
-                        gradient: LinearGradient(
-                          colors: [
-                            const Color(0xFFD400FF).withOpacity(0.5),
-                            const Color(0xFF00A3FF).withOpacity(0.5),
-                          ],
-                        ),
-                      ),
+                    EnergyFlowBorder(
+                      borderRadius: 16,
+                      borderWidth: 1.2,
+                      backgroundColor: Colors.white10,
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(15),
                         child: Container(
                           width: double.infinity,
                           height: 190,
-                          color: Colors.white10,
                           child: series.imagePath.startsWith('http') 
                             ? Image.network(series.imagePath, fit: BoxFit.cover)
                             : const Icon(Icons.live_tv, color: Colors.white24, size: 40),

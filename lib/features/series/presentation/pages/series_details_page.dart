@@ -13,9 +13,13 @@ import '../../../player/presentation/pages/video_player_page.dart';
 import '../../../player/data/datasources/video_service.dart';
 import '../../../movies/domain/entities/download_task.dart';
 import '../../../movies/presentation/providers/history_provider.dart';
-import '../../../movies/domain/entities/movie.dart' show VideoOption; // Added VideoOption
-import '../../../movies/data/repositories/download_repository_impl.dart'; // Added downloadsListProvider
+import '../../../movies/domain/entities/movie.dart' show VideoOption;
+import 'package:movie_app/features/movies/data/repositories/download_repository_impl.dart';
 import 'package:uuid/uuid.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:movie_app/core/services/ad_service.dart';
+import 'package:movie_app/shared/widgets/energy_flow_border.dart';
+import 'dart:async';
 
 class SeriesDetailsPage extends ConsumerStatefulWidget {
   final Series series;
@@ -44,6 +48,8 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
   bool _isDescriptionExpanded = false;
   final ScrollController _scrollController = ScrollController();
   bool _isRefreshing = false;
+  bool _isAdLoading = false;
+  String? _adErrorMessage;
 
   @override
   void initState() {
@@ -207,10 +213,81 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
   }
 
   void _handleDownload(Episode episode, EpisodeUrl eUrl) async {
+    // 1. Check Ad Requirement
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    final role = user.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
+    final isAdminOrVip = role == 'admin' || role == 'uservip';
+
+    if (!isAdminOrVip) {
+      setState(() {
+        _isAdLoading = true;
+        _adErrorMessage = null;
+      });
+
+      try {
+        final ticketId = const Uuid().v4();
+        await Supabase.instance.client.from('ad_tickets').insert({
+          'id': ticketId,
+          'user_id': user.id,
+          'media_type': 'series',
+          'media_id': widget.series.id,
+        });
+
+        final adCompleter = Completer<bool>();
+        bool adWatched = false;
+
+        AdService.showRewardedAd(
+          ticketId: ticketId,
+          onAdWatched: (String tid) {
+            adWatched = true;
+            if (!adCompleter.isCompleted) adCompleter.complete(true);
+          },
+          onAdFailed: (String err) {
+            if (mounted) setState(() => _adErrorMessage = err);
+            if (!adCompleter.isCompleted) adCompleter.complete(false);
+          },
+          onAdDismissedIncomplete: () {
+            if (mounted) {
+              setState(() {
+                _isAdLoading = false;
+                _adErrorMessage = 'Anuncio incompleto. Debes verlo para descargar.';
+              });
+            }
+            if (!adCompleter.isCompleted) adCompleter.complete(false);
+          },
+        );
+
+        final adResult = await adCompleter.future;
+        print('--- [DOWNLOAD_AD] Result: $adResult, Watched: $adWatched ---');
+        
+        if (mounted) setState(() => _isAdLoading = false);
+
+        if (!adResult || !adWatched) return;
+
+        // 2. Poll Verification (Background)
+        _pollVerification(ticketId); // Don't await
+      } catch (e) {
+        if (mounted) {
+           setState(() {
+             _isAdLoading = false;
+             _adErrorMessage = 'Error al procesar el anuncio: $e';
+           });
+        }
+        return;
+      }
+    }
+
+    if (!mounted) return;
+
     final VideoExtractionData? result = await showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => VideoExtractorDialog(url: eUrl.url),
+      builder: (_) => VideoExtractorDialog(
+        url: eUrl.url,
+        extractionAlgorithm: eUrl.extractionAlgorithm,
+      ),
     );
 
     if (result == null) return;
@@ -314,6 +391,31 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
         );
       }
     );
+  }
+
+  Future<bool> _pollVerification(String ticketId) async {
+    int retries = 15; // Increased to 15 (30 sec)
+    while (retries > 0) {
+      if (!mounted) return false;
+      print('--- [POLL] Checking verification for ticket: $ticketId (retries left: $retries) ---');
+      try {
+        final response = await Supabase.instance.client.functions.invoke(
+          'secure-video-link',
+          body: {
+            'ticket_id': ticketId,
+            'media_type': 'series',
+            'media_id': widget.series.id,
+          },
+        );
+        print('--- [POLL] Response status: ${response.status} ---');
+        if (response.status == 200) return true;
+      } catch (e) {
+        print('--- [POLL] Error: $e ---');
+      }
+      retries--;
+      await Future.delayed(const Duration(seconds: 2));
+    }
+    return false;
   }
 
   Widget _buildMetaIcon(IconData icon, String text, {Color color = Colors.grey}) {
@@ -444,20 +546,15 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                             // Poster Image on the left
                             Hero(
                               tag: 'poster_${curSeries.id}',
-                              child: Container(
-                                width: 120,
-                                height: 180,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(12),
-                                  boxShadow: [
-                                    BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.3), blurRadius: 15, spreadRadius: 1),
-                                  ],
-                                  border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.5), width: 1.5),
-                                ),
+                              child: EnergyFlowBorder(
+                                borderRadius: 12,
+                                borderWidth: 1.5,
                                 child: ClipRRect(
                                   borderRadius: BorderRadius.circular(11),
                                   child: Image.network(
                                     curSeries.imagePath,
+                                    width: 120,
+                                    height: 180,
                                     fit: BoxFit.cover,
                                     errorBuilder: (_, __, ___) => Container(color: Colors.white12, child: const Icon(Icons.movie, color: Colors.white24)),
                                   ),
@@ -567,54 +664,40 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                       const SizedBox(height: 25),
 
                       // Description with Neon Border
-                      Container(
-                         padding: const EdgeInsets.all(1.2),
-                         decoration: BoxDecoration(
-                           borderRadius: BorderRadius.circular(16),
-                           boxShadow: [
-                             BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.1), blurRadius: 10, spreadRadius: -2),
-                           ],
-                           gradient: LinearGradient(
-                             colors: [const Color(0xFF00A3FF).withOpacity(0.4), const Color(0xFFD400FF).withOpacity(0.4)],
-                           ),
-                         ),
-                         child: Container(
-                           width: double.infinity,
-                           padding: const EdgeInsets.all(20),
-                           decoration: BoxDecoration(
-                             color: const Color(0xFF0A0A0A),
-                             borderRadius: BorderRadius.circular(15),
-                           ),
-                           child: Column(
-                             crossAxisAlignment: CrossAxisAlignment.start,
-                             children: [
-                               Text(
-                                 (!_isDescriptionExpanded && currentDescription.length > 100)
-                                     ? '${currentDescription.substring(0, 100)}...'
-                                     : currentDescription,
-                                 style: TextStyle(
-                                   color: Colors.white.withOpacity(0.9),
-                                   fontSize: 15,
-                                   height: 1.6,
-                                 ),
-                               ),
-                               if (currentDescription.length > 100)
-                                 GestureDetector(
-                                   onTap: () => setState(() => _isDescriptionExpanded = !_isDescriptionExpanded),
-                                   child: Padding(
-                                     padding: const EdgeInsets.only(top: 8.0),
-                                     child: Text(
-                                       _isDescriptionExpanded ? 'Ver menos' : 'Ver más...',
-                                       style: const TextStyle(
-                                         color: Color(0xFF00A3FF),
-                                         fontWeight: FontWeight.bold,
-                                       ),
-                                     ),
-                                   ),
-                                 ),
-                             ],
-                           ),
-                         ),
+                      EnergyFlowBorder(
+                        borderRadius: 16,
+                        borderWidth: 1.2,
+                        backgroundColor: const Color(0xFF0A0A0A),
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              (!_isDescriptionExpanded && currentDescription.length > 100)
+                                  ? '${currentDescription.substring(0, 100)}...'
+                                  : currentDescription,
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.9),
+                                fontSize: 15,
+                                height: 1.6,
+                              ),
+                            ),
+                            if (currentDescription.length > 100)
+                              GestureDetector(
+                                onTap: () => setState(() => _isDescriptionExpanded = !_isDescriptionExpanded),
+                                child: Padding(
+                                  padding: const EdgeInsets.only(top: 8.0),
+                                  child: Text(
+                                    _isDescriptionExpanded ? 'Ver menos' : 'Ver más...',
+                                    style: const TextStyle(
+                                      color: Color(0xFF00A3FF),
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 35),
                       const Text('TEMPORADAS', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, fontSize: 18, letterSpacing: 1.2)),
@@ -625,29 +708,19 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                          const Text('No hay temporadas disponibles.', style: TextStyle(color: Colors.white54))
                       else ...[
                         // Season Selector with Neon Border
-                        Container(
-                          padding: const EdgeInsets.all(1.2),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            gradient: LinearGradient(
-                              colors: [const Color(0xFF00A3FF).withOpacity(0.4), const Color(0xFFD400FF).withOpacity(0.4)],
-                            ),
-                          ),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF0A0A0A),
-                              borderRadius: BorderRadius.circular(11),
-                            ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<Season>(
-                                dropdownColor: const Color(0xFF1A1A1A),
-                                value: _selectedSeason,
-                                isExpanded: true,
-                                icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF00A3FF)),
-                                items: _seasons.map((s) => DropdownMenuItem(value: s, child: Text(s.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))).toList(),
-                                onChanged: (val) => setState(() => _selectedSeason = val),
-                              ),
+                        EnergyFlowBorder(
+                          borderRadius: 12,
+                          borderWidth: 1.2,
+                          backgroundColor: const Color(0xFF0A0A0A),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<Season>(
+                              dropdownColor: const Color(0xFF1A1A1A),
+                              value: _selectedSeason,
+                              isExpanded: true,
+                              icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF00A3FF)),
+                              items: _seasons.map((s) => DropdownMenuItem(value: s, child: Text(s.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))).toList(),
+                              onChanged: (val) => setState(() => _selectedSeason = val),
                             ),
                           ),
                         ),
@@ -665,6 +738,49 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
             ],
           ),
         ),
+        if (_isAdLoading)
+          Container(
+            color: Colors.black.withOpacity(0.85),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(color: Color(0xFF00A3FF)),
+                  const SizedBox(height: 20),
+                  const Text(
+                    "PREPARANDO ANUNCIO...",
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.2),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    "Verifica tu sesión publicitaria para descargar",
+                    style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (_adErrorMessage != null)
+          Positioned(
+            bottom: 20,
+            left: 20,
+            right: 20,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                   const Icon(Icons.error_outline, color: Colors.white),
+                   const SizedBox(width: 12),
+                   Expanded(child: Text(_adErrorMessage!, style: const TextStyle(color: Colors.white))),
+                   IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: () => setState(() => _adErrorMessage = null)),
+                ],
+              ),
+            ),
+          ),
       ],
     ),
   );
@@ -673,45 +789,26 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
   Widget _buildEpisodeItem(Episode episode) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(1.2), // Neon border width
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF00A3FF).withOpacity(0.12),
-            blurRadius: 10,
-            spreadRadius: -2,
-          ),
-        ],
-        gradient: LinearGradient(
-          colors: [
-            const Color(0xFF00A3FF).withOpacity(0.5),
-            const Color(0xFFD400FF).withOpacity(0.5),
-            const Color(0xFF00A3FF).withOpacity(0.5),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF0A0A0A), // Solid dark background for item
-          borderRadius: BorderRadius.circular(15),
-        ),
+      child: EnergyFlowBorder(
+        borderRadius: 16,
+        borderWidth: 1.2,
+        backgroundColor: const Color(0xFF0A0A0A),
+        padding: EdgeInsets.zero,
         child: Material(
           color: Colors.transparent,
           child: Consumer(
             builder: (context, ref, child) {
               final isWatched = ref.watch(historyProvider).maybeWhen(
-                data: (history) => history.any((h) => h.id == episode.id && h.lastPosition > (h.totalDuration * 0.9)), // Consider watched if > 90%
+                data: (history) => history.any((h) => h.episodeId == episode.id && h.totalDuration > 0 && h.lastPosition >= (h.totalDuration * 0.9)), // Consider watched if >= 90%
                 orElse: () => false,
               );
               final isPartiallyWatched = ref.watch(historyProvider).maybeWhen(
-                data: (history) => history.any((h) => h.id == episode.id && h.lastPosition < (h.totalDuration * 0.9)),
+                data: (history) => history.any((h) => h.episodeId == episode.id && h.lastPosition > 10000 && h.lastPosition < (h.totalDuration * 0.9)), // At least 10s and < 90%
                 orElse: () => false,
               );
 
-              final Color accentColor = isWatched ? const Color(0xFFD400FF) : (isPartiallyWatched ? const Color(0xFF00A3FF).withOpacity(0.8) : const Color(0xFF00A3FF));
+              final Color accentColor = isWatched ? const Color(0xFFD400FF) : (isPartiallyWatched ? const Color(0xFF00A3FF) : const Color(0xFF00A3FF));
+              final Color textColor = isWatched ? const Color(0xFFD400FF) : (isPartiallyWatched ? const Color(0xFF00A3FF) : Colors.white);
 
               return ListTile(
                  contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -734,7 +831,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                  ),
                  title: Text(
                    episode.name, 
-                   style: TextStyle(color: isWatched ? const Color(0xFFD400FF) : Colors.white, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 0.5), 
+                   style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 0.5), 
                    maxLines: 1, 
                    overflow: TextOverflow.ellipsis,
                  ),
@@ -742,7 +839,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                    padding: const EdgeInsets.only(top: 4.0),
                    child: Text(
                      isWatched ? 'Reproducido' : (isPartiallyWatched ? 'En curso' : 'Toca para elegir servidor'), 
-                     style: TextStyle(color: isWatched ? const Color(0xFFD400FF).withOpacity(0.6) : Colors.white38, fontSize: 11),
+                     style: TextStyle(color: textColor.withOpacity(0.6), fontSize: 11),
                    ),
                  ),
                  trailing: Container(

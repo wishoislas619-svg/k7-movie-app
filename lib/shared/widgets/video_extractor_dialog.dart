@@ -1,5 +1,6 @@
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'package:movie_app/features/movies/domain/entities/movie.dart';
@@ -23,21 +24,25 @@ class VideoExtractionData {
 
 class VideoExtractorDialog extends StatefulWidget {
   final String url;
-  const VideoExtractorDialog({super.key, required this.url});
+  final int extractionAlgorithm;
+  const VideoExtractorDialog({super.key, required this.url, this.extractionAlgorithm = 1});
 
   @override
   State<VideoExtractorDialog> createState() => _VideoExtractorDialogState();
 }
 
-class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
+class _VideoExtractorDialogState extends State<VideoExtractorDialog> with SingleTickerProviderStateMixin {
+  late AnimationController _borderController;
   InAppWebViewController? _webViewController;
   String? _statusText = "Localizando video...";
   final List<String> _detectedUrls = [];
-  bool _showWebView = true; // Always show to some degree for transparency
+  bool _showWebView = false; 
   int _timerCount = 0;
   bool _isDisposed = false;
   final List<VideoExtractionData> _foundMedia = [];
   bool _snifferInjected = false;
+  static const _webviewTouchChannel = MethodChannel('com.luis.movieapp/webview_touch');
+  final GlobalKey _webViewKey = GlobalKey();
 
   final List<ContentBlocker> _contentBlockers = [
     ContentBlocker(
@@ -53,6 +58,23 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
     ),
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    _showWebView = false; // Always hidden by default as requested
+    _borderController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 4),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    _borderController.dispose();
+    super.dispose();
+  }
+
   final String _cleanerJs = '''
     (function() {
       const selectors = ['.overlay', '.popup', '.popup-container', '#popads', '.modal-backdrop', 'div[class*="ad-"]', 'div[id*="ad-"]'];
@@ -67,228 +89,362 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: const Color(0xFF0F0F0F),
-      insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 20),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-        side: BorderSide(color: const Color(0xFF00A3FF).withOpacity(0.2), width: 1.5)
-      ),
-      content: SizedBox(
-        width: double.maxFinite,
-        height: 520,
-        child: Column(
-          children: [
-            // K7 Branding & Status
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [const Color(0xFF00A3FF).withOpacity(0.1), const Color(0xFFD400FF).withOpacity(0.1)],
-                ),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white.withOpacity(0.05)),
-              ),
-              child: Column(
+    final filteredMedia = _foundMedia.where((m) {
+      final url = m.videoUrl.toLowerCase();
+      
+      // BLOCK problematic direct extensions as explicitly requested for downloads
+      bool isProblematic = url.contains('.mp4') || url.contains('.mkv');
+      
+      // If we're using Algorithm 2, we should be EXTRA strict about hiding direct links
+      // as they are likely ads or non-HLS streams that won't work in the background.
+      if (widget.extractionAlgorithm == 2 && !url.contains('.m3u8')) {
+        isProblematic = true;
+      }
+
+      // Always allow adaptive streaming (HLS/MPD) regardless of other checks
+      if (url.contains('.m3u8') || url.contains('.mpd')) return true;
+
+      return !isProblematic;
+    }).toList();
+
+    return AnimatedBuilder(
+      animation: _borderController,
+      builder: (context, child) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0F0F0F),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 20),
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          contentPadding: EdgeInsets.zero,
+          content: Container(
+            width: double.maxFinite,
+            height: 520,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.transparent, width: 2),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: Stack(
                 children: [
-                   Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)]),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: const Text('K7', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white)),
+                // Animated Iridescent Border Effect (Energy Flowing)
+                Positioned.fill(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      gradient: SweepGradient(
+                        center: Alignment.center,
+                        transform: GradientRotation(_borderController.value * 2 * 3.14159),
+                        colors: const [
+                          Color(0xFF00A3FF),
+                          Color(0xFFD400FF),
+                          Color(0xFF00FFD1),
+                          Color(0xFF4A90FF),
+                          Color(0xFFBC00FF),
+                          Color(0xFF00FFD1),
+                          Color(0xFF00A3FF),
+                        ],
                       ),
-                      const SizedBox(width: 10),
-                      const Text('EXTRACTOR INTELIGENTE', style: TextStyle(letterSpacing: 2, fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                    ),
+                  ),
+                ),
+                // Inner content background to hide the center of the gradient
+                Positioned.fill(
+                  child: Container(
+                    margin: const EdgeInsets.all(2), // Matches border width
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F0F0F),
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                  ),
+                ),
+            // Background WebView for Algorithm 2 (Full size but hidden if requested)
+            // We use OverflowBox to allow it to be larger than the dialog
+            Positioned.fill(
+              child: OverflowBox(
+                minWidth: 0,
+                maxWidth: double.infinity,
+                minHeight: 0,
+                maxHeight: double.infinity,
+                alignment: Alignment.center,
+                child: SizedBox(
+                  // Use screen size if Alg 2 to match player exactly
+                  width: widget.extractionAlgorithm == 2 ? MediaQuery.of(context).size.width : 500,
+                  height: widget.extractionAlgorithm == 2 ? MediaQuery.of(context).size.height : 280,
+                  child: Opacity(
+                    opacity: _showWebView ? 1.0 : 0.01,
+                    child: IgnorePointer(
+                      ignoring: !_showWebView, // When hidden, don't block dialog touches
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: InAppWebView(
+                          key: _webViewKey,
+                          initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+                          initialSettings: InAppWebViewSettings(
+                            javaScriptEnabled: true,
+                            domStorageEnabled: true,
+                            mediaPlaybackRequiresUserGesture: false,
+                            useShouldInterceptRequest: true,
+                            contentBlockers: _contentBlockers,
+                            javaScriptCanOpenWindowsAutomatically: false,
+                            supportMultipleWindows: false,
+                            useShouldOverrideUrlLoading: true,
+                            userAgent: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+                          ),
+                          onWebViewCreated: (controller) => _webViewController = controller,
+                          onLoadResource: (controller, resource) {
+                            final url = resource.url.toString();
+                            if (_isVideoUrl(url)) _handleFoundVideo(url);
+                          },
+                          shouldInterceptRequest: (controller, request) async {
+                            final url = request.url.toString();
+                            if (_isVideoUrl(url)) _handleFoundVideo(url, customHeaders: request.headers);
+                            return null;
+                          },
+                          onLoadStop: (controller, url) async {
+                            _startSniffingTimer();
+                            _injectNetworkSniffer();
+                            controller.evaluateJavascript(source: _cleanerJs);
+
+                            if (widget.extractionAlgorithm == 2) {
+                              await Future.delayed(const Duration(milliseconds: 1500));
+                              if (!_isDisposed) {
+                                _runAlgorithm2();
+                              }
+                            }
+                          },
+                          shouldOverrideUrlLoading: (controller, navigationAction) async {
+                            var uri = navigationAction.request.url;
+                            if (uri != null) {
+                              final initialHost = Uri.parse(widget.url).host;
+                              if (uri.host != initialHost && !uri.host.contains('google') && !uri.host.contains('facebook')) {
+                                return NavigationActionPolicy.CANCEL;
+                              }
+                            }
+                            return NavigationActionPolicy.ALLOW;
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // Opaque Background Layer to hide the process and the app behind
+            // Only active when the WebView is hidden to allow manual browser interaction
+            if (!_showWebView)
+              Positioned.fill(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0F0F0F),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                ),
+              ),
+
+            // Visible UI Layer
+            Column(
+              children: [
+                // K7 Branding & Status
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [const Color(0xFF00A3FF).withOpacity(0.1), const Color(0xFFD400FF).withOpacity(0.1)],
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white.withOpacity(0.05)),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min, // Avoid overflow
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)]),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text('K7', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white)),
+                          ),
+                          const SizedBox(width: 10),
+                          const Text('EXTRACTOR INTELIGENTE', style: TextStyle(letterSpacing: 2, fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF00A3FF)),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _statusText ?? "Localizando...",
+                              style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  Row(
+                ),
+            
+                // Results List / Status
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                  ),
+                  child: const Row(
                     children: [
-                      const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF00A3FF)),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          _statusText ?? "Localizando...",
-                          style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
-                        ),
+                       Icon(Icons.info_outline, color: Colors.orange, size: 16),
+                       SizedBox(width: 8),
+                       Expanded(
+                         child: Text(
+                           "Selecciona un enlace HLS para descargar sin errores.",
+                           style: TextStyle(color: Colors.orange, fontSize: 11, fontWeight: FontWeight.bold),
+                         ),
+                       ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Toggle visibility in Alg 1 (In Alg 2 it's better to keep it hidden/fixed)
+                if (widget.extractionAlgorithm != 2)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: TextButton.icon(
+                      onPressed: () => setState(() => _showWebView = !_showWebView),
+                      icon: Icon(_showWebView ? Icons.visibility_off_rounded : Icons.visibility_rounded, size: 16, color: Colors.white38),
+                      label: Text(_showWebView ? "OCULTAR NAVEGADOR" : "MOSTRAR NAVEGADOR", style: const TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+
+                Expanded(
+                  child: filteredMedia.isEmpty
+                      ? Center(
+                          child: SingleChildScrollView(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  width: 60,
+                                  height: 60,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.1), width: 4),
+                                  ),
+                                  child: const Center(
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00A3FF)),
+                                  ),
+                                ),
+                                const SizedBox(height: 20),
+                                const Text("Analizando protocolos de red...",
+                                    style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.w500)),
+                                const SizedBox(height: 4),
+                                const Text("Esto puede tardar unos segundos", style: TextStyle(color: Colors.white12, fontSize: 10)),
+                              ],
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                                padding: EdgeInsets.zero,
+                                itemCount: filteredMedia.length,
+                                itemBuilder: (context, index) {
+                                  final item = filteredMedia[index];
+                                  final isHls = item.videoUrl.contains('.m3u8');
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    child: Stack(
+                                      children: [
+                                        // Animated Iridescent Border (Card Energy Flow)
+                                        Positioned.fill(
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              borderRadius: BorderRadius.circular(16),
+                                              gradient: LinearGradient(
+                                                begin: Alignment.topLeft,
+                                                end: Alignment.bottomRight,
+                                                transform: GradientRotation(_borderController.value * 2 * 3.14159),
+                                                colors: const [
+                                                  Color(0xFF00A3FF),
+                                                  Color(0xFFD400FF),
+                                                  Color(0xFF00FFD1),
+                                                  Color(0xFF4A90FF),
+                                                  Color(0xFFBC00FF),
+                                                  Color(0xFF00A3FF),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                        // Card Inner Content
+                                        Container(
+                                          margin: const EdgeInsets.all(1.5),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF161616),
+                                            borderRadius: BorderRadius.circular(15),
+                                          ),
+                                          child: ListTile(
+                                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                            leading: Container(
+                                              padding: const EdgeInsets.all(10),
+                                              decoration: BoxDecoration(
+                                                gradient: LinearGradient(
+                                                  colors: isHls
+                                                      ? [Colors.orange.withOpacity(0.2), Colors.deepOrange.withOpacity(0.2)]
+                                                      : [const Color(0xFF00A3FF).withOpacity(0.2), const Color(0xFFD400FF).withOpacity(0.2)],
+                                                ),
+                                                shape: BoxShape.circle,
+                                              ),
+                                              child: Icon(isHls ? Icons.waves_rounded : Icons.play_arrow_rounded, color: isHls ? Colors.orange : const Color(0xFF00A3FF), size: 24),
+                                            ),
+                                            title: Text(
+                                              item.qualities.isNotEmpty ? item.qualities.first.resolution : "Multimedia Detectada",
+                                              style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                                            ),
+                                            subtitle: Text(
+                                              isHls ? "Streaming Adaptativo (HLS)" : "Archivo Directo (MP4/MKV)",
+                                              style: TextStyle(color: isHls ? Colors.orange.withOpacity(0.6) : const Color(0xFF00A3FF).withOpacity(0.6), fontSize: 11),
+                                            ),
+                                            trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white12, size: 14),
+                                            onTap: () => Navigator.pop(context, item),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
                       ),
                     ],
                   ),
                 ],
               ),
             ),
-            
-            // Hidden WebView (Minimal footprint but active)
-            SizedBox(
-              height: _showWebView ? 180 : 0.1,
-              width: _showWebView ? double.infinity : 0.1,
-              child: Opacity(
-                opacity: _showWebView ? 1.0 : 0.01,
-                child: Container(
-                  margin: const EdgeInsets.only(top: 12),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.3)),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(11),
-                    child: InAppWebView(
-                      initialUrlRequest: URLRequest(url: WebUri(widget.url)),
-                      initialSettings: InAppWebViewSettings(
-                        javaScriptEnabled: true,
-                        domStorageEnabled: true,
-                        mediaPlaybackRequiresUserGesture: false,
-                        useShouldInterceptRequest: true,
-                        contentBlockers: _contentBlockers,
-                        javaScriptCanOpenWindowsAutomatically: false,
-                        supportMultipleWindows: false,
-                        useShouldOverrideUrlLoading: true,
-                        userAgent: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
-                      ),
-                      onWebViewCreated: (controller) => _webViewController = controller,
-                      onLoadResource: (controller, resource) {
-                        final url = resource.url.toString();
-                        if (_isVideoUrl(url)) _handleFoundVideo(url);
-                      },
-                      shouldInterceptRequest: (controller, request) async {
-                        final url = request.url.toString();
-                        if (_isVideoUrl(url)) _handleFoundVideo(url, customHeaders: request.headers);
-                        return null;
-                      },
-                      onLoadStop: (controller, url) async {
-                         _startSniffingTimer();
-                         _injectNetworkSniffer();
-                         controller.evaluateJavascript(source: _cleanerJs);
-                      },
-                      shouldOverrideUrlLoading: (controller, navigationAction) async {
-                        var uri = navigationAction.request.url;
-                        if (uri != null) {
-                          final initialHost = Uri.parse(widget.url).host;
-                          if (uri.host != initialHost && !uri.host.contains('google') && !uri.host.contains('facebook')) {
-                            return NavigationActionPolicy.CANCEL;
-                          }
-                        }
-                        return NavigationActionPolicy.ALLOW;
-                      },
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            
-            if (!_showWebView)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: TextButton.icon(
-                  onPressed: () => setState(() => _showWebView = true),
-                  icon: const Icon(Icons.visibility_rounded, size: 16, color: Colors.white38),
-                  label: const Text("MOSTRAR NAVEGADOR (SOLO SI ES NECESARIO)", style: TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)),
-                ),
-              ),
-
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text("FLUJOS DETECTADOS", style: TextStyle(color: Color(0xFF00A3FF), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
-                Text("${_foundMedia.length} archivos", style: const TextStyle(color: Colors.white24, fontSize: 10)),
-              ],
-            ),
-            const SizedBox(height: 12),
-            
-            // Results List
-            Expanded(
-              child: _foundMedia.isEmpty 
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                         Container(
-                          width: 60,
-                          height: 60,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.1), width: 4),
-                          ),
-                          child: const Center(
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00A3FF)),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        const Text("Analizando protocolos de red...", 
-                          style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.w500)),
-                        const SizedBox(height: 4),
-                        const Text("Esto puede tardar unos segundos", 
-                          style: TextStyle(color: Colors.white12, fontSize: 10)),
-                      ],
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: _foundMedia.length,
-                    itemBuilder: (context, index) {
-                      final item = _foundMedia[index];
-                      final isHls = item.videoUrl.contains('.m3u8');
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 10),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF161616),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.white.withOpacity(0.05)),
-                        ),
-                        child: ListTile(
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          leading: Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: isHls 
-                                  ? [Colors.orange.withOpacity(0.2), Colors.deepOrange.withOpacity(0.2)]
-                                  : [const Color(0xFF00A3FF).withOpacity(0.2), const Color(0xFFD400FF).withOpacity(0.2)],
-                              ),
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(
-                              isHls ? Icons.waves_rounded : Icons.play_arrow_rounded, 
-                              color: isHls ? Colors.orange : const Color(0xFF00A3FF),
-                              size: 24
-                            ),
-                          ),
-                          title: Text(
-                             item.qualities.isNotEmpty ? item.qualities.first.resolution : "Multimedia Detectada",
-                             style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              isHls ? "Streaming Adaptativo (HLS)" : "Archivo Directo (MP4/MKV)",
-                              style: TextStyle(color: isHls ? Colors.orange.withOpacity(0.6) : const Color(0xFF00A3FF).withOpacity(0.6), fontSize: 11),
-                            ),
-                          ),
-                          trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white12, size: 14),
-                          onTap: () => Navigator.pop(context, item),
-                        ),
-                      );
-                    },
-                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("CANCELAR", style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
             ),
           ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text("CANCELAR", style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
-        ),
-      ],
+        );
+      },
     );
   }
 
@@ -318,12 +474,6 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
         lower.contains("delivery")) return true;
 
     return false;
-  }
-
-  @override
-  void dispose() {
-    _isDisposed = true;
-    super.dispose();
   }
 
   void _handleFoundVideo(String url, {Map<String, String>? customHeaders}) async {
@@ -784,6 +934,49 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> {
     if (!_isDisposed && mounted) {
       await Future.delayed(const Duration(seconds: 2));
       _startSniffingTimer();
+    }
+  }
+
+  Future<void> _runAlgorithm2() async {
+    if (_isDisposed || !mounted) return;
+    try {
+      final dpr = MediaQuery.of(context).devicePixelRatio;
+      final box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box != null) {
+        final offset = box.localToGlobal(Offset.zero);
+        final w = box.size.width;
+        final h = box.size.height;
+
+        print("[SNIFFER] Ejecutando Algoritmo 2 de Clics para descarga...");
+
+        // Secuencia de 4 clicks en cruz/centro para asegurar que se quiten Ads y se active el video
+        final points = [
+          Offset(w / 2, h / 2),
+          Offset(w / 2 + 20, h / 2),
+          Offset(w / 2, h / 2 + 20),
+          Offset(w / 2, h / 2)
+        ];
+
+        for (var p in points) {
+          if (_isDisposed) break;
+          await _webviewTouchChannel.invokeMethod('tapAt', {
+            'x': (offset.dx + p.dx) * dpr,
+            'y': (offset.dy + p.dy) * dpr
+          });
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+
+        // Click again after a short wait to ensure play trigger
+        await Future.delayed(const Duration(milliseconds: 800));
+        if (!_isDisposed) {
+          await _webviewTouchChannel.invokeMethod('tapAt', {
+            'x': (offset.dx + w/2) * dpr,
+            'y': (offset.dy + h/2) * dpr
+          });
+        }
+      }
+    } catch (e) {
+      print("Error Algoritmo 2 Descarga: $e");
     }
   }
 }

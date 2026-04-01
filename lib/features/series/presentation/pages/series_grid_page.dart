@@ -5,6 +5,7 @@ import '../providers/series_category_provider.dart';
 import '../../domain/entities/series.dart';
 import '../../domain/entities/series_category.dart';
 import 'series_details_page.dart';
+import '../../../../shared/widgets/energy_flow_border.dart';
 import 'series_category_page.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 
@@ -178,6 +179,24 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
             value: _selectedCategoryFilter,
             dropdownColor: const Color(0xFF121212),
             icon: const Icon(Icons.filter_list, color: Color(0xFFD400FF)),
+            selectedItemBuilder: (BuildContext context) {
+              return [
+                const SizedBox(
+                  width: 80,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: Text("Todas", overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.white)),
+                  ),
+                ),
+                ...categories.map((c) => SizedBox(
+                  width: 80,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(c.name, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
+                  ),
+                )),
+              ];
+            },
             items: [
               const DropdownMenuItem(value: null, child: Text("Todas", style: TextStyle(color: Colors.white))),
               ...categories.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name, style: const TextStyle(color: Colors.white)))),
@@ -237,22 +256,12 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
           MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
         );
       },
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        padding: const EdgeInsets.all(1.5), // Border width for iridescent effect
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(25),
-          gradient: LinearGradient(
-            colors: [
-              Colors.blue.withOpacity(0.7),
-              Colors.purple.withOpacity(0.7),
-              Colors.blue.withOpacity(0.7),
-              Colors.purple.withOpacity(0.7),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-        ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        child: EnergyFlowBorder(
+          borderRadius: 25,
+          borderWidth: 1.5,
+          backgroundColor: Colors.transparent,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(24),
           child: Stack(
@@ -368,8 +377,9 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildSeriesSection(BuildContext context, String title, List<Series> seriesList, {SeriesCategory? category}) {
     return Column(
@@ -446,24 +456,10 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
           children: [
             Stack(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(1.2),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF00A3FF).withOpacity(0.2),
-                        blurRadius: 8,
-                        spreadRadius: -2,
-                      ),
-                    ],
-                    gradient: LinearGradient(
-                      colors: [
-                        const Color(0xFF00A3FF).withOpacity(0.5),
-                        const Color(0xFFD400FF).withOpacity(0.5),
-                      ],
-                    ),
-                  ),
+                EnergyFlowBorder(
+                  borderRadius: 16,
+                  borderWidth: 1.2,
+                  backgroundColor: Colors.white12,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(15),
                     child: Image.network(
