@@ -497,7 +497,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       return "${twoDigits(duration.inHours)}:$twoDigitMinutes:$twoDigitSeconds";
     }
     return "$twoDigitMinutes:$twoDigitSeconds";
-  }
+  } 
 
   void _initWebViewController() {
     // No specific initialization needed for InAppWebView controller as it's provided in onWebViewCreated
