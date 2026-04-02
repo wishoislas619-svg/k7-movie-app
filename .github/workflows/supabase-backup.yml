@@ -23,8 +23,8 @@ jobs:
 
       - name: Descargar respaldo (SQL Dump)
         run: |
-          # Extrae solo la estructura, datos y roles en formato puro SQL
-          pg_dump "${{ secrets.SUPABASE_DB_URL }}" -C --clean --if-exists > backup_k7_${{ env.DATE }}.sql
+          # Extrae solo la estructura, datos y roles en formato puro SQL usando explícitamente pg_dump v17
+          /usr/lib/postgresql/17/bin/pg_dump "${{ secrets.SUPABASE_DB_URL }}" -C --clean --if-exists > backup_k7_${{ env.DATE }}.sql
           
           # Comprimir el archivo para que no sea muy pesado en el correo
           zip backup_k7_${{ env.DATE }}.zip backup_k7_${{ env.DATE }}.sql
