@@ -3,7 +3,7 @@ name: Supabase Daily Backup
 on:
   schedule:
     # Se ejecuta todos los días a las 3:00 AM (UTC)
-    - cron: '0 3 * * *'
+    - cron: "0 3 * * *"
   workflow_dispatch: # Permite ejecutar el respaldo manualmente desde el botón "Run workflow"
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
           yes '' | sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17
-      
+
       - name: Obtener fecha actual
         id: date
         run: echo "DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
@@ -25,7 +25,7 @@ jobs:
         run: |
           # Extrae solo la estructura, datos y roles en formato puro SQL usando explícitamente pg_dump v17
           /usr/lib/postgresql/17/bin/pg_dump "${{ secrets.SUPABASE_DB_URL }}" -C --clean --if-exists > backup_k7_${{ env.DATE }}.sql
-          
+
           # Comprimir el archivo para que no sea muy pesado en el correo
           zip backup_k7_${{ env.DATE }}.zip backup_k7_${{ env.DATE }}.sql
 
@@ -38,15 +38,15 @@ jobs:
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
           subject: 🗄️ Respaldo Diario K7 Movie - ${{ env.DATE }}
-          to: wishoislas619@gmail.com,blueyes55523@gmail.com
+          to: wishoislas619@gmail.com,denisvz567@gmail.com
           from: Backup Bot K7
           body: |
             Hola Luis,
-            
+
             Adjunto se encuentra el respaldo diario de toda tu base de datos de producción (Estructura y Datos).
             Este archivo .sql comprimido te sirve para:
             - Restaurar datos si sufres un ataque.
             - Migrar tu proyecto a otro proveedor si hay problemas con Supabase.
-            
+
             Fecha de creación: ${{ env.DATE }}
           attachments: backup_k7_${{ env.DATE }}.zip
