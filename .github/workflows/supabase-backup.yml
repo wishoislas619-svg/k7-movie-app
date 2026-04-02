@@ -10,8 +10,12 @@ jobs:
   backup-and-email:
     runs-on: ubuntu-latest
     steps:
-      - name: Instalar cliente PostgreSQL
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Instalar cliente PostgreSQL 17
+        run: |
+          sudo apt-get install -y postgresql-common
+          yes '' | sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
       
       - name: Obtener fecha actual
         id: date
