@@ -265,6 +265,7 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
                     introEndTime: _parseTime(introEndCtrl.text),
                     creditsStartTime: _parseTime(creditsCtrl.text),
                     isSeriesFinale: isFinale,
+                    extractionAlgorithm: tempUrls.isNotEmpty ? tempUrls.first.extractionAlgorithm : 1,
                   );
 
                   if (isFinale) {
@@ -377,7 +378,8 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
               episodeNumber: episodeCounter,
               name: 'Capítulo $episodeCounter',
               url: scraped.url,
-              urls: [EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution)],
+              urls: [EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution, extractionAlgorithm: selectedOption.extractionAlgorithm)],
+              extractionAlgorithm: selectedOption.extractionAlgorithm,
             );
             await repo.addEpisode(newEp);
             addedCount++;

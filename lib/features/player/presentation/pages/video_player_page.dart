@@ -27,6 +27,8 @@ import 'package:movie_app/features/series/domain/entities/series_option.dart';
 import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
 import 'package:movie_app/features/movies/presentation/pages/movie_details_page.dart';
 import 'package:movie_app/features/series/presentation/pages/series_details_page.dart';
+import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class VideoPlayerPage extends ConsumerStatefulWidget {
   final String movieName;
@@ -178,6 +180,18 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     _checkAdRequirement();
   }
 
+  Future<void> _ensureStoragePermissions() async {
+    if (Platform.isAndroid) {
+      if (await Permission.videos.isDenied) {
+        await Permission.videos.request();
+      }
+      if (await Permission.storage.isDenied) {
+        await Permission.storage.request();
+      }
+      // Pide manageExternalStorage solo si la lectura sigue fallando, pero en la mayoría de Android 13+ con videos y storage basta
+    }
+  }
+
   Future<void> _checkAdRequirement() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) {
@@ -186,7 +200,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     }
     
     final role = user.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
-    if (role == 'admin' || role == 'uservip') {
+    if (role == 'admin' || role == 'uservip' || widget.isLocal) { // Si es VIP, Admin o video local descargado
+      if (widget.isLocal) {
+        await _ensureStoragePermissions();
+      }
       _startPlayback();
       return;
     }
@@ -1678,7 +1695,14 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                 } else {
                                    _runScraper();
                                 }
-                                _autoClickCount++;
+                                
+                                if (widget.extractionAlgorithm == 2 && _autoClickCount > 15 && !_hasInitialUrl) {
+                                   print("🤖 ALGORITMO 2: Posible bloqueo o DOM muerto. Auto-recargando mágicamente...");
+                                   _autoClickCount = 0;
+                                   _webViewController?.reload();
+                                } else {
+                                   _autoClickCount++;
+                                }
                               });
                             }
                           },
@@ -2042,7 +2066,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              // Setting gear removed from top bar
+              CastButton(
+                videoUrl: _extractedVideoUrl ?? _currentOption.videoUrl,
+                localFilePath: widget.isLocal ? _currentOption.videoUrl : null,
+                title: widget.movieName,
+                imageUrl: widget.imagePath,
+                currentPosition: _controller?.value.position ?? Duration.zero,
+              ),
             ],
           ),
         ),

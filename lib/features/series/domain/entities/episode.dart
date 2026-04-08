@@ -43,6 +43,7 @@ class Episode {
   final int? introEndTime;
   final int? creditsStartTime;
   final bool isSeriesFinale;
+  final int extractionAlgorithm;
 
   Episode({
     required this.id,
@@ -55,6 +56,7 @@ class Episode {
     this.introEndTime,
     this.creditsStartTime,
     this.isSeriesFinale = false,
+    this.extractionAlgorithm = 1,
   });
 
   factory Episode.fromMap(Map<String, dynamic> map) {
@@ -81,6 +83,7 @@ class Episode {
       introEndTime: map['introEndTime'],
       creditsStartTime: map['creditsStartTime'],
       isSeriesFinale: map['isSeriesFinale'] ?? false,
+      extractionAlgorithm: map['extractionAlgorithm'] ?? map['extraction_algorithm'] ?? 1,
     );
   }
 
@@ -96,6 +99,7 @@ class Episode {
       'introEndTime': introEndTime,
       'creditsStartTime': creditsStartTime,
       'isSeriesFinale': isSeriesFinale,
+      'extractionAlgorithm': extractionAlgorithm,
     };
   }
 
@@ -110,6 +114,7 @@ class Episode {
     int? introEndTime,
     int? creditsStartTime,
     bool? isSeriesFinale,
+    int? extractionAlgorithm,
   }) {
     return Episode(
       id: id ?? this.id,
@@ -122,6 +127,7 @@ class Episode {
       introEndTime: introEndTime ?? this.introEndTime,
       creditsStartTime: creditsStartTime ?? this.creditsStartTime,
       isSeriesFinale: isSeriesFinale ?? this.isSeriesFinale,
+      extractionAlgorithm: extractionAlgorithm ?? this.extractionAlgorithm,
     );
   }
 }

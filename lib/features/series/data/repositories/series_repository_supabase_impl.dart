@@ -74,6 +74,7 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
       introEndTime: r['intro_end_time'] as int?,
       creditsStartTime: r['credits_start_time'] as int?,
       isSeriesFinale: r['is_series_finale'] as bool? ?? false,
+      extractionAlgorithm: r['extraction_algorithm'] as int? ?? 1,
     );
   }
 
@@ -87,6 +88,7 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
         'intro_end_time': e.introEndTime,
         'credits_start_time': e.creditsStartTime,
         'is_series_finale': e.isSeriesFinale,
+        'extraction_algorithm': e.extractionAlgorithm,
       };
 
   SeriesOption _optionFromRow(Map<String, dynamic> r) => SeriesOption(

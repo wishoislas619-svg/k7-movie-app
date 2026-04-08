@@ -15,11 +15,16 @@ import 'package:movie_app/features/movies/domain/entities/download_task.dart' as
 import 'package:movie_app/providers.dart';
 import 'package:movie_app/core/services/notification_service.dart';
 import 'package:movie_app/core/services/foreground_service.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class DownloadRepository {
   final SqliteService _sqliteService;
   final Map<String, _DownloadProgressInfo> _progressInfos = {};
   final Map<String, bool> _hlsCancelFlags = {};
+
+  // Cambia esto a 'true' si quieres proteger tus videos en almacenamiento interno.
+  // Déjalo en 'false' para guardarlos en la galería de Descargas públicas.
+  static const bool guardadoSeguro = false;
 
   DownloadRepository(this._sqliteService) {
     _initDownloader();
@@ -116,6 +121,11 @@ class DownloadRepository {
     my.DownloadTask task, {
     Function(double progress, String speed)? onProgress,
   }) async {
+    if (Platform.isAndroid) {
+      if (await Permission.videos.isDenied) await Permission.videos.request();
+      if (await Permission.storage.isDenied) await Permission.storage.request();
+    }
+
     print('[PLAY] ensurePlayableFile start id=${task.id} savePath=${task.savePath}');
     if (task.savePath == null) {
       final resolved = await _findExistingFile(task);
@@ -510,8 +520,24 @@ class DownloadRepository {
       return;
     }
 
-    await updateDownloadTask(task.copyWith(savePath: finalPath));
-    await _updateTaskMediaInfo(task, finalPath);
+    String pPath = finalPath;
+    if (!guardadoSeguro && Platform.isAndroid) {
+        try {
+            print("[PUBLIC DL] Copiando HLS/MP4 convertido a carpeta pública K7-MOVIE...");
+            final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
+            if (!await pubDir.exists()) {
+               await pubDir.create();
+            }
+            final publicFile = await File(finalPath).copy('${pubDir.path}/${finalPath.split('/').last}');
+            pPath = publicFile.path;
+            await File(finalPath).delete(); // Borramos el oculto
+        } catch(e) {
+            print("[PUBLIC DL] Error copiando HLS a público: $e");
+        }
+    }
+
+    await updateDownloadTask(task.copyWith(savePath: pPath));
+    await _updateTaskMediaInfo(task, pPath);
     NotificationService.showDownloadNotification(
       id: task.id.hashCode & 0x7fffffff,
       title: task.movieName,
@@ -656,6 +682,32 @@ class DownloadRepository {
             return entity.path;
           }
         }
+      }
+
+      if (Platform.isAndroid && !guardadoSeguro) {
+         final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
+         if (await pubDir.exists()) {
+           final pubCandidates = [
+             File('${pubDir.path}/$baseSafe.mp4'),
+             File('${pubDir.path}/$baseSafe.ts'),
+             File('${pubDir.path}/$baseSafe.m3u8'),
+             File('${pubDir.path}/$baseRawRes.mp4'),
+             File('${pubDir.path}/$baseRawRes.ts'),
+             File('${pubDir.path}/$baseRawRes.m3u8'),
+           ];
+           for (final f in pubCandidates) {
+             if (await f.exists()) return f.path;
+           }
+           final pubFiles = await pubDir.list().toList();
+           for (final entity in pubFiles) {
+             if (entity is File) {
+               final name = entity.path.split('/').last;
+               if (name.startsWith(safeMovie) && (name.endsWith('.mp4') || name.endsWith('.ts'))) {
+                 return entity.path;
+               }
+             }
+           }
+         }
       }
     } catch (e) {
       print('[PLAY] Resolve file error: $e');
@@ -890,13 +942,30 @@ class DownloadRepository {
             break;
           case TaskStatus.complete:
             // Check if the file is too small (likely not a movie)
-            _verifyDownload(update.task).then((isValid) {
+            _verifyDownload(update.task).then((isValid) async {
               if (isValid) {
                 myStatus = my.DownloadStatus.completed;
                 _progressInfos.remove(id);
-                _getFilePath(update.task).then((path) {
-                  onUpdate(id, 1.0, "", myStatus, savePath: path);
-                });
+                
+                String? finalPath;
+                if (!guardadoSeguro && Platform.isAndroid) {
+                    try {
+                        print("[PUBLIC DL] Movie completing. Moving to Shared Storage...");
+                        final sharedPath = await FileDownloader().moveToSharedStorage(
+                            update.task as DownloadTask, 
+                            SharedStorage.downloads, 
+                            directory: 'K7-MOVIE'
+                        );
+                        finalPath = sharedPath ?? await _getFilePath(update.task);
+                    } catch(e) {
+                        print("[PUBLIC DL] Error moving to shared storage: $e");
+                        finalPath = await _getFilePath(update.task);
+                    }
+                } else {
+                    finalPath = await _getFilePath(update.task);
+                }
+
+                onUpdate(id, 1.0, "", myStatus, savePath: finalPath);
               } else {
                 onUpdate(id, -1, "", my.DownloadStatus.error);
               }
