@@ -18,7 +18,7 @@ class SqliteService {
     try {
       return await openDatabase(
         path,
-        version: 19,
+        version: 21,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
         onOpen: (db) {
@@ -31,7 +31,7 @@ class SqliteService {
       await deleteDatabase(path);
       return await openDatabase(
         path,
-        version: 19,
+        version: 21,
         onCreate: _onCreate,
       );
     }
@@ -184,6 +184,16 @@ class SqliteService {
     if (oldVersion < 19) {
       try { await db.execute('ALTER TABLE watch_history ADD COLUMN videoOptionId TEXT'); } catch (_) {}
     }
+    if (oldVersion < 20) {
+      try { await db.execute('ALTER TABLE downloads ADD COLUMN originalFilename TEXT'); } catch (_) {
+        print('--- [SQLITE] Columna originalFilename ya existe o error ignorado en v20 ---');
+      }
+    }
+    if (oldVersion < 21) {
+       try { await db.execute('ALTER TABLE downloads ADD COLUMN originalFilename TEXT'); } catch (_) {
+         print('--- [SQLITE] Columna originalFilename ya existe o error ignorado en v21 ---');
+       }
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -254,7 +264,8 @@ class SqliteService {
         headers TEXT,
         isSeries INTEGER DEFAULT 0,
         seasonNumber INTEGER,
-        episodeNumber INTEGER
+        episodeNumber INTEGER,
+        originalFilename TEXT
       )
     ''');
 

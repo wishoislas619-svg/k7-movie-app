@@ -33,6 +33,8 @@ class CastService extends ChangeNotifier {
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _isPlaying = false;
+  String? _currentTitle;
+  String? _currentImageUrl;
 
   // ── Public Getters ─────────────────────────────────────────────────────────
   List<CastDeviceInfo> get devices => _devices;
@@ -44,6 +46,8 @@ class CastService extends ChangeNotifier {
   Duration get position => _position;
   Duration get duration => _duration;
   bool get isPlaying => _isPlaying;
+  String? get currentTitle => _currentTitle;
+  String? get currentImageUrl => _currentImageUrl;
 
   // ── Discovery ──────────────────────────────────────────────────────────────
 
@@ -151,7 +155,8 @@ class CastService extends ChangeNotifier {
     Duration startPosition = Duration.zero,
     String? subtitleUrl,
   }) async {
-    if (_session == null) throw StateError('No hay sesión activa');
+    _currentTitle = title;
+    _currentImageUrl = imageUrl;
     final media = dc.CastMedia(
       url: url,
       type: _detectMediaType(url),
@@ -164,6 +169,7 @@ class CastService extends ChangeNotifier {
           : [],
     );
     await _session!.loadMedia(media);
+    notifyListeners();
   }
 
   /// Transmite un archivo local descargado
@@ -174,6 +180,8 @@ class CastService extends ChangeNotifier {
     Duration startPosition = Duration.zero,
   }) async {
     if (_session == null) throw StateError('No hay sesión activa');
+    _currentTitle = title;
+    _currentImageUrl = imageUrl;
     final ext = filePath.toLowerCase().split('.').last;
     final mediaType = switch (ext) {
       'mkv' => dc.CastMediaType.mkv,
@@ -188,6 +196,7 @@ class CastService extends ChangeNotifier {
       startPosition: startPosition,
     );
     await _session!.loadMedia(media);
+    notifyListeners();
   }
 
   // ── Playback Controls ──────────────────────────────────────────────────────

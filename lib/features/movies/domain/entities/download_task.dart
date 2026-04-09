@@ -17,6 +17,7 @@ class DownloadTask {
   final bool isSeries;
   final int? seasonNumber;
   final int? episodeNumber;
+  final String? originalFilename;
 
   DownloadTask({
     required this.id,
@@ -34,6 +35,7 @@ class DownloadTask {
     this.isSeries = false,
     this.seasonNumber,
     this.episodeNumber,
+    this.originalFilename,
   });
 
   Map<String, dynamic> toMap() {
@@ -52,6 +54,7 @@ class DownloadTask {
       'isSeries': isSeries ? 1 : 0,
       'seasonNumber': seasonNumber,
       'episodeNumber': episodeNumber,
+      'originalFilename': originalFilename,
     };
   }
 
@@ -81,6 +84,7 @@ class DownloadTask {
       isSeries: map['isSeries'] == 1,
       seasonNumber: map['seasonNumber'],
       episodeNumber: map['episodeNumber'],
+      originalFilename: map['originalFilename'],
     );
   }
 
@@ -100,6 +104,7 @@ class DownloadTask {
     bool? isSeries,
     int? seasonNumber,
     int? episodeNumber,
+    String? originalFilename,
   }) {
     return DownloadTask(
       id: id ?? this.id,
@@ -117,6 +122,7 @@ class DownloadTask {
       isSeries: isSeries ?? this.isSeries,
       seasonNumber: seasonNumber ?? this.seasonNumber,
       episodeNumber: episodeNumber ?? this.episodeNumber,
+      originalFilename: originalFilename ?? this.originalFilename,
     );
   }
 }

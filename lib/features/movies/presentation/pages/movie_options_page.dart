@@ -162,6 +162,13 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
     final selectedQuality = result.qualities.firstOrNull;
 
     if (selectedQuality != null && mounted) {
+      // Normalizar URL si es relativa
+      var downloadUrl = selectedQuality.url;
+      if (downloadUrl.startsWith('/') && !downloadUrl.startsWith('//')) {
+        final uri = Uri.parse(option.videoUrl);
+        downloadUrl = '${uri.scheme}://${uri.host}${uri.port != 80 && uri.port != 443 && uri.port != 0 ? ":${uri.port}" : ""}$downloadUrl';
+      }
+
       final headers = <String, String>{};
       if (result.headers != null) {
         headers.addAll(result.headers!);
@@ -176,7 +183,7 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
         movieId: widget.movie.id,
         movieName: widget.movie.name,
         imagePath: widget.movie.imagePath,
-        videoUrl: selectedQuality.url,
+        videoUrl: downloadUrl,
         resolution: selectedQuality.resolution,
         status: DownloadStatus.pending,
         createdAt: DateTime.now(),

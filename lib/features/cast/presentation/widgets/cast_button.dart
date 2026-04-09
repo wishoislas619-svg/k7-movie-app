@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'cast_device_list_sheet.dart';
 import '../../services/cast_service.dart';
+import '../pages/cast_remote_page.dart';
+import 'package:video_player/video_player.dart';
 
 /// Botón de Cast que aparece en la barra de controles del reproductor.
 /// Muestra el estado de conexión y abre el selector de dispositivos.
@@ -52,7 +54,19 @@ class _CastButtonState extends State<CastButton> with SingleTickerProviderStateM
   }
 
   void _onCastStateChanged() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      // Si se acaba de conectar satisfactoriamente
+      if (_castService.isConnected && _castService.state == CastConnectionState.connected) {
+         // Intentar pausar el video local si estamos en una página con VideoPlayer
+         // Buscamos el VideoPlayerController más cercano o dejamos que la lógica de la página lo maneje
+         // Nota: Como este botón está dentro de VideoPlayerPage, enviaremos una notificación o buscaremso contexto.
+         // Por ahora, navegamos al Remote Page solicitado.
+         Navigator.of(context).push(
+           MaterialPageRoute(builder: (context) => const CastRemotePage())
+         );
+      }
+      setState(() {});
+    }
   }
 
   void _openCastSheet() {

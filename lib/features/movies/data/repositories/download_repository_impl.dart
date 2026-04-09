@@ -64,6 +64,7 @@ class DownloadRepository {
          try { await db.execute('ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0'); } catch (_) {}
          try { await db.execute('ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER'); } catch (_) {}
          try { await db.execute('ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER'); } catch (_) {}
+         try { await db.execute('ALTER TABLE downloads ADD COLUMN originalFilename TEXT'); } catch (_) {}
          await db.insert('downloads', task.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
       } else {
         rethrow;
@@ -85,6 +86,7 @@ class DownloadRepository {
          try { await db.execute('ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0'); } catch (_) {}
          try { await db.execute('ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER'); } catch (_) {}
          try { await db.execute('ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER'); } catch (_) {}
+         try { await db.execute('ALTER TABLE downloads ADD COLUMN originalFilename TEXT'); } catch (_) {}
          await db.update('downloads', task.toMap(), where: 'id = ?', whereArgs: [task.id]);
       } else {
         rethrow;
@@ -486,39 +488,31 @@ class DownloadRepository {
       await progressFile.delete();
     }
 
+    // Actualizamos el task con la ruta del TS antes de intentar validar o convertir para no perder la referencia si algo falla
+    await updateDownloadTask(task.copyWith(savePath: outputPath, originalFilename: fileName));
+
     final mediaOk = await _validateTsFile(outputPath);
     if (!mediaOk) {
-      print('[HLS] invalid ts after concat, forcing re-download');
-      if (await outputFile.exists()) {
-        await outputFile.delete();
+      // Si el archivo existe y tiene tamaño, intentamos seguir aunque ffprobe no de duración exacta (puede pasar con TS crudos)
+      final size = await outputFile.length();
+      if (size < 5 * 1024 * 1024) {
+        print('[HLS] invalid ts after concat (too small), forcing re-download');
+        if (await outputFile.exists()) await outputFile.delete();
+        onStatusChange(my.DownloadStatus.error);
+        await WakelockPlus.disable();
+        await ForegroundService.stop();
+        return;
       }
-      if (await progressFile.exists()) {
-        await progressFile.delete();
-      }
-      onStatusChange(my.DownloadStatus.error);
-      await WakelockPlus.disable();
-      await ForegroundService.stop();
-      return;
+      print('[HLS] TS file validation warned, but continuing due to file size');
     }
 
     onProgress(0.0, 'Convirtiendo...');
     final convertedPath = await _convertToMp4IfNeeded(outputPath, onProgress: (p, s) {
       onProgress(p, s);
     });
+    
+    // Si la conversión falla, mantenemos el TS para que al menos sea reproducible localmente
     final finalPath = convertedPath ?? outputPath;
-
-    if (convertedPath == null && outputPath.endsWith('.ts')) {
-      if (await outputFile.exists()) {
-        await outputFile.delete();
-      }
-      if (await progressFile.exists()) {
-        await progressFile.delete();
-      }
-      onStatusChange(my.DownloadStatus.error);
-      await WakelockPlus.disable();
-      await ForegroundService.stop();
-      return;
-    }
 
     String pPath = finalPath;
     if (!guardadoSeguro && Platform.isAndroid) {
@@ -566,6 +560,18 @@ class DownloadRepository {
       final baseUri = Uri.parse(base);
       final refUri = Uri.parse(ref);
       if (refUri.hasScheme) return ref;
+      
+      // Fix: If ref starts with / and base is relative or we need to ensure host
+      if (ref.startsWith('/') && !ref.startsWith('//')) {
+        return Uri(
+          scheme: baseUri.scheme,
+          host: baseUri.host,
+          port: baseUri.port,
+          path: ref,
+          query: refUri.hasQuery ? refUri.query : null,
+        ).toString();
+      }
+      
       return baseUri.resolveUri(refUri).toString();
     } catch (_) {
       return ref;

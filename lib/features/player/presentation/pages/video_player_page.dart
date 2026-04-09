@@ -28,6 +28,7 @@ import 'package:movie_app/features/series/presentation/providers/series_provider
 import 'package:movie_app/features/movies/presentation/pages/movie_details_page.dart';
 import 'package:movie_app/features/series/presentation/pages/series_details_page.dart';
 import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
+import 'package:movie_app/features/cast/services/cast_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class VideoPlayerPage extends ConsumerStatefulWidget {
@@ -178,6 +179,16 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
     _initSettings();
     _checkAdRequirement();
+    CastService().addListener(_onCastStateChanged);
+  }
+
+  void _onCastStateChanged() {
+    if (mounted && CastService().isConnected) {
+      if (_controller != null && _controller!.value.isPlaying) {
+        _controller!.pause();
+        setState(() {});
+      }
+    }
   }
 
   Future<void> _ensureStoragePermissions() async {
@@ -1234,6 +1245,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
   @override
   void dispose() {
+    CastService().removeListener(_onCastStateChanged);
     _saveProgress(); // Guardar progreso final al salir
     _progressSaveTimer?.cancel();
     _hideTimer?.cancel();

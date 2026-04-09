@@ -2,6 +2,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../services/cast_service.dart';
 import '../../services/cast_device_info.dart';
+import 'package:movie_app/core/services/ad_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uuid/uuid.dart';
 
 /// Bottom sheet que muestra los dispositivos disponibles en la red y permite conectarse.
 class CastDeviceListSheet extends StatefulWidget {
@@ -58,6 +61,7 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
   }
 
   Future<void> _connectAndCast(CastDeviceInfo device) async {
+    // 1. Conectar al dispositivo
     setState(() => _casting = true);
     await _castService.connectTo(device);
     if (!_castService.isConnected) {
@@ -65,6 +69,35 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
       return;
     }
 
+    // 2. Verificar Anuncio antes de transmitir (Solo si no es VIP)
+    final user = Supabase.instance.client.auth.currentUser;
+    final role = user?.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
+    final isAdminOrVip = role == 'admin' || role == 'uservip';
+
+    if (!isAdminOrVip) {
+       final ticketId = const Uuid().v4();
+       final adCompleter = Completer<bool>();
+       
+       AdService.showRewardedAd(
+         ticketId: ticketId,
+         onAdWatched: (_) => adCompleter.complete(true),
+         onAdFailed: (_) => adCompleter.complete(false),
+         onAdDismissedIncomplete: () => adCompleter.complete(false),
+       );
+
+       final result = await adCompleter.future;
+       if (!result) {
+         if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(
+             const SnackBar(content: Text('Debes ver el anuncio para transmitir.'), backgroundColor: Colors.redAccent)
+           );
+           setState(() => _casting = false);
+         }
+         return;
+       }
+    }
+
+    // 3. Cargar Media
     try {
       if (widget.localFilePath != null) {
         await _castService.castLocalFile(
