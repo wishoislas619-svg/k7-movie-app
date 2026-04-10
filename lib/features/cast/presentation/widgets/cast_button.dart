@@ -2,13 +2,12 @@ import 'package:flutter/material.dart';
 import 'cast_device_list_sheet.dart';
 import '../../services/cast_service.dart';
 import '../pages/cast_remote_page.dart';
-import 'package:video_player/video_player.dart';
 
 /// Botón de Cast que aparece en la barra de controles del reproductor.
-/// Muestra el estado de conexión y abre el selector de dispositivos.
+/// Muestra el estado de conexión y abre el selector de dispositivos o el control remoto.
 class CastButton extends StatefulWidget {
   final String videoUrl;
-  final String? localFilePath;     // Si viene de descarga local
+  final String? localFilePath;
   final String title;
   final String? imageUrl;
   final Map<String, String>? headers;
@@ -43,6 +42,7 @@ class _CastButtonState extends State<CastButton> with SingleTickerProviderStateM
     _pulseAnimation = Tween<double>(begin: 0.7, end: 1.0).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
+    // Solo actualizamos el estado visual, nunca navegamos desde aquí
     _castService.addListener(_onCastStateChanged);
   }
 
@@ -54,26 +54,26 @@ class _CastButtonState extends State<CastButton> with SingleTickerProviderStateM
   }
 
   void _onCastStateChanged() {
-    if (mounted) {
-      // Si se acaba de conectar satisfactoriamente
-      if (_castService.isConnected && _castService.state == CastConnectionState.connected) {
-         // Intentar pausar el video local si estamos en una página con VideoPlayer
-         // Buscamos el VideoPlayerController más cercano o dejamos que la lógica de la página lo maneje
-         // Nota: Como este botón está dentro de VideoPlayerPage, enviaremos una notificación o buscaremso contexto.
-         // Por ahora, navegamos al Remote Page solicitado.
-         Navigator.of(context).push(
-           MaterialPageRoute(builder: (context) => const CastRemotePage())
-         );
-      }
-      setState(() {});
-    }
+    // Solo actualizamos la UI del botón (color, animación, etc.)
+    // La navegación al CastRemotePage se hace exclusivamente desde _openCastSheet()
+    if (mounted) setState(() {});
   }
 
   void _openCastSheet() {
+    if (_castService.isConnected) {
+      // Si ya está conectado, abre directamente el control remoto
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const CastRemotePage()),
+      );
+      return;
+    }
+
+    // Si no está conectado, muestra la hoja de selección de dispositivos
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
+      // Al cerrar el sheet, si ya conectó, navegamos al remoto
       builder: (_) => CastDeviceListSheet(
         videoUrl: widget.videoUrl,
         localFilePath: widget.localFilePath,
@@ -81,6 +81,16 @@ class _CastButtonState extends State<CastButton> with SingleTickerProviderStateM
         imageUrl: widget.imageUrl,
         headers: widget.headers,
         startPosition: widget.currentPosition,
+        onCastStarted: () {
+          // Navegar al control remoto una sola vez, después del pop del sheet
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _castService.isConnected) {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const CastRemotePage()),
+              );
+            }
+          });
+        },
       ),
     );
   }
@@ -109,7 +119,7 @@ class _CastButtonState extends State<CastButton> with SingleTickerProviderStateM
           child: IconButton(
             onPressed: _openCastSheet,
             tooltip: isConnected
-                ? 'Transmitiendo a: ${_castService.connectedDevice?.name}'
+                ? 'Controlando: ${_castService.connectedDevice?.name}'
                 : 'Transmitir a pantalla',
             icon: Stack(
               alignment: Alignment.center,

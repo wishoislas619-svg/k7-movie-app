@@ -35,6 +35,7 @@ class CastService extends ChangeNotifier {
   bool _isPlaying = false;
   String? _currentTitle;
   String? _currentImageUrl;
+  String? _currentVideoUrl;
 
   // ── Public Getters ─────────────────────────────────────────────────────────
   List<CastDeviceInfo> get devices => _devices;
@@ -48,6 +49,7 @@ class CastService extends ChangeNotifier {
   bool get isPlaying => _isPlaying;
   String? get currentTitle => _currentTitle;
   String? get currentImageUrl => _currentImageUrl;
+  String? get currentVideoUrl => _currentVideoUrl;
 
   // ── Discovery ──────────────────────────────────────────────────────────────
 
@@ -157,6 +159,7 @@ class CastService extends ChangeNotifier {
   }) async {
     _currentTitle = title;
     _currentImageUrl = imageUrl;
+    _currentVideoUrl = url;
     final media = dc.CastMedia(
       url: url,
       type: _detectMediaType(url),
@@ -182,6 +185,7 @@ class CastService extends ChangeNotifier {
     if (_session == null) throw StateError('No hay sesión activa');
     _currentTitle = title;
     _currentImageUrl = imageUrl;
+    _currentVideoUrl = filePath;
     final ext = filePath.toLowerCase().split('.').last;
     final mediaType = switch (ext) {
       'mkv' => dc.CastMediaType.mkv,

@@ -5,6 +5,7 @@ import '../../services/cast_device_info.dart';
 import 'package:movie_app/core/services/ad_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
+import '../pages/cast_remote_page.dart';
 
 /// Bottom sheet que muestra los dispositivos disponibles en la red y permite conectarse.
 class CastDeviceListSheet extends StatefulWidget {
@@ -14,6 +15,8 @@ class CastDeviceListSheet extends StatefulWidget {
   final String? imageUrl;
   final Map<String, String>? headers;
   final Duration startPosition;
+  /// Callback disparado UNA SOLA VEZ cuando la transmisión comienza exitosamente.
+  final VoidCallback? onCastStarted;
 
   const CastDeviceListSheet({
     super.key,
@@ -23,6 +26,7 @@ class CastDeviceListSheet extends StatefulWidget {
     this.imageUrl,
     this.headers,
     this.startPosition = Duration.zero,
+    this.onCastStarted,
   });
 
   @override
@@ -33,6 +37,7 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
   final _castService = CastService();
   Timer? _scanTimer;
   bool _casting = false;
+  bool _castStartedFired = false; // Guard para disparar el callback una sola vez
 
   @override
   void initState() {
@@ -54,50 +59,53 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
 
   void _startScan() {
     _castService.startScan();
-    // Re-escanear cada 8 segundos para encontrar nuevos dispositivos
     _scanTimer = Timer.periodic(const Duration(seconds: 8), (_) {
       if (mounted && !_castService.isConnected) _castService.startScan();
     });
   }
 
   Future<void> _connectAndCast(CastDeviceInfo device) async {
-    // 1. Conectar al dispositivo
     setState(() => _casting = true);
+
+    // 1. Conectar al dispositivo
     await _castService.connectTo(device);
     if (!_castService.isConnected) {
-      setState(() => _casting = false);
+      if (mounted) setState(() => _casting = false);
       return;
     }
 
-    // 2. Verificar Anuncio antes de transmitir (Solo si no es VIP)
+    // 2. Verificar Anuncio (Solo si no es VIP/Admin)
     final user = Supabase.instance.client.auth.currentUser;
     final role = user?.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
     final isAdminOrVip = role == 'admin' || role == 'uservip';
 
     if (!isAdminOrVip) {
-       final ticketId = const Uuid().v4();
-       final adCompleter = Completer<bool>();
-       
-       AdService.showRewardedAd(
-         ticketId: ticketId,
-         onAdWatched: (_) => adCompleter.complete(true),
-         onAdFailed: (_) => adCompleter.complete(false),
-         onAdDismissedIncomplete: () => adCompleter.complete(false),
-       );
+      final ticketId = const Uuid().v4();
+      final adCompleter = Completer<bool>();
 
-       final result = await adCompleter.future;
-       if (!result) {
-         if (mounted) {
-           ScaffoldMessenger.of(context).showSnackBar(
-             const SnackBar(content: Text('Debes ver el anuncio para transmitir.'), backgroundColor: Colors.redAccent)
-           );
-           setState(() => _casting = false);
-         }
-         return;
-       }
+      AdService.showRewardedAd(
+        ticketId: ticketId,
+        onAdWatched: (_) => adCompleter.complete(true),
+        onAdFailed: (_) => adCompleter.complete(false),
+        onAdDismissedIncomplete: () => adCompleter.complete(false),
+      );
+
+      final result = await adCompleter.future;
+      if (!result) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Debes ver el anuncio para transmitir.'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+          setState(() => _casting = false);
+        }
+        return;
+      }
     }
 
-    // 3. Cargar Media
+    // 3. Cargar el contenido en el dispositivo
     try {
       if (widget.localFilePath != null) {
         await _castService.castLocalFile(
@@ -115,7 +123,13 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
           startPosition: widget.startPosition,
         );
       }
-      if (mounted) Navigator.pop(context);
+
+      // 4. Cerrar el sheet y disparar el callback UNA SOLA VEZ
+      if (mounted && !_castStartedFired) {
+        _castStartedFired = true;
+        Navigator.pop(context);
+        widget.onCastStarted?.call();
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -126,6 +140,7 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
         );
       }
     }
+
     if (mounted) setState(() => _casting = false);
   }
 
@@ -144,12 +159,9 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Handle
           _buildHandle(),
-          // Header
           _buildHeader(),
           const Divider(color: Colors.white12, height: 1),
-          // Content
           if (_casting)
             _buildConnecting()
           else if (_castService.isConnected)
@@ -231,7 +243,7 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
         padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 24),
         child: Column(
           children: [
-            Icon(Icons.wifi_find, color: Colors.white24, size: 48),
+            const Icon(Icons.wifi_find, color: Colors.white24, size: 48),
             const SizedBox(height: 12),
             const Text(
               'No se encontraron dispositivos',
@@ -307,10 +319,10 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
   }
 
   Widget _buildConnecting() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 40),
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 40),
       child: Column(
-        children: const [
+        children: [
           CircularProgressIndicator(
             valueColor: AlwaysStoppedAnimation(Color(0xFF00A3FF)),
           ),
@@ -326,17 +338,10 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
 
   Widget _buildConnectedView() {
     final device = _castService.connectedDevice!;
-    final position = _castService.position;
-    final duration = _castService.duration;
-    final progress = (duration.inSeconds > 0)
-        ? position.inSeconds / duration.inSeconds
-        : 0.0;
-
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       child: Column(
         children: [
-          // Device row
           Row(
             children: [
               Container(
@@ -364,14 +369,14 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
                   ],
                 ),
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Colors.red.shade900,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: GestureDetector(
-                  onTap: _disconnect,
+              GestureDetector(
+                onTap: _disconnect,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade900,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -384,47 +389,29 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
               ),
             ],
           ),
-          const SizedBox(height: 20),
-          // Progress bar
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: progress.clamp(0.0, 1.0),
-              backgroundColor: Colors.white12,
-              valueColor: const AlwaysStoppedAnimation(Color(0xFF00A3FF)),
-              minHeight: 4,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(_formatDuration(position), style: const TextStyle(color: Colors.white54, fontSize: 11)),
-              Text(_formatDuration(duration), style: const TextStyle(color: Colors.white54, fontSize: 11)),
-            ],
-          ),
           const SizedBox(height: 16),
-          // Controls
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _RemoteButton(
-                icon: Icons.replay_10,
-                label: '-10s',
-                onTap: () => _castService.seekTo(position - const Duration(seconds: 10)),
+          // Botón para ir al control remoto
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => CastRemotePage()),
+                    );
+                  }
+                });
+              },
+              icon: const Icon(Icons.open_in_new, size: 16),
+              label: const Text('Abrir Control Remoto'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00A3FF),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
-              _RemoteButton(
-                icon: _castService.isPlaying ? Icons.pause : Icons.play_arrow,
-                label: _castService.isPlaying ? 'Pausa' : 'Play',
-                primary: true,
-                onTap: () => _castService.isPlaying ? _castService.pause() : _castService.play(),
-              ),
-              _RemoteButton(
-                icon: Icons.forward_10,
-                label: '+10s',
-                onTap: () => _castService.seekTo(position + const Duration(seconds: 10)),
-              ),
-            ],
+            ),
           ),
         ],
       ),
@@ -436,41 +423,5 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return d.inHours > 0 ? '$h:$m:$s' : '$m:$s';
-  }
-}
-
-class _RemoteButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  final bool primary;
-
-  const _RemoteButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    this.primary = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        children: [
-          Container(
-            width: primary ? 56 : 44,
-            height: primary ? 56 : 44,
-            decoration: BoxDecoration(
-              color: primary ? const Color(0xFF00A3FF) : Colors.white12,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, color: Colors.white, size: primary ? 28 : 22),
-          ),
-          const SizedBox(height: 4),
-          Text(label, style: const TextStyle(color: Colors.white54, fontSize: 10)),
-        ],
-      ),
-    );
   }
 }
