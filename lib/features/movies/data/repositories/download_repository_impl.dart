@@ -530,7 +530,10 @@ class DownloadRepository {
         }
     }
 
-    await updateDownloadTask(task.copyWith(savePath: pPath));
+    await updateDownloadTask(task.copyWith(
+      savePath: pPath,
+      originalFilename: pPath.split('/').last,
+    ));
     await _updateTaskMediaInfo(task, pPath);
     NotificationService.showDownloadNotification(
       id: task.id.hashCode & 0x7fffffff,
