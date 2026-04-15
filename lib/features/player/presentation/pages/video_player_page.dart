@@ -655,7 +655,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               if (vUrl.startsWith('http') || vUrl.startsWith('blob:')) {
                   print("🎯 ALGORITMO 2 ÉXITO: $vUrl");
                   _hasInitialUrl = true;
-                  if (vUrl.startsWith('blob:') || vUrl.contains('tmstr4.') || vUrl.contains('vidsrc')) {
+                  final String origUrl = widget.videoOptions.first.videoUrl.toLowerCase();
+                  final bool isProtectedServer = origUrl.contains('vidsrc') || origUrl.contains('videasy') || origUrl.contains('embed') || origUrl.contains('tmstr');
+                  if (vUrl.startsWith('blob:') || isProtectedServer) {
                     print("🚀 REPRODUCCIÓN WEBVIEW ACTIVA");
                     setState(() {
                       _useWebViewPlayer = true;
@@ -1842,7 +1844,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                   _hasInitialUrl = true;
 
                                   // DOMINIO PROTEGIDO (CDN) → WEBVIEW PLAYER (evita 403)
-                                  if (lcUrl.contains('tmstr4.') || lcUrl.contains('neonhorizon') || lcUrl.contains('vidsrc')) {
+                                  final String origUrl = widget.videoOptions.first.videoUrl.toLowerCase();
+                                  final bool isProtectedServer = origUrl.contains('vidsrc') || origUrl.contains('videasy') || origUrl.contains('embed') || origUrl.contains('tmstr');
+                                  
+                                  if (lcUrl.contains('neonhorizon') || isProtectedServer) {
                                     print("🚀 CDN PROTEGIDO ($url) → REPRODUCIENDO EN WEBVIEW");
                                     setState(() {
                                       _useWebViewPlayer = true;
