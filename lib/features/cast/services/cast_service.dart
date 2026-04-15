@@ -157,21 +157,48 @@ class CastService extends ChangeNotifier {
     Duration startPosition = Duration.zero,
     String? subtitleUrl,
   }) async {
+    if (_session == null) return;
+    
     _currentTitle = title;
     _currentImageUrl = imageUrl;
     _currentVideoUrl = url;
+
+    // Protocolo de compatibilidad Samsung/SmartTV
+    final isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
+    
+    if (isDlna) {
+      // 1. Limpiar cualquier transporte anterior que tenga atascada la TV
+      try { await _session!.stop(); } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
     final media = dc.CastMedia(
       url: url,
       type: _detectMediaType(url),
       title: title,
       imageUrl: imageUrl,
-      httpHeaders: headers ?? {},
+      httpHeaders: {
+        'User-Agent': 'Samsung-SmartTV/7.0 (SM-G950F)', // Hack: Fingimos ser otra TV o un cliente amigable
+        if (headers != null) ...headers,
+      },
       startPosition: startPosition,
       subtitles: subtitleUrl != null
           ? [dc.CastSubtitle(url: subtitleUrl, label: 'Subtítulos', language: 'es', format: 'vtt')]
           : [],
     );
+    
     await _session!.loadMedia(media);
+
+    if (isDlna) {
+      // 2. Ráfaga de Play (Command Burst)
+      // Samsung y LG a veces ignoran el primer Play si el buffer no ha empezado.
+      // Enviamos uno tras 1 seg y otro tras 2 seg para asegurar activación de controles.
+      await Future.delayed(const Duration(milliseconds: 1500));
+      await _session!.play();
+      await Future.delayed(const Duration(milliseconds: 1000));
+      await _session!.play();
+    }
+    
     notifyListeners();
   }
 
@@ -183,15 +210,24 @@ class CastService extends ChangeNotifier {
     Duration startPosition = Duration.zero,
   }) async {
     if (_session == null) throw StateError('No hay sesión activa');
+    
     _currentTitle = title;
     _currentImageUrl = imageUrl;
     _currentVideoUrl = filePath;
+
+    final isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
+    if (isDlna) {
+      try { await _session!.stop(); } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
     final ext = filePath.toLowerCase().split('.').last;
     final mediaType = switch (ext) {
       'mkv' => dc.CastMediaType.mkv,
       'ts'  => dc.CastMediaType.mpegTs,
       _     => dc.CastMediaType.mp4,
     };
+
     final media = dc.CastMedia.file(
       filePath: filePath,
       type: mediaType,
@@ -199,7 +235,14 @@ class CastService extends ChangeNotifier {
       imageUrl: imageUrl,
       startPosition: startPosition,
     );
+    
     await _session!.loadMedia(media);
+
+    if (isDlna) {
+      await Future.delayed(const Duration(milliseconds: 1500));
+      await _session!.play();
+    }
+
     notifyListeners();
   }
 
