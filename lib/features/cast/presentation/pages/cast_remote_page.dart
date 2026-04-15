@@ -98,7 +98,6 @@ class _CastRemotePageState extends State<CastRemotePage> {
 
   @override
   Widget build(BuildContext context) {
-    // Si por alguna razón entramos sin conexión, retornamos vacío
     if (!_castService.isConnected) {
       return const Scaffold(backgroundColor: Colors.black);
     }
@@ -112,54 +111,86 @@ class _CastRemotePageState extends State<CastRemotePage> {
             ? (position.inSeconds / duration.inSeconds).clamp(0.0, 1.0)
             : 0.0);
 
+    // Validación de imagen para evitar error "No host specified in URI file:///"
+    final bool hasValidImage = _castService.currentImageUrl != null && 
+                               _castService.currentImageUrl!.startsWith('http');
+
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D0D),
       body: Stack(
         children: [
-          // ── Fondo con el póster desenfocado ──────────────────────────────
-          if (_castService.currentImageUrl != null)
+          // Fondo con el póster desenfocado
+          if (hasValidImage)
             Positioned.fill(
               child: Image.network(
                 _castService.currentImageUrl!,
                 fit: BoxFit.cover,
                 color: Colors.black.withOpacity(0.75),
                 colorBlendMode: BlendMode.darken,
+                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
               ),
             ),
 
           SafeArea(
-            child: Column(
-              children: [
-                // ── Top Bar ──────────────────────────────────────────────
-                _buildTopBar(device),
-
-                const Spacer(),
-
-                // ── Póster central ───────────────────────────────────────
-                _buildCover(),
-
-                const SizedBox(height: 24),
-
-                // ── Título y dispositivo ─────────────────────────────────
-                _buildTitleSection(device),
-
-                const Spacer(),
-
-                // ── Barra de progreso ────────────────────────────────────
-                _buildSeekBar(progress, position, duration),
-
-                const SizedBox(height: 8),
-
-                // ── Controles principales ────────────────────────────────
-                _buildMainControls(position),
-
-                const SizedBox(height: 24),
-
-                // ── Control de Volumen ───────────────────────────────────
-                _buildVolumeControl(),
-
-                const SizedBox(height: 40),
-              ],
+            child: OrientationBuilder(
+              builder: (context, orientation) {
+                final bool isLandscape = orientation == Orientation.landscape;
+                if (!isLandscape) {
+                  return Column(
+                    children: [
+                      _buildTopBar(device),
+                      const Spacer(),
+                      _buildCover(isLandscape: false),
+                      const SizedBox(height: 24),
+                      _buildTitleSection(device),
+                      const Spacer(),
+                      _buildSeekBar(progress, position, duration),
+                      const SizedBox(height: 8),
+                      _buildMainControls(position, isLandscape: false),
+                      const SizedBox(height: 24),
+                      _buildVolumeControl(),
+                      const SizedBox(height: 20),
+                    ],
+                  );
+                } else {
+                  // MODO LANDSCAPE (Horizontal)
+                  return Row(
+                    children: [
+                      // Lado Izquierdo: Póster y Título
+                      Expanded(
+                        flex: 4,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _buildCover(isLandscape: true),
+                            const SizedBox(height: 16),
+                            _buildTitleSection(device),
+                          ],
+                        ),
+                      ),
+                      // Lado Derecho: Controles con scroll por seguridad
+                      Expanded(
+                        flex: 6,
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              _buildTopBar(device),
+                              const SizedBox(height: 4),
+                              _buildSeekBar(progress, position, duration),
+                              const SizedBox(height: 8),
+                              _buildMainControls(position, isLandscape: true),
+                              const SizedBox(height: 16),
+                              _buildVolumeControl(),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                }
+              },
             ),
           ),
         ],
@@ -207,22 +238,29 @@ class _CastRemotePageState extends State<CastRemotePage> {
     );
   }
 
-  Widget _buildCover() {
-    if (_castService.currentImageUrl == null) {
+  Widget _buildCover({required bool isLandscape}) {
+    final double w = isLandscape ? 120 : 160;
+    final double h = isLandscape ? 160 : 220;
+    
+    // Si la URL no es válida (file:///), usamos el placeholder
+    final bool hasValidImage = _castService.currentImageUrl != null && 
+                               _castService.currentImageUrl!.startsWith('http');
+
+    if (!hasValidImage) {
       return Container(
-        width: 160,
-        height: 220,
+        width: w,
+        height: h,
         decoration: BoxDecoration(
           color: Colors.white10,
           borderRadius: BorderRadius.circular(16),
         ),
-        child: const Icon(Icons.movie, color: Colors.white24, size: 60),
+        child: Icon(Icons.movie, color: Colors.white24, size: isLandscape ? 40 : 60),
       );
     }
 
     return Container(
-      width: 160,
-      height: 220,
+      width: w,
+      height: h,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
@@ -308,7 +346,10 @@ class _CastRemotePageState extends State<CastRemotePage> {
     );
   }
 
-  Widget _buildMainControls(Duration position) {
+  Widget _buildMainControls(Duration position, {required bool isLandscape}) {
+    final double playSize = isLandscape ? 60 : 72;
+    final double playIconSize = isLandscape ? 36 : 44;
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
@@ -330,8 +371,8 @@ class _CastRemotePageState extends State<CastRemotePage> {
         GestureDetector(
           onTap: () => _castService.isPlaying ? _castService.pause() : _castService.play(),
           child: Container(
-            width: 72,
-            height: 72,
+            width: playSize,
+            height: playSize,
             decoration: const BoxDecoration(
               color: Colors.white,
               shape: BoxShape.circle,
@@ -340,7 +381,7 @@ class _CastRemotePageState extends State<CastRemotePage> {
             child: Icon(
               _castService.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
               color: Colors.black,
-              size: 44,
+              size: playIconSize,
             ),
           ),
         ),
