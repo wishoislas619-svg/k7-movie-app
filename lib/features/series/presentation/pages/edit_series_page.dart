@@ -8,6 +8,7 @@ import '../providers/series_provider.dart';
 import '../providers/series_category_provider.dart';
 import 'admin_seasons_episodes_page.dart';
 import '../../../../shared/widgets/metadata_scraper_dialog.dart';
+import '../../../../core/services/tmdb_service.dart';
 
 class EditSeriesPage extends ConsumerStatefulWidget {
   final Series? series;
@@ -25,6 +26,8 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
   late TextEditingController _descriptionController;
   late TextEditingController _ratingController;
   late TextEditingController _yearController;
+  late TextEditingController _tmdbIdController;
+  late TextEditingController _imdbIdController;
   String? _selectedCategoryId;
   List<SeriesOption> _options = [];
   bool _isScraping = false;
@@ -39,6 +42,8 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
     _descriptionController = TextEditingController(text: widget.series?.description ?? '');
     _ratingController = TextEditingController(text: widget.series?.rating.toString() ?? '0.0');
     _yearController = TextEditingController(text: widget.series?.year ?? '');
+    _tmdbIdController = TextEditingController(text: widget.series?.tmdbId ?? '');
+    _imdbIdController = TextEditingController(text: widget.series?.imdbId ?? '');
     _selectedCategoryId = widget.series?.categoryId;
     if (widget.series != null) {
       _loadOptions();
@@ -63,6 +68,8 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
         rating: double.tryParse(_ratingController.text) ?? 0.0,
         year: _yearController.text.isNotEmpty ? _yearController.text : null,
         createdAt: DateTime.now(),
+        tmdbId: _tmdbIdController.text.isNotEmpty ? _tmdbIdController.text : null,
+        imdbId: _imdbIdController.text.isNotEmpty ? _imdbIdController.text : null,
       );
       await ref.read(seriesListProvider.notifier).addSeries(newSeries);
     } else {
@@ -79,6 +86,8 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
         year: _yearController.text.isNotEmpty ? _yearController.text : null,
         backdrop: widget.series!.backdrop,
         createdAt: widget.series!.createdAt,
+        tmdbId: _tmdbIdController.text.isNotEmpty ? _tmdbIdController.text : null,
+        imdbId: _imdbIdController.text.isNotEmpty ? _imdbIdController.text : null,
       );
       await ref.read(seriesListProvider.notifier).updateSeries(updatedSeries);
     }
@@ -224,6 +233,32 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
     setState(() => _isScraping = false);
   }
 
+  void _fetchTmdbData() async {
+    final id = _tmdbIdController.text;
+    if (id.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Introduce un TMDB ID primero')));
+      return;
+    }
+
+    setState(() => _isScraping = true);
+    final data = await TmdbService.getSeriesMetadata(id);
+    
+    if (data != null) {
+      setState(() {
+        _nameController.text = data['name'] ?? _nameController.text;
+        _descriptionController.text = data['description'] ?? _descriptionController.text;
+        _yearController.text = data['year'] ?? _yearController.text;
+        _ratingController.text = data['rating']?.toString() ?? _ratingController.text;
+        _imageController.text = data['image'] ?? _imageController.text;
+        _backdropUrlController.text = data['backdrop'] ?? _backdropUrlController.text;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Metadatos cargados desde TMDB'), backgroundColor: Colors.green));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se encontró información para este ID'), backgroundColor: Colors.redAccent));
+    }
+    setState(() => _isScraping = false);
+  }
+
   Widget _buildTextField({required TextEditingController controller, required String labelText, int maxLines = 1, TextInputType? keyboardType}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -312,6 +347,20 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
                 Expanded(child: _buildTextField(controller: _ratingController, labelText: 'Calificación (0-10)', keyboardType: const TextInputType.numberWithOptions(decimal: true))),
                 const SizedBox(width: 16),
                 Expanded(child: _buildTextField(controller: _yearController, labelText: 'Año', keyboardType: TextInputType.number)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(child: _buildTextField(controller: _tmdbIdController, labelText: 'TMDB ID')),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: _isScraping ? null : _fetchTmdbData,
+                  icon: const Icon(Icons.auto_fix_high, color: Color(0xFF00A3FF)),
+                  tooltip: 'Autocompletar desde TMDB',
+                ),
+                const SizedBox(width: 8),
+                Expanded(child: _buildTextField(controller: _imdbIdController, labelText: 'IMDB ID')),
               ],
             ),
             const SizedBox(height: 16),

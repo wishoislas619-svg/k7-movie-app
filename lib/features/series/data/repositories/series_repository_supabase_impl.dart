@@ -24,6 +24,8 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
         year: r['year'] as String?,
         isPopular: r['is_popular'] as bool? ?? false,
         createdAt: DateTime.parse(r['created_at'] as String),
+        tmdbId: r['tmdb_id']?.toString(),
+        imdbId: r['imdb_id']?.toString(),
       );
 
   Map<String, dynamic> _seriesToRow(Series s) => {
@@ -37,6 +39,8 @@ class SeriesRepositorySupabaseImpl implements SeriesRepository {
         'rating': s.rating,
         'year': s.year,
         'is_popular': s.isPopular,
+        'tmdb_id': s.tmdbId,
+        'imdb_id': s.imdbId,
       };
 
   Season _seasonFromRow(Map<String, dynamic> r) => Season(

@@ -5,6 +5,7 @@ import '../../domain/entities/movie.dart';
 import '../providers/movie_provider.dart';
 import '../providers/category_provider.dart';
 import '../../../../shared/widgets/metadata_scraper_dialog.dart';
+import '../../../../core/services/tmdb_service.dart';
 
 class EditMoviePage extends ConsumerStatefulWidget {
   final Movie? movie;
@@ -24,6 +25,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
   late TextEditingController _ratingController;
   late TextEditingController _yearController;
   late TextEditingController _creditsStartTimeController;
+  late TextEditingController _tmdbIdController;
+  late TextEditingController _imdbIdController;
   String? _selectedCategoryId;
   List<VideoOption> _options = [];
   bool _isScraping = false;
@@ -42,6 +45,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     _creditsStartTimeController = TextEditingController(
       text: _secondsToTime(widget.movie?.creditsStartTime),
     );
+    _tmdbIdController = TextEditingController(text: widget.movie?.tmdbId ?? '');
+    _imdbIdController = TextEditingController(text: widget.movie?.imdbId ?? '');
     _selectedCategoryId = widget.movie?.categoryId;
     if (widget.movie != null) {
       _loadOptions();
@@ -95,6 +100,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         rating: double.tryParse(_ratingController.text) ?? 0.0,
         year: _yearController.text.isNotEmpty ? _yearController.text : null,
         creditsStartTime: _parseTime(_creditsStartTimeController.text),
+        tmdbId: _tmdbIdController.text.isNotEmpty ? _tmdbIdController.text : null,
+        imdbId: _imdbIdController.text.isNotEmpty ? _imdbIdController.text : null,
       );
     } else {
       final updatedMovie = Movie(
@@ -113,6 +120,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
         subtitleUrl: _subtitleUrlController.text,
         createdAt: widget.movie!.createdAt,
         creditsStartTime: _parseTime(_creditsStartTimeController.text),
+        tmdbId: _tmdbIdController.text.isNotEmpty ? _tmdbIdController.text : null,
+        imdbId: _imdbIdController.text.isNotEmpty ? _imdbIdController.text : null,
       );
       await ref.read(moviesProvider.notifier).updateMovie(updatedMovie);
     }
@@ -291,6 +300,115 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
     setState(() => _isScraping = false);
   }
 
+  void _fetchTmdbData() async {
+    final id = _tmdbIdController.text;
+    if (id.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Introduce un TMDB ID primero')));
+      return;
+    }
+
+    setState(() => _isScraping = true);
+    final data = await TmdbService.getMovieMetadata(id);
+    
+    if (data != null) {
+      setState(() {
+        _nameController.text = data['name'] ?? _nameController.text;
+        _descriptionController.text = data['description'] ?? _descriptionController.text;
+        _yearController.text = data['year'] ?? _yearController.text;
+        _ratingController.text = data['rating']?.toString() ?? _ratingController.text;
+        _imageController.text = data['image'] ?? _imageController.text;
+        _backdropUrlController.text = data['backdrop'] ?? _backdropUrlController.text;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Metadatos cargados desde TMDB'), backgroundColor: Colors.green));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se encontró información para este ID'), backgroundColor: Colors.redAccent));
+    }
+    setState(() => _isScraping = false);
+  }
+
+  void _generateSmartLink() async {
+    final id = _tmdbIdController.text.trim();
+    if (id.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Introduce un TMDB ID primero')));
+      return;
+    }
+
+    // ================================================================
+    // SERVIDORES VERIFICADOS 2025 - URLs correctas documentadas
+    // Todos funcionan en modo WebView (extractionAlgorithm: 2)
+    // Los marcados con 🌐 tienen selector de idioma integrado en el player
+    // ================================================================
+    final servers = [
+      {
+        'name': '🌐 Videasy (Multi-idioma)',
+        'url': 'https://player.videasy.net/movie/$id',
+        'icon': 'https://videasy.net/logo.png',
+        'lang': 'Latino / Inglés / Multi',
+        // Documentado en videasy.net — player con selector de idioma integrado
+      },
+      {
+        'name': '🌐 Embed.su (Multi-idioma)',
+        'url': 'https://embed.su/embed/movie/$id',
+        'icon': 'https://embed.su/favicon.ico',
+        'lang': 'Latino / Inglés / Multi',
+        // Muy usado en proyectos de GitHub, selector de fuente integrado
+      },
+      {
+        'name': '🌐 SuperEmbed (Multi-fuente)',
+        'url': 'https://www.superembed.stream/?tmdb=$id&tmdb=1',
+        'icon': 'https://www.superembed.stream/favicon.ico',
+        'lang': 'Multi-idioma',
+        // Agrega tmdb=1 para usar TMDB ID en vez de IMDB ID
+      },
+      {
+        'name': '🎬 VidSrc.me (Multi-servidor)',
+        'url': 'https://vidsrc.me/embed/movie?tmdb=$id',
+        'icon': 'https://vidsrc.me/favicon.ico',
+        'lang': 'Inglés / Multi',
+        // Diferente a vidsrc.TO — tiene más proveedores alternativos
+      },
+      {
+        'name': '✅ VidSrc.to (Probado)',
+        'url': 'https://vidsrc.to/embed/movie/$id',
+        'icon': 'https://vidsrc.to/favicon.ico',
+        'lang': 'Inglés/Multi',
+        // Funciona pero solo inglés — mantener como respaldo
+      },
+      {
+        'name': '🌐 VidSrc.xyz (Latino)',
+        'url': 'https://vidsrc.xyz/embed/movie?tmdb=$id',
+        'icon': 'https://vidsrc.xyz/favicon.ico',
+        'lang': 'Latino / Multi',
+        // Variante con más idiomas disponibles
+      },
+    ];
+
+    int added = 0;
+    for (final s in servers) {
+      final newOpt = VideoOption(
+        id: '',
+        movieId: widget.movie!.id,
+        serverImagePath: s['icon']!,
+        resolution: s['name']!,
+        videoUrl: s['url']!,
+        language: s['lang'],
+        extractionAlgorithm: 2,
+      );
+      await ref.read(movieRepositoryProvider).addVideoOption(newOpt);
+      added++;
+    }
+
+    _loadOptions();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$added servidores añadidos (incluye selector de idioma)'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
   Widget _buildTextField({
     required TextEditingController controller,
     required String labelText,
@@ -427,6 +545,20 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
               ],
             ),
             const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(child: _buildTextField(controller: _tmdbIdController, labelText: 'TMDB ID (ej: 550)')),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: _isScraping ? null : _fetchTmdbData,
+                  icon: const Icon(Icons.auto_fix_high, color: Color(0xFF00A3FF)),
+                  tooltip: 'Autocompletar desde TMDB',
+                ),
+                const SizedBox(width: 8),
+                Expanded(child: _buildTextField(controller: _imdbIdController, labelText: 'IMDB ID (ej: tt0137523)')),
+              ],
+            ),
+            const SizedBox(height: 16),
             _buildTextField(controller: _descriptionController, labelText: 'Descripción de la Película', maxLines: 5),
             const SizedBox(height: 16),
             _buildTextField(
@@ -435,11 +567,21 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
               keyboardType: TextInputType.text,
             ),
             const SizedBox(height: 32),
-            const Text('OPCIONES DE VIDEO', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
-            const SizedBox(height: 8),
             if (widget.movie == null)
               const Text('Guarda la película primero para agregar opciones.', style: TextStyle(color: Colors.white38))
             else ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('OPCIONES DE VIDEO', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
+                  TextButton.icon(
+                    onPressed: _generateSmartLink,
+                    icon: const Icon(Icons.bolt, color: Colors.amber, size: 18),
+                    label: const Text('ENLACE API', style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
               Container(
                 decoration: BoxDecoration(
                   color: Colors.white.withOpacity(0.02),

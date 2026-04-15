@@ -1,10 +1,21 @@
 
+import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
+import 'package:storage_space/storage_space.dart';
 import 'package:movie_app/features/movies/data/repositories/download_repository_impl.dart';
 import 'package:movie_app/features/movies/domain/entities/download_task.dart';
 import 'package:movie_app/features/movies/domain/entities/movie.dart';
 import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
+
+String _formatSize(int bytes) {
+  if (bytes <= 0) return "0 B";
+  const suffixes = ["B", "KB", "MB", "GB", "TB"];
+  var i = (math.log(bytes) / math.log(1024)).floor();
+  return ((bytes / math.pow(1024, i)).toStringAsFixed(1)) + ' ' + suffixes[i];
+}
 
 class DownloadsPage extends ConsumerWidget {
   const DownloadsPage({super.key});
@@ -16,7 +27,7 @@ class DownloadsPage extends ConsumerWidget {
     final seriesDownloads = downloads.where((d) => d.isSeries).toList();
 
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Scaffold(
         backgroundColor: Colors.black,
         appBar: AppBar(
@@ -27,12 +38,18 @@ class DownloadsPage extends ConsumerWidget {
             indicatorColor: Color(0xFF00A3FF),
             labelColor: Colors.white,
             unselectedLabelColor: Colors.white54,
+            isScrollable: false,
             tabs: [
               Tab(text: 'Películas'),
               Tab(text: 'Series'),
+              Tab(text: 'Local'),
             ],
           ),
           actions: [
+            IconButton(
+              icon: const Icon(Icons.refresh, color: Colors.white70),
+              onPressed: () => ref.refresh(downloadsListProvider),
+            ),
             IconButton(
               icon: const Icon(Icons.delete_sweep, color: Colors.redAccent),
               onPressed: downloads.any((d) => d.status == DownloadStatus.error)
@@ -113,6 +130,7 @@ class DownloadsPage extends ConsumerWidget {
                 children: [
                   _buildList(movieDownloads, context, ref),
                   _buildSeriesMapList(seriesDownloads, context, ref),
+                  const _LocalFilesView(),
                 ],
               ),
             ),
@@ -223,11 +241,37 @@ class DownloadsPage extends ConsumerWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                Text(
-                  task.resolution.contains('Resolución Auto (HLS)')
-                      ? 'Detectando...'
-                      : task.resolution,
-                  style: const TextStyle(color: Color(0xFF00A3FF), fontSize: 12, fontWeight: FontWeight.bold),
+                Builder(
+                  builder: (context) {
+                    String label = task.resolution.contains('Resolución Auto (HLS)') 
+                        ? 'HLS Adaptive' 
+                        : task.resolution;
+                    
+                    if (task.status == DownloadStatus.completed && task.savePath != null) {
+                      try {
+                        final path = task.savePath!;
+                        final file = File(path);
+                        if (file.existsSync()) {
+                          label += " • ${_formatSize(file.lengthSync())}";
+                        } else {
+                          // Probar si es carpeta HLS
+                          final dir = Directory(path);
+                          if (dir.existsSync()) {
+                             int totalSize = 0;
+                             dir.listSync().forEach((f) {
+                               if (f is File) totalSize += f.lengthSync();
+                             });
+                             label += " • ${_formatSize(totalSize)}";
+                          }
+                        }
+                      } catch(_) {}
+                    }
+
+                    return Text(
+                      label,
+                      style: const TextStyle(color: Color(0xFF00A3FF), fontSize: 12, fontWeight: FontWeight.bold),
+                    );
+                  }
                 ),
                 const SizedBox(height: 8),
                 // Progress Bar
@@ -391,3 +435,346 @@ class DownloadsPage extends ConsumerWidget {
     }
   }
 }
+
+class _LocalFilesView extends StatefulWidget {
+  const _LocalFilesView();
+
+  @override
+  State<_LocalFilesView> createState() => _LocalFilesViewState();
+}
+
+class _LocalFilesViewState extends State<_LocalFilesView> {
+  List<Map<String, dynamic>> _filesData = [];
+  bool _isLoading = true;
+  StorageSpace? _storageSpace;
+
+  @override
+  void initState() {
+    super.initState();
+    _scanFiles();
+  }
+
+  Future<void> _scanFiles() async {
+    setState(() => _isLoading = true);
+    try {
+      // 1. Obtener espacio en disco (Corregido para v1.2.0)
+      _storageSpace = await getStorageSpace(
+        lowOnSpaceThreshold: 512 * 1024 * 1024, // 512 MB
+        fractionDigits: 1,
+      );
+
+      final dir = Directory('/storage/emulated/0/Download/K7-MOVIE');
+      if (await dir.exists()) {
+// ... rest of logic stays same but ensured ...
+        final entities = dir.listSync();
+        final List<Map<String, dynamic>> data = [];
+
+        for (var entity in entities) {
+          final path = entity.path.toLowerCase();
+          final isDir = entity is Directory;
+          
+          if (path.endsWith('.mp4') || 
+              path.endsWith('.mkv') || 
+              path.endsWith('.m3u8') ||
+              (isDir && !path.split('/').last.startsWith('.'))) {
+            
+            final stat = entity.statSync();
+            int size = 0;
+            if (isDir) {
+               // Para carpetas HLS sumamos el tamaño de los fragmentos
+               try {
+                 entity.listSync().forEach((f) {
+                   if (f is File) size += f.lengthSync();
+                 });
+               } catch(_) {}
+            } else if (entity is File) {
+              size = entity.lengthSync();
+            }
+
+            data.add({
+              'entity': entity,
+              'name': entity.path.split('/').last,
+              'isDirectory': isDir,
+              'size': size,
+              'date': stat.modified,
+            });
+          }
+        }
+        
+        data.sort((a, b) => b['date'].compareTo(a['date'])); // Más recientes primero
+        
+        setState(() {
+          _filesData = data;
+          _isLoading = false;
+        });
+      } else {
+        setState(() => _isLoading = false);
+      }
+    } catch (e) {
+      print("[LOCAL_SCAN] Error: $e");
+      setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF)));
+    }
+
+    return Column(
+      children: [
+        // BARRA DE ALMACENAMIENTO
+        if (_storageSpace != null)
+          Container(
+            padding: const EdgeInsets.all(16),
+            margin: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E1E1E),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withOpacity(0.05)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text("Almacenamiento del dispositivo", style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+                    Text("${_storageSpace!.freeSize}", style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: LinearProgressIndicator(
+                    value: _storageSpace!.usageValue,
+                    backgroundColor: Colors.white12,
+                    color: _storageSpace!.usageValue > 0.9 ? Colors.redAccent : const Color(0xFF00A3FF),
+                    minHeight: 8,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text("Usado: ${_storageSpace!.usedSize}", style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                    Text("Libre: ${_storageSpace!.freeSize}", style: const TextStyle(color: Color(0xFF00A3FF), fontSize: 11, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+
+        Expanded(
+          child: _filesData.isEmpty 
+          ? _buildEmpty() 
+          : RefreshIndicator(
+            onRefresh: _scanFiles,
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: _filesData.length,
+              itemBuilder: (context, index) {
+                final item = _filesData[index];
+                final entity = item['entity'] as FileSystemEntity;
+                final name = item['name'] as String;
+                final isDirectory = item['isDirectory'] as bool;
+                final sizeStr = _formatSize(item['size'] as int);
+                final dateStr = DateFormat('dd/MM/yyyy HH:mm').format(item['date'] as DateTime);
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E1E1E),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: ListTile(
+                    leading: Icon(
+                      isDirectory ? Icons.folder : Icons.movie_outlined,
+                      color: isDirectory ? Colors.amber : const Color(0xFF00A3FF),
+                    ),
+                    title: Text(
+                      name,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500, fontSize: 14),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text("$sizeStr • $dateStr", style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.play_circle_outline, color: Colors.greenAccent),
+                          onPressed: () => _playFile(context, entity),
+                        ),
+                        PopupMenuButton<String>(
+                          icon: const Icon(Icons.more_vert, color: Colors.white54),
+                          onSelected: (value) {
+                            if (value == 'rename') _renameFile(context, entity);
+                            if (value == 'delete') _deleteFile(context, entity);
+                          },
+                          itemBuilder: (context) => [
+                            const PopupMenuItem(
+                              value: 'rename',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.edit, color: Colors.white70, size: 20),
+                                  SizedBox(width: 8),
+                                  Text("Renombrar", style: TextStyle(color: Colors.white)),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'delete',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.delete_forever, color: Colors.redAccent, size: 20),
+                                  SizedBox(width: 8),
+                                  Text("Borrar", style: TextStyle(color: Colors.redAccent)),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    onTap: () => _playFile(context, entity),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+
+  Widget _buildEmpty() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.folder_open, size: 80, color: Colors.grey[800]),
+          const SizedBox(height: 16),
+          const Text("Carpeta K7-MOVIE vacía", style: TextStyle(color: Colors.grey, fontSize: 16)),
+          const SizedBox(height: 8),
+          ElevatedButton.icon(
+            onPressed: _scanFiles,
+            icon: const Icon(Icons.refresh),
+            label: const Text("Refrescar"),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E1E1E)),
+          )
+        ],
+      ),
+    );
+  }
+
+  Future<void> _renameFile(BuildContext context, FileSystemEntity file) async {
+    final name = file.path.split('/').last;
+    final controller = TextEditingController(text: name);
+
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("Renombrar", style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: "Nuevo nombre",
+            hintStyle: TextStyle(color: Colors.white38),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancelar")),
+          TextButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text("Aceptar")),
+        ],
+      ),
+    );
+
+    if (newName != null && newName.isNotEmpty && newName != name) {
+      try {
+        final pathParts = file.path.split('/');
+        pathParts.removeLast();
+        final newPath = "${pathParts.join('/')}/$newName";
+        await file.rename(newPath);
+        _scanFiles();
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error al renombrar: $e")));
+      }
+    }
+  }
+
+  Future<void> _deleteFile(BuildContext context, FileSystemEntity file) async {
+    final name = file.path.split('/').last;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("¿Borrar definitivamente?", style: TextStyle(color: Colors.white)),
+        content: Text("Se eliminará '$name' para siempre.", style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancelar")),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Borrar", style: TextStyle(color: Colors.redAccent))),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        await file.delete(recursive: true);
+        _scanFiles();
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error al borrar: $e")));
+      }
+    }
+  }
+
+  void _playFile(BuildContext context, FileSystemEntity entity) {
+    String playPath = entity.path;
+    
+    // Si es un directorio, buscar un index.m3u8 o master.m3u8 adentro
+    if (entity is Directory) {
+      final m3u8 = File('${entity.path}/index.m3u8');
+      final master = File('${entity.path}/master.m3u8');
+      if (m3u8.existsSync()) {
+        playPath = m3u8.path;
+      } else if (master.existsSync()) {
+        playPath = master.path;
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No se encontró un archivo reproducible en la carpeta')),
+        );
+        return;
+      }
+    }
+
+    final name = entity.path.split('/').last;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerPage(
+          movieName: name,
+          isLocal: true,
+          mediaId: 'local_${name.hashCode}',
+          mediaType: 'movie',
+          imagePath: '', // No tenemos imagen para archivos locales sueltos
+          videoOptions: [
+            VideoOption(
+              id: 'local',
+              movieId: 'local',
+              serverImagePath: '',
+              resolution: 'Local File',
+              videoUrl: playPath,
+            )
+          ],
+        ),
+      ),
+    );
+  }
+}
+

@@ -17,6 +17,8 @@ class MovieModel extends Movie {
     super.subtitleUrl,
     super.isPopular = false,
     required super.createdAt,
+    super.tmdbId,
+    super.imdbId,
   });
 
   factory MovieModel.fromMap(Map<String, dynamic> map) {
@@ -36,6 +38,8 @@ class MovieModel extends Movie {
       subtitleUrl: map['subtitleUrl'] ?? map['subtitleRss'],
       isPopular: map['isPopular'] == 1,
       createdAt: DateTime.parse(map['createdAt']),
+      tmdbId: map['tmdbId'],
+      imdbId: map['imdbId'],
     );
   }
 
@@ -56,6 +60,8 @@ class MovieModel extends Movie {
       'subtitleUrl': subtitleUrl,
       'isPopular': isPopular ? 1 : 0,
       'createdAt': createdAt.toIso8601String(),
+      'tmdbId': tmdbId,
+      'imdbId': imdbId,
     };
   }
 }

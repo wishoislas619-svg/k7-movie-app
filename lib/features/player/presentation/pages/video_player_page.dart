@@ -31,6 +31,19 @@ import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
 import 'package:movie_app/features/cast/services/cast_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+class SubtitleInfo {
+  final String language;
+  final String url;
+  SubtitleInfo({required this.language, required this.url});
+}
+
+class InternalServerInfo {
+  final String id;
+  final String label;
+  final String flagUrl;
+  InternalServerInfo({required this.id, required this.label, required this.flagUrl});
+}
+
 class VideoPlayerPage extends ConsumerStatefulWidget {
   final String movieName;
   final List<VideoOption> videoOptions;
@@ -72,10 +85,12 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.extractionAlgorithm = 1,
     this.initialVolume,
     this.initialBrightness,
+    this.headers,
   });
 
   final double? initialVolume;
   final double? initialBrightness;
+  final Map<String, String>? headers;
 
   @override
   ConsumerState<VideoPlayerPage> createState() => _VideoPlayerPageState();
@@ -151,6 +166,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   int _autoClickCount = 0;
   double _skipIntroOpacity = 1.0;
   Timer? _skipFadeTimer;
+  bool _useWebViewPlayer = false; // Nueva bandera para reproducción directa
+  List<InternalServerInfo> _videasyServers = [];
+  bool _isExtractingServers = false;
 
   @override
   void initState() {
@@ -426,6 +444,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       _isInitialLoading = false;
       _initializeVideoPlayer(videoUrl);
     } else {
+      // Si no es un enlace directo conocido, entramos en modo Scraping.
+      // Por defecto intentaremos extracción, pero si detectamos interacción directa, 
+      // el scraper activará el modo _useWebViewPlayer si es necesario.
       _initWebViewController();
     }
     
@@ -550,8 +571,55 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   Future<void> _runScraper() async {
     if (!mounted || _webViewController == null || !_isWebViewExtracting) return;
     
-    // --- ALGORITMO 2: EXTRACCIÓN ORIGINAL (CLICKS NATIVOS + PASIVO) ---
-    // Este es el algoritmo que funcionaba perfecto antes de intentar buscar calidades.
+    _autoClickCount = 0;
+    _scraperTimer?.cancel();
+    _scraperTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+       if (!mounted || (!_isWebViewExtracting && !_isSwitchingStream)) {
+         timer.cancel();
+         return;
+       }
+
+       // 1. Detección de Servers Videasy (Banderas)
+       _webViewController?.evaluateJavascript(source: """
+         (function() {
+           var results = [];
+           var items = Array.from(document.querySelectorAll('.jw-settings-content-item, .art-setting-item, .vjs-menu-item, .list-server .item, .server-item'));
+           if (items.length === 0) {
+             items = Array.from(document.querySelectorAll('div, span, li, button')).filter(function(el) {
+               var t = el.innerText.trim().toLowerCase();
+               return t === 'latino' || t === 'castellano' || t === 'spanish' || t === 'english';
+             });
+           }
+           items.forEach(function(el) {
+             var img = el.querySelector('img') || (el.tagName === 'IMG' ? el : null);
+             var text = el.innerText.trim() || el.title || el.alt;
+             if (text && text.length < 30) {
+               results.push({ id: text, label: text, flagUrl: img ? img.src : '' });
+             }
+           });
+           if (results.length > 0) window.flutter_inappwebview.callHandler('onServersFound', results);
+           else {
+             var gear = document.querySelector('.jw-icon-settings, .art-icon-setting, .vjs-icon-cog, .settings-icon');
+             if (gear && Math.random() > 0.8) gear.click();
+           }
+         })();
+       """);
+
+       // 2. Sniffer Video Directo
+       _webViewController?.evaluateJavascript(source: "(function(){ var v=document.querySelector('video'); return (v && v.src) ? v.src : null; })();").then((v) {
+         if (v != null && v.toString().startsWith('http') && !_hasInitialUrl) {
+           _initializeVideoPlayer(v.toString());
+         }
+       });
+
+       if (_autoClickCount > 20 && !_hasInitialUrl) {
+         _webViewController?.reload();
+         _autoClickCount = 0;
+       }
+       _autoClickCount++;
+    });
+
+    // --- ALGORITMO 2: EXTRACCIÓN ORIGINAL (CLICKS NATIVOS) ---
     if (widget.extractionAlgorithm == 2) {
        try {
          final dpr = MediaQuery.of(context).devicePixelRatio;
@@ -560,23 +628,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
            final offset = box.localToGlobal(Offset.zero);
            final w = box.size.width;
            final h = box.size.height;
-           
-           print("🤖 ALGORITMO 2 (MODO NATIVO): Simulando interacciones humanas...");
-           
-           // Secuencia de 4 clicks en cruz/centro para asegurar que se quiten Ads y se active el video
-           final points = [
-              Offset(w/2, h/2),
-              Offset(w/2 + 20, h/2),
-              Offset(w/2, h/2 + 20),
-              Offset(w/2, h/2)
-           ];
-
+           final points = [Offset(w/2, h/2), Offset(w/2+20, h/2), Offset(w/2, h/2+20), Offset(w/2, h/2)];
            for (var p in points) {
               await _webviewTouchChannel.invokeMethod('tapAt', {
                 'x': (offset.dx + p.dx) * dpr,
                 'y': (offset.dy + p.dy) * dpr
               });
-              await Future.delayed(const Duration(milliseconds: 400));
+              await Future.delayed(const Duration(milliseconds: 300));
            }
 
            // Escaneo ultra-simple: ¿Hay video ya?
@@ -597,6 +655,17 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               if (vUrl.startsWith('http') || vUrl.startsWith('blob:')) {
                   print("🎯 ALGORITMO 2 ÉXITO: $vUrl");
                   _hasInitialUrl = true;
+                  if (vUrl.startsWith('blob:') || vUrl.contains('tmstr4.') || vUrl.contains('vidsrc')) {
+                    print("🚀 REPRODUCCIÓN WEBVIEW ACTIVA");
+                    setState(() {
+                      _useWebViewPlayer = true;
+                      _isInitialLoading = false;
+                      _isWebViewExtracting = false;
+                      _isLoading = false;
+                    });
+                    _webViewController?.evaluateJavascript(source: "document.querySelector('video').style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999999;background:black;'; document.querySelector('video').play();");
+                    return;
+                  }
                   setState(() {
                     _isInitialLoading = false;
                     _isWebViewExtracting = false;
@@ -997,16 +1066,34 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       } else {
         // Intercept 4meplayer (.txt but it is HLS)
         final isHls = videoUrl.contains('cf-master') || videoUrl.contains('.m3u8');
+        
+        // --- NUEVA LÓGICA DE HEADERS DINÁMICOS ---
+        final initialHost = Uri.tryParse(_currentOption.videoUrl)?.host ?? 'vidsrc.to';
+        final initialOrigin = (Uri.tryParse(_currentOption.videoUrl)?.hasScheme ?? false) 
+            ? Uri.tryParse(_currentOption.videoUrl)!.origin 
+            : 'https://$initialHost';
+
+        final Map<String, String> requestHeaders = {
+          'Referer': _currentOption.videoUrl,
+          'Origin': initialOrigin,
+          'User-Agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+          'Accept': '*/*',
+          'Accept-Language': 'es-ES,es;q=0.9',
+          'Connection': 'keep-alive',
+          'Sec-Fetch-Dest': 'video',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'cross-site',
+        };
+
+        // Si el widget trae headers específicos, los añadimos/sobreescribimos
+        if (widget.headers != null) {
+          requestHeaders.addAll(widget.headers!);
+        }
+
         _controller = VideoPlayerController.networkUrl(
           Uri.parse(videoUrl),
           formatHint: isHls ? VideoFormat.hls : null,
-          httpHeaders: {
-            'Referer': _currentOption.videoUrl.split('#')[0],
-            'Origin': (Uri.tryParse(_currentOption.videoUrl)?.hasScheme ?? false) 
-                ? Uri.tryParse(_currentOption.videoUrl)!.origin 
-                : '',
-            'User-Agent': "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-          },
+          httpHeaders: requestHeaders,
         );
       }
 
@@ -1212,7 +1299,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   void _handleVerticalDrag(DragUpdateDetails details, bool isLeftSide) {
-    if (_isLocked) return;
+    if (_isLocked || _useWebViewPlayer) return;
     
     // Use a smaller sensitivity for more precision, mimicking high-end players
     final delta = details.primaryDelta! / -250; 
@@ -1280,12 +1367,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
-        onTap: _toggleControls,
-        onVerticalDragUpdate: (details) {
+        onTap: _useWebViewPlayer ? null : _toggleControls,
+        onVerticalDragUpdate: _useWebViewPlayer ? null : (details) {
           final width = MediaQuery.of(context).size.width;
           _handleVerticalDrag(details, details.localPosition.dx < width / 2);
         },
-        onVerticalDragEnd: (details) {
+        onVerticalDragEnd: _useWebViewPlayer ? null : (details) {
           setState(() {
             _isDraggingVolume = false;
             _isDraggingBrightness = false;
@@ -1575,8 +1662,39 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                         )
                       : _buildRecommendationsCarousel(),
                 ),
+            // --- MODO REPRODUCCIÓN WEBVIEW DIRECTA (SALTAR ERROR 403) ---
+            if (_useWebViewPlayer)
+               Positioned.fill(
+                 child: Container(
+                   color: Colors.black,
+                   child: Stack(
+                     children: [
+                        InAppWebView(
+                          key: _webViewKey,
+                          initialSettings: InAppWebViewSettings(javaScriptEnabled: true, domStorageEnabled: true, allowsInlineMediaPlayback: true, mediaPlaybackRequiresUserGesture: false, userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"),
+                        ),
+                        // Botón Volver/Cerrar
+                        Positioned(
+                          top: 40,
+                          left: 20,
+                          child: IconButton(
+                            icon: const Icon(Icons.arrow_back, color: Colors.white, size: 30),
+                            onPressed: () => Navigator.pop(context),
+                          ),
+                        ),
+                        // Título de la peli
+                        Positioned(
+                          top: 48,
+                          left: 70,
+                          child: Text(widget.movieName, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                        ),
+                     ],
+                   ),
+                 ),
+               ),
+
             // Extractor Interactivo para Depuración (Visible en la capa más externa)
-            if (_isWebViewExtracting || _isScrapingSubtitles)
+            if (!_useWebViewPlayer && (_isWebViewExtracting || _isScrapingSubtitles))
                Positioned(
                  top: 40, 
                  left: 20,
@@ -1627,6 +1745,25 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                             // Limpiamos caché y cookies previas para evitar bloqueos por sesión
                             await controller.clearCache();
                             await CookieManager.instance().deleteAllCookies();
+
+                            // Handler para recibir servidores internos (Videasy)
+                            controller.addJavaScriptHandler(handlerName: 'onServersFound', callback: (args) {
+                              if (args.isNotEmpty && args[0] is List) {
+                                final List<dynamic> serversData = args[0];
+                                final List<InternalServerInfo> newServers = serversData.map((s) => InternalServerInfo(
+                                  id: s['id']?.toString() ?? '',
+                                  label: s['label']?.toString() ?? '',
+                                  flagUrl: s['flagUrl']?.toString() ?? '',
+                                )).toList();
+                                
+                                if (newServers.isNotEmpty && _videasyServers.length != newServers.length) {
+                                  setState(() {
+                                    _videasyServers = newServers;
+                                  });
+                                  print("🌍 SERVIDORES VIDEASY ENCONTRADOS: ${_videasyServers.length}");
+                                }
+                              }
+                            });
                           },
                          initialSettings: InAppWebViewSettings(
                            javaScriptEnabled: true,
@@ -1653,6 +1790,48 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                          onLoadResource: (controller, resource) {
                            final url = resource.url?.toString() ?? '';
                            final lcUrl = url.toLowerCase();
+
+                           // ================================================================
+                           // PROVEEDORES WEBVIEW-ONLY: nunca extraer stream, reproducir directo
+                           // Cubren videasy y sus CDNs (vidplus, thunderleaf), embed.su,
+                           // superembed, vidsrc.me, vidsrc.xyz y los originales tmstr4/neonhorizon
+                           // ================================================================
+                           final sourceHost = Uri.tryParse(_currentOption.videoUrl)?.host.toLowerCase() ?? '';
+                           bool isWebViewOnlySource =
+                               sourceHost.contains('embed.su') ||
+                               sourceHost.contains('superembed') ||
+                               sourceHost.contains('vidsrc.me') ||
+                               sourceHost.contains('vidsrc.xyz') ||
+                               sourceHost.contains('tmstr4') ||
+                               sourceHost.contains('neonhorizon');
+
+                           // Si el proveedor es WebView-only, forzar reproducción directa
+                           // en cuanto detectemos el primer frame de video (o sea listo)
+                           if (isWebViewOnlySource && !_useWebViewPlayer) {
+                             print("🌐 PROVEEDOR WEBVIEW-ONLY ($sourceHost) → Modo WebView puro activado");
+                             setState(() {
+                               _useWebViewPlayer = true;
+                               _isInitialLoading = false;
+                               _isWebViewExtracting = false;
+                               _isLoading = false;
+                             });
+                             // Maximizar el video del player del sitio
+                             controller.evaluateJavascript(source: """
+                               (function() {
+                                 var v = document.querySelector('video');
+                                 if (v) {
+                                   v.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999999;background:#000;object-fit:contain;';
+                                   v.setAttribute('playsinline', '');
+                                   v.play().catch(function(){});
+                                 }
+                                 // Ocultar overlays/ads del player
+                                 var ads = document.querySelectorAll('.ad-container,.overlay,.popup,.banner');
+                                 ads.forEach(function(a){ a.style.display='none'; });
+                               })();
+                             """);
+                             return;
+                           }
+
                            bool isJunk = lcUrl.contains('analytics') || lcUrl.contains('google-analytics') || lcUrl.contains('doubleclick') || lcUrl.contains('collect?') || lcUrl.contains('facebook.com/tr/') || lcUrl.contains('yandex') || lcUrl.contains('yastatic') || lcUrl.contains('loading.mp4') || lcUrl.contains('mc.yandex.ru') || lcUrl.contains('hotjar') || lcUrl.contains('/pixel') || lcUrl.contains('popads') || lcUrl.contains('mixpanel');
                            if (isJunk) return;
                            bool hasVideoExt = lcUrl.contains('.mp4?') || lcUrl.endsWith('.mp4') || lcUrl.contains('.m3u8?') || lcUrl.endsWith('.m3u8') || lcUrl.contains('.m3u?') || lcUrl.endsWith('.m3u') || lcUrl.contains('.webm') || lcUrl.contains('.ts') || lcUrl.contains('.mov') || lcUrl.contains('.avi') || lcUrl.contains('.mkv');
@@ -1660,13 +1839,27 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                             if ((hasVideoExt || is4meStream) && (_isWebViewExtracting || _isSwitchingStream)) {
                               print("🎯 VIDEO_DETECTADO: $url");
                               if (!_hasInitialUrl) {
-                                  _hasInitialUrl = true; 
+                                  _hasInitialUrl = true;
+
+                                  // DOMINIO PROTEGIDO (CDN) → WEBVIEW PLAYER (evita 403)
+                                  if (lcUrl.contains('tmstr4.') || lcUrl.contains('neonhorizon') || lcUrl.contains('vidsrc')) {
+                                    print("🚀 CDN PROTEGIDO ($url) → REPRODUCIENDO EN WEBVIEW");
+                                    setState(() {
+                                      _useWebViewPlayer = true;
+                                      _isInitialLoading = false;
+                                      _isWebViewExtracting = false;
+                                      _isLoading = false;
+                                    });
+                                    controller.evaluateJavascript(source: "var v=document.querySelector('video');if(v){v.style.cssText='position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999999;background:black;';v.setAttribute('playsinline','');v.play();}");
+                                    return;
+                                  }
+
                                    setState(() { 
                                      _isInitialLoading = false; 
                                      if (widget.extractionAlgorithm == 2) {
                                        _isWebViewExtracting = false; 
                                      }
-                                   }); // Cerramos pantalla de carga para ver el video inicial
+                                   });
                                   _initializeVideoPlayer(url);
                               } else {
                                   bool isSameBase = false;
@@ -1683,41 +1876,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                          },
                          onLoadStop: (controller, url) async {
                            if (_isWebViewExtracting || _isSwitchingStream) {
-                             _autoClickCount = 0;
-                             _scraperTimer?.cancel();
-                              _scraperTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-                                if (!_isWebViewExtracting && !_isSwitchingStream) { timer.cancel(); return; }
-                                if (_autoClickCount < 4) {
-                                   _webViewController?.evaluateJavascript(source: "(function(){ var v=document.querySelector('video'); return (v && v.src) ? v.src : null; })();").then((v) {
-                                      if (v != null && v.toString().startsWith('http')) {
-                                          final foundUrl = v.toString();
-                                          bool isSameBase = false;
-                                          if (_controller != null && _controller!.dataSource.isNotEmpty) {
-                                              final currentBase = _controller!.dataSource.split('?').first;
-                                              final newBase = foundUrl.split('?').first;
-                                              isSameBase = currentBase == newBase;
-                                          }
-                                          if (!_hasInitialUrl || (!isSameBase && !foundUrl.contains('.ts'))) {
-                                              _hasInitialUrl = true;
-                                              setState(() { _isInitialLoading = false; });
-                                              _initializeVideoPlayer(foundUrl);
-                                          }
-                                      }
-                                   });
-                                } else {
-                                   _runScraper();
-                                }
-                                
-                                if (widget.extractionAlgorithm == 2 && _autoClickCount > 15 && !_hasInitialUrl) {
-                                   print("🤖 ALGORITMO 2: Posible bloqueo o DOM muerto. Auto-recargando mágicamente...");
-                                   _autoClickCount = 0;
-                                   _webViewController?.reload();
-                                } else {
-                                   _autoClickCount++;
-                                }
-                              });
-                            }
-                          },
+                             _runScraper();
+                           }
+                         },
                          onDownloadStartRequest: (controller, downloadRequest) async {
                            final url = downloadRequest.url.toString();
                            if (url.contains(".srt") || url.contains(".vtt") || url.contains("/download/")) {
@@ -2309,8 +2470,106 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                      child: Text("No se encontraron calidades seleccionables en este reproductor", style: TextStyle(color: Colors.white54)),
                    ),
                 ],
+                if (_videasyServers.isNotEmpty) ...[
+                  const SizedBox(height: 20),
+                  const Divider(color: Colors.white10),
+                  const SizedBox(height: 10),
+                  const Text('IDIOMA / SERVIDOR (VIDEASY)', 
+                    style: TextStyle(color: Colors.grey, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                  const SizedBox(height: 10),
+                  ..._videasyServers.map((server) {
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: server.flagUrl.isNotEmpty 
+                        ? ClipRRect(
+                            borderRadius: BorderRadius.circular(2),
+                            child: Image.network(server.flagUrl, width: 28, height: 18, fit: BoxFit.cover,
+                               errorBuilder: (c,e,s) => const Icon(Icons.flag, size: 20, color: Colors.white30)))
+                        : const Icon(Icons.flag, size: 20, color: Colors.white30),
+                      title: Text(server.label, style: const TextStyle(color: Colors.white, fontSize: 14)),
+                      trailing: const Icon(Icons.chevron_right, color: Colors.white24, size: 16),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _selectVideasyInternalServer(server);
+                      },
+                    );
+                  }).toList(),
+                ],
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _selectVideasyInternalServer(InternalServerInfo server) {
+    setState(() {
+      _isLoading = true;
+      _isSwitchingStream = true;
+      _videasyServers = []; // Limpiamos para re-escanear tras el cambio
+    });
+    
+    // Mandamos el comando click al WebView
+    _webViewController?.evaluateJavascript(source: """
+      (function() {
+        var items = Array.from(document.querySelectorAll('.jw-settings-content-item, .art-setting-item, .server-item, li[role="menuitem"], .vjs-menu-item'));
+        var target = items.find(function(el) { return el.innerText.trim() === '${server.label}'; });
+        if (target) {
+          target.click();
+          return true;
+        }
+        return false;
+      })();
+    """);
+  }
+
+  void _showVideasyServersDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF151515).withOpacity(0.95),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25), side: const BorderSide(color: Colors.white10, width: 1)),
+        title: Row(
+          children: [
+            const Icon(Icons.language, color: Color(0xFF00A3FF)),
+            const SizedBox(width: 10),
+            const Text('Idiomas / Servers', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text("Selecciona un idioma o servidor interno:", style: TextStyle(color: Colors.white38, fontSize: 12)),
+              const SizedBox(height: 15),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: _videasyServers.length,
+                  separatorBuilder: (c, i) => const Divider(color: Colors.white10),
+                  itemBuilder: (context, index) {
+                    final server = _videasyServers[index];
+                    return ListTile(
+                      dense: true,
+                      leading: server.flagUrl.isNotEmpty 
+                        ? ClipRRect(
+                            borderRadius: BorderRadius.circular(2),
+                            child: Image.network(server.flagUrl, width: 28, height: 18, fit: BoxFit.cover, 
+                               errorBuilder: (c, e, s) => const Icon(Icons.flag, size: 24, color: Colors.white30))) 
+                        : const Icon(Icons.flag, size: 24, color: Colors.white30),
+                      title: Text(server.label, style: const TextStyle(color: Colors.white, fontSize: 14)),
+                      trailing: const Icon(Icons.play_circle_outline, color: Color(0xFF00A3FF), size: 20),
+                      onTap: () {
+                         Navigator.pop(context);
+                         _selectVideasyInternalServer(server);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         ),
       ),

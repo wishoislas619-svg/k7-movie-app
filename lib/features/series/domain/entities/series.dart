@@ -12,6 +12,8 @@ class Series {
   final String? year;
   final bool isPopular;
   final DateTime createdAt;
+  final String? tmdbId;
+  final String? imdbId;
 
   Series({
     required this.id,
@@ -27,6 +29,8 @@ class Series {
     this.year,
     this.isPopular = false,
     required this.createdAt,
+    this.tmdbId,
+    this.imdbId,
   });
 
   factory Series.fromMap(Map<String, dynamic> map) {
@@ -44,6 +48,8 @@ class Series {
       year: map['year'],
       isPopular: map['isPopular'] == 1,
       createdAt: DateTime.parse(map['createdAt']),
+      tmdbId: map['tmdbId'],
+      imdbId: map['imdbId'],
     );
   }
 
@@ -62,6 +68,8 @@ class Series {
       'year': year,
       'isPopular': isPopular ? 1 : 0,
       'createdAt': createdAt.toIso8601String(),
+      'tmdbId': tmdbId,
+      'imdbId': imdbId,
     };
   }
 }

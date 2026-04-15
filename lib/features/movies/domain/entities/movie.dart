@@ -15,6 +15,8 @@ class Movie {
   final bool isPopular;
   final DateTime createdAt;
   final int? creditsStartTime;
+  final String? tmdbId;
+  final String? imdbId;
 
   Movie({
     required this.id,
@@ -33,6 +35,8 @@ class Movie {
     this.isPopular = false,
     required this.createdAt,
     this.creditsStartTime,
+    this.tmdbId,
+    this.imdbId,
   });
 }
 

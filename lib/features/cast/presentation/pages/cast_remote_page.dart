@@ -24,7 +24,7 @@ class CastRemotePage extends StatefulWidget {
 
 class _CastRemotePageState extends State<CastRemotePage> {
   final _castService = CastService();
-  double _volume = 0.5;
+  double _volume = 0.5; // Valor visual inicial
   bool _isSeeking = false;
   double _seekValue = 0.0;
   bool _isNavigatingAway = false; // Guard para evitar pops múltiples
@@ -158,7 +158,7 @@ class _CastRemotePageState extends State<CastRemotePage> {
                 // ── Control de Volumen ───────────────────────────────────
                 _buildVolumeControl(),
 
-                const SizedBox(height: 32),
+                const SizedBox(height: 40),
               ],
             ),
           ),

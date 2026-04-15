@@ -227,9 +227,12 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
             )
           else
             IconButton(
-              icon: const Icon(Icons.refresh, color: Colors.white54, size: 20),
-              onPressed: _castService.startScan,
-              tooltip: 'Volver a escanear',
+              icon: const Icon(Icons.refresh_rounded, color: Color(0xFF00FF87), size: 24),
+              onPressed: () {
+                _castService.stopScan();
+                _castService.startScan();
+              },
+              tooltip: 'Reiniciar búsqueda',
             ),
         ],
       ),
@@ -255,6 +258,15 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
               'Asegúrate de estar en la misma red WiFi que tu TV o Chromecast.',
               style: TextStyle(color: Colors.white38, fontSize: 12),
               textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            TextButton.icon(
+              onPressed: () {
+                _castService.stopScan();
+                _castService.startScan();
+              },
+              icon: const Icon(Icons.refresh_rounded, color: Color(0xFF00A3FF)),
+              label: const Text('Intentar de nuevo', style: TextStyle(color: Color(0xFF00A3FF))),
             ),
           ],
         ),

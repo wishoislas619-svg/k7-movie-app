@@ -522,7 +522,18 @@ class DownloadRepository {
             if (!await pubDir.exists()) {
                await pubDir.create();
             }
-            final publicFile = await File(finalPath).copy('${pubDir.path}/${finalPath.split('/').last}');
+            
+            // Forzar extensión .mp4 para el archivo público
+            String publicName = finalPath.split('/').last;
+            if (publicName.toLowerCase().endsWith('.ts')) {
+              publicName = publicName.substring(0, publicName.length - 3) + '.mp4';
+            } else if (publicName.toLowerCase().endsWith('.m3u8')) {
+              publicName = publicName.substring(0, publicName.length - 5) + '.mp4';
+            } else if (!publicName.toLowerCase().endsWith('.mp4')) {
+              publicName = '$publicName.mp4';
+            }
+
+            final publicFile = await File(finalPath).copy('${pubDir.path}/$publicName');
             pPath = publicFile.path;
             await File(finalPath).delete(); // Borramos el oculto
         } catch(e) {

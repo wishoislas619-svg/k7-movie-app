@@ -322,6 +322,125 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
       );
     }
   }
+  // ========================================================
+  // SELECTOR DE SERVIDOR INTELIGENTE CON SOPORTE LATINO
+  // ========================================================
+  void _showSmartServerPicker(BuildContext ctx, Episode episode) {
+    final tmdbId = widget.series.tmdbId;
+    if (tmdbId == null || tmdbId.isEmpty) {
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        const SnackBar(content: Text('Esta serie no tiene TMDB ID. Agrégalo en Editar Serie.'), backgroundColor: Colors.orange),
+      );
+      return;
+    }
+
+    final seasonNum = _selectedSeason?.seasonNumber ?? 1;
+    final epNum = episode.episodeNumber;
+
+    final servers = [
+      {
+        'name': 'Videasy',
+        'lang': '🌐 Multi-idioma (selector integrado)',
+        'url': 'https://player.videasy.net/tv/$tmdbId/$seasonNum/$epNum',
+        'icon': 'https://videasy.net/logo.png',
+        'color': const Color(0xFF00C853),
+        // URL documentada oficialmente — player con selector de idioma
+      },
+      {
+        'name': 'Embed.su',
+        'lang': '🌐 Latino / Inglés / Multi',
+        'url': 'https://embed.su/embed/tv/$tmdbId/$seasonNum/$epNum',
+        'icon': 'https://embed.su/favicon.ico',
+        'color': const Color(0xFF2979FF),
+        // Muy usado en proyectos reales de GitHub
+      },
+      {
+        'name': 'SuperEmbed',
+        'lang': '🌐 Multi-fuente / Multi-idioma',
+        'url': 'https://www.superembed.stream/?tmdb=$tmdbId&tmdb=1&s=$seasonNum&e=$epNum',
+        'icon': 'https://www.superembed.stream/favicon.ico',
+        'color': const Color(0xFFFF6D00),
+        // Agrega tmdb=1 para TMDB ID
+      },
+      {
+        'name': 'VidSrc.me',
+        'lang': '🌐 Multi-servidor (≠ vidsrc.to)',
+        'url': 'https://vidsrc.me/embed/tv?tmdb=$tmdbId&season=$seasonNum&episode=$epNum',
+        'icon': 'https://vidsrc.me/favicon.ico',
+        'color': const Color(0xFFAA00FF),
+        // Diferente a vidsrc.to — más proveedores
+      },
+      {
+        'name': 'VidSrc.to ✅',
+        'lang': '🇺🇸 Inglés / Multi (probado)',
+        'url': 'https://vidsrc.to/embed/tv/$tmdbId/$seasonNum/$epNum',
+        'icon': 'https://vidsrc.to/favicon.ico',
+        'color': const Color(0xFF6200EA),
+        // Funciona correctamente — respaldo confiable
+      },
+      {
+        'name': 'VidSrc.xyz',
+        'lang': '🇲🇽 Latino / Multi',
+        'url': 'https://vidsrc.xyz/embed/tv?tmdb=$tmdbId&season=$seasonNum&episode=$epNum',
+        'icon': 'https://vidsrc.xyz/favicon.ico',
+        'color': const Color(0xFFD50000),
+        // Variante con más idiomas
+      },
+    ];
+
+    showModalBottomSheet(
+      context: ctx,
+      backgroundColor: const Color(0xFF1A1A2E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (bCtx) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(4))),
+          const SizedBox(height: 16),
+          const Text('⚡ Elige Servidor', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+          const SizedBox(height: 4),
+          Text('T$seasonNum · E$epNum', style: const TextStyle(color: Colors.white54, fontSize: 13)),
+          const SizedBox(height: 12),
+          ...servers.map((s) => ListTile(
+            leading: CircleAvatar(
+              backgroundColor: (s['color'] as Color).withOpacity(0.2),
+              child: Text(s['name'].toString()[0], style: TextStyle(color: s['color'] as Color, fontWeight: FontWeight.bold)),
+            ),
+            title: Text(s['name'].toString(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+            subtitle: Text(s['lang'].toString(), style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            trailing: const Icon(Icons.play_circle, color: Color(0xFF00A3FF)),
+            onTap: () {
+              Navigator.pop(bCtx);
+              Navigator.push(ctx, MaterialPageRoute(
+                builder: (_) => VideoPlayerPage(
+                  movieName: '${widget.series.name} - S${seasonNum}E${epNum}',
+                  mediaId: widget.series.id,
+                  episodeId: episode.id,
+                  mediaType: 'series',
+                  imagePath: widget.series.imagePath,
+                  subtitleLabel: s['name'].toString(),
+                  extractionAlgorithm: 2,
+                  videoOptions: [
+                    VideoOption(
+                      id: episode.id,
+                      movieId: widget.series.id,
+                      serverImagePath: s['icon'].toString(),
+                      resolution: s['name'].toString(),
+                      videoUrl: s['url'].toString(),
+                      language: s['lang'].toString(),
+                      extractionAlgorithm: 2,
+                    ),
+                  ],
+                ),
+              ));
+            },
+          )).toList(),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
 
   void _showServerSelectionModal(Episode episode) {
     if (episode.urls.isEmpty) {
@@ -345,45 +464,70 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
               const Text('Elegir Servidor', style: TextStyle(color: Color(0xFF00A3FF), fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
               const SizedBox(height: 12),
               Flexible(
-                child: ListView.builder(
+                child: ListView(
                   shrinkWrap: true,
-                  itemCount: episode.urls.length,
-                  itemBuilder: (context, index) {
-                    final eUrl = episode.urls[index];
-                    SeriesOption? opt;
-                    try { opt = _videoOptions?.firstWhere((o) => o.id == eUrl.optionId); } catch(_) {}
-                    
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)),
-                      child: ListTile(
-                        leading: opt != null && opt.serverImagePath.isNotEmpty
-                          ? Image.network(opt.serverImagePath, width: 24, height: 24, errorBuilder: (_,__,___) => const Icon(Icons.dns, color: Colors.blue))
-                          : const Icon(Icons.dns, color: Colors.blue),
-                        title: Text(opt != null ? '${opt.resolution} (${opt.language ?? 'Latino'})' : 'Servidor ${index+1}', style: const TextStyle(color: Colors.white, fontSize: 14)),
-                        subtitle: Text(eUrl.quality ?? 'Desconocido', style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: const Icon(Icons.download, color: Color(0xFFD400FF)),
-                              onPressed: () {
-                                Navigator.pop(context);
-                                _handleDownload(episode, eUrl);
-                              },
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.play_arrow, color: Color(0xFF00A3FF)),
-                              onPressed: () {
-                                Navigator.pop(context);
-                                _playEpisode(episode, eUrl);
-                              },
-                            ),
-                          ],
+                  children: [
+                    // --- OPCIÓN INTELIGENTE (SI HAY TMDB ID) ---
+                    if (widget.series.tmdbId != null && widget.series.tmdbId!.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [const Color(0xFF00A3FF).withOpacity(0.2), const Color(0xFFD400FF).withOpacity(0.2)],
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.3)),
+                        ),
+                        child: ListTile(
+                          leading: const Icon(Icons.bolt, color: Colors.amber),
+                          title: const Text('⚡ SERVIDOR INTELIGENTE', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          subtitle: const Text('Elige idioma: Latino / Inglés / Multi', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                          trailing: const Icon(Icons.chevron_right, color: Color(0xFF00A3FF)),
+                          onTap: () {
+                            Navigator.pop(context);
+                            _showSmartServerPicker(context, episode);
+                          },
                         ),
                       ),
-                    );
-                  },
+                    
+                    // --- OPCIONES MANUALES ---
+                    ...List.generate(episode.urls.length, (index) {
+                      final eUrl = episode.urls[index];
+                      SeriesOption? opt;
+                      try { opt = _videoOptions?.firstWhere((o) => o.id == eUrl.optionId); } catch(_) {}
+                      
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(12)),
+                        child: ListTile(
+                          leading: opt != null && opt.serverImagePath.isNotEmpty
+                            ? Image.network(opt.serverImagePath, width: 24, height: 24, errorBuilder: (_,__,___) => const Icon(Icons.dns, color: Colors.blue))
+                            : const Icon(Icons.dns, color: Colors.blue),
+                          title: Text(opt != null ? '${opt.resolution} (${opt.language ?? 'Latino'})' : 'Servidor ${index+1}', style: const TextStyle(color: Colors.white, fontSize: 14)),
+                          subtitle: Text(eUrl.quality ?? 'Desconocido', style: const TextStyle(color: Colors.white38, fontSize: 12)),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.download, color: Color(0xFFD400FF)),
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  _handleDownload(episode, eUrl);
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.play_arrow, color: Color(0xFF00A3FF)),
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  _playEpisode(episode, eUrl);
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                  ],
                 ),
               ),
             ],

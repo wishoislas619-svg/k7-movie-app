@@ -1,4 +1,5 @@
 
+import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -43,6 +44,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   bool _snifferInjected = false;
   static const _webviewTouchChannel = MethodChannel('com.luis.movieapp/webview_touch');
   final GlobalKey _webViewKey = GlobalKey();
+  Map<String, String>? _lastCapturedHeaders;
 
   final List<ContentBlocker> _contentBlockers = [
     ContentBlocker(
@@ -101,8 +103,13 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
         isProblematic = true;
       }
 
-      // Always allow adaptive streaming (HLS/MPD) regardless of other checks
-      if (url.contains('.m3u8') || url.contains('.mpd')) return true;
+      // Filtro de extensiones avanzado para evadir bloqueos
+      final isVideo = url.contains('.m3u8') || 
+                      url.contains('.mp4') || 
+                      url.contains('ecotechproducts.shop') ||
+                      (url.contains('.txt') && (url.contains('master') || url.contains('playlist')));
+      
+      if (!isVideo) return false;
 
       return !isProblematic;
     }).toList();
@@ -191,22 +198,158 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                             javaScriptCanOpenWindowsAutomatically: false,
                             supportMultipleWindows: false,
                             useShouldOverrideUrlLoading: true,
-                            userAgent: "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+                            isInspectable: true,
+                            userAgent:
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
                           ),
-                          onWebViewCreated: (controller) => _webViewController = controller,
+                          initialUserScripts: UnmodifiableListView<UserScript>([
+                            UserScript(
+                              source: r'''
+                              (function() {
+                                console.log('[DEBUG_JS] GHOST_SNIFFER_v4.5_SHADOW_PIERCE');
+                                
+                                window.onerror = function(msg) {
+                                  window.flutter_inappwebview.callHandler('debugLog', 'JS_ERROR: ' + msg);
+                                };
+
+                                function notify(url, meta) {
+                                  if (!url || typeof url !== 'string' || url.startsWith('blob:') || url.length < 10) return;
+                                  // Evitar basura de trackers conocidos
+                                  if (url.includes('analytics') || url.includes('doubleclick')) return;
+                                  
+                                  try {
+                                    window.flutter_inappwebview.callHandler('snifferUrl', url, meta || {});
+                                  } catch(e) {}
+                                }
+
+                                // 1. Hook de Hls.js (El standard de oro)
+                                const openHlsHook = () => {
+                                  if (window.Hls && !window._hlsHooked) {
+                                    const originalLoad = window.Hls.prototype.loadSource;
+                                    window.Hls.prototype.loadSource = function(src) {
+                                      notify(src, {method: 'HLS_LOAD_SOURCE'});
+                                      return originalLoad.apply(this, arguments);
+                                    };
+                                    window._hlsHooked = true;
+                                  }
+                                };
+
+                                // 2. Proxy de Setters (Atrapar cuando asignan .src)
+                                const proxyMedia = (el) => {
+                                  if (el._sniffed) return;
+                                  const originalSrc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+                                  Object.defineProperty(el, 'src', {
+                                    set: function(val) {
+                                      notify(val, {context: 'setter'});
+                                      return originalSrc.set.apply(this, arguments);
+                                    },
+                                    get: function() { return originalSrc.get.apply(this); }
+                                  });
+                                  el._sniffed = true;
+                                };
+
+                                // 3. Perforación de Shadow DOM & DOM Scan
+                                const deepScan = () => {
+                                  const allVideos = [];
+                                  const findVideos = (root) => {
+                                    if (!root) return;
+                                    // Buscar en el root actual
+                                    root.querySelectorAll('video, source, iframe, embed').forEach(v => allVideos.push(v));
+                                    // Buscar en Shadow Roots
+                                    root.querySelectorAll('*').forEach(el => {
+                                      if (el.shadowRoot) findVideos(el.shadowRoot);
+                                    });
+                                  };
+
+                                  findVideos(document);
+                                  
+                                  allVideos.forEach(el => {
+                                    const src = el.src || el.currentSrc || el.getAttribute('data-src');
+                                    if (src && src.startsWith('http')) {
+                                      notify(src, {tag: el.tagName, shadow: 'pierced'});
+                                    }
+                                    if (el.tagName === 'VIDEO') proxyMedia(el);
+                                  });
+                                  
+                                  openHlsHook();
+                                };
+
+                                // 4. Proxy de Fetch/XHR (Fuerza Bruta)
+                                const _fetch = window.fetch;
+                                window.fetch = function(...args) {
+                                  let url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
+                                  if (url && (url.includes('.m3u8') || url.includes('.mp4'))) notify(url, {type: 'fetch'});
+                                  return _fetch.apply(this, args);
+                                };
+
+                                // Ciclo de vida
+                                setInterval(deepScan, 2000);
+                                setInterval(() => window.flutter_inappwebview.callHandler('debugLog', 'HEARTBEAT_ALIVE'), 3000);
+
+                                notify('READY_SIGNAL', {status: 'v4.5_active'});
+                              })();
+                            ''',
+                              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                            ),
+                          ]),
+                          onConsoleMessage: (controller, consoleMessage) {
+                            print("[WEBVIEW_CONSOLE] ${consoleMessage.message}");
+                          },
+                          onWebViewCreated: (controller) {
+                            _webViewController = controller;
+                            
+                            // Debug Handler
+                            controller.addJavaScriptHandler(handlerName: 'debugLog', callback: (args) {
+                               print("[SNIFFER_DEBUG_JS] ${args.first}");
+                            });
+
+                            controller.addJavaScriptHandler(
+                              handlerName: 'snifferUrl',
+                              callback: (args) {
+                                if (args.isEmpty) return;
+                                final String url = args[0].toString();
+                                if (url == "READY_SIGNAL") {
+                                  print("[DEBUG_SNIFFER] JS Sniper Ready Signal Received");
+                                  return;
+                                }
+                                Map<String, String>? headers;
+                                if (args.length > 1 && args[1] is Map) {
+                                  headers = Map<String, String>.from(args[1]);
+                                }
+                                print("[DEBUG_SNIFFER] Captured: $url");
+                                if (url.isNotEmpty) _handleFoundVideo(url, customHeaders: headers);
+                              },
+                            );
+                          },
                           onLoadResource: (controller, resource) {
                             final url = resource.url.toString();
                             if (_isVideoUrl(url)) _handleFoundVideo(url);
                           },
                           shouldInterceptRequest: (controller, request) async {
                             final url = request.url.toString();
+                            final lower = url.toLowerCase();
+                            
+                            // Si es un fragmento de video, capturamos sus cabeceras pero no bloqueamos la petición
+                            // para que el reproductor web siga funcionando y validando el anuncio.
+                            if (lower.contains('.ts') || lower.contains('.m4s') || lower.contains('.mp4/')) {
+                               _handleFoundVideo(url, customHeaders: request.headers);
+                               return null; 
+                            }
+
                             if (_isVideoUrl(url)) _handleFoundVideo(url, customHeaders: request.headers);
                             return null;
                           },
+                           onProgressChanged: (controller, progress) {
+                             // _injectNetworkSniffer eliminado por redundancia con initialUserScripts
+                           },
+                          onLoadStart: (controller, url) {
+                            print("[WEBVIEW] Iniciando carga: $url");
+                            // Inyección redundante para asegurar presencia
+                            controller.evaluateJavascript(source: r'''(function(){ console.log('SNIFFER_RE-INJECT'); })();''');
+                          },
                           onLoadStop: (controller, url) async {
-                            _startSniffingTimer();
-                            _injectNetworkSniffer();
-                            controller.evaluateJavascript(source: _cleanerJs);
+                              print("[WEBVIEW] Carga finalizada: $url");
+                              controller.evaluateJavascript(source: _cleanerJs);
 
                             if (widget.extractionAlgorithm == 2) {
                               await Future.delayed(const Duration(milliseconds: 1500));
@@ -324,13 +467,28 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                 const SizedBox(height: 12),
 
                 // Toggle visibility in Alg 1 (In Alg 2 it's better to keep it hidden/fixed)
-                if (widget.extractionAlgorithm != 2)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
-                    child: TextButton.icon(
-                      onPressed: () => setState(() => _showWebView = !_showWebView),
-                      icon: Icon(_showWebView ? Icons.visibility_off_rounded : Icons.visibility_rounded, size: 16, color: Colors.white38),
-                      label: Text(_showWebView ? "OCULTAR NAVEGADOR" : "MOSTRAR NAVEGADOR", style: const TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        TextButton.icon(
+                          onPressed: () => setState(() => _showWebView = !_showWebView),
+                          icon: Icon(_showWebView ? Icons.visibility_off_rounded : Icons.visibility_rounded, size: 14, color: Colors.white38),
+                          label: Text(_showWebView ? "OCULTAR" : "MOSTRAR ", style: const TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)),
+                        ),
+                        const SizedBox(width: 8),
+                        if (widget.extractionAlgorithm == 1 && filteredMedia.isEmpty)
+                          TextButton.icon(
+                            onPressed: () {
+                              Navigator.pop(context); // Cierra este
+                              // El MovieOptionsPage ya maneja la lógica de re-lanzar con Alg 2 si es necesario 
+                              // pero aquí podemos ofrecer un acceso directo
+                            },
+                            icon: const Icon(Icons.bolt_rounded, size: 14, color: Colors.amber),
+                            label: const Text("PROBAR ALGORITMO 2", style: TextStyle(color: Colors.amber, fontSize: 9, fontWeight: FontWeight.bold)),
+                          ),
+                      ],
                     ),
                   ),
 
@@ -479,19 +637,42 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   void _handleFoundVideo(String url, {Map<String, String>? customHeaders}) async {
     // Avoid processing duplicates
     if (_detectedUrls.contains(url)) return;
-    _detectedUrls.add(url);
     
-    print("[SNIFFER] Analizando flujos para: ${url.substring(0, url.length > 50 ? 50 : url.length)}...");
-    setState(() => _statusText = "Interceptada petición multimedia...");
+    // Ignorar URLs obvias de anuncios para no saturar la lista
+    if (url.contains('googleads') || url.contains('imasdk') || url.contains('doubleclick')) {
+      return;
+    }
 
-    // 1. Capture Cookies & Headers (Like 1DM)
+    _detectedUrls.add(url);
+    print("[SNIFFER] Analizando flujos para: ${url.substring(0, url.length > 50 ? 50 : url.length)}...");
+    
+    // FILTRO CRÍTICO: ¿Es esto un video real?
+    bool isVideo = url.contains('.m3u8') || 
+                   url.contains('.mp4') || 
+                   url.contains('.mpd') ||
+                   url.contains('ecotechproducts.shop') ||
+                   url.contains('cf-master') ||
+                   (url.contains('.txt') && (url.contains('master') || url.contains('playlist')));
+                   
+    if (!isVideo) return;
+
+    setState(() => _statusText = "Capturando stream oficial...");
+
+    // 1. Capture Cookies & Headers (Like 1DM) - FORCE CLONE SESSION
     String? cookieString;
     try {
       final cookieManager = CookieManager.instance();
+      
+      // Sincronización agresiva: Obtenemos cookies de la URL del video Y de la página original
       final pageCookies = await cookieManager.getCookies(url: WebUri(widget.url));
       final mediaCookies = await cookieManager.getCookies(url: WebUri(url));
+      
       final all = [...pageCookies, ...mediaCookies];
-      cookieString = all.map((c) => '${c.name}=${c.value}').join('; ');
+      final cookieMap = <String, String>{};
+      for (var c in all) {
+        cookieMap[c.name] = c.value;
+      }
+      cookieString = cookieMap.entries.map((e) => '${e.key}=${e.value}').join('; ');
       
       if (customHeaders != null) {
         final lowerHeaders = customHeaders.map((k, v) => MapEntry(k.toLowerCase(), v));
@@ -503,18 +684,34 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
       print("[SNIFFER] Error capturando cookies: $e");
     }
 
-    final String ua = customHeaders?['user-agent'] ?? customHeaders?['User-Agent'] ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+    final String ua = customHeaders?['user-agent'] ?? customHeaders?['User-Agent'] ?? "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36";
+    final String referer = customHeaders?['referer'] ?? customHeaders?['Referer'] ?? widget.url;
 
     final headersForProbe = <String, String>{};
+    
+    // Persistencia de tokens: Si capturamos cabeceras en esta sesión, las mantenemos como base
     if (customHeaders != null) {
-      for (final entry in customHeaders.entries) {
-        headersForProbe[entry.key] = entry.value;
+      _lastCapturedHeaders ??= {};
+      _lastCapturedHeaders!.addAll(customHeaders);
+    }
+
+    if (_lastCapturedHeaders != null) {
+      for (final entry in _lastCapturedHeaders!.entries) {
+        // Clonamos cabeceras de seguridad críticas para evitar el error 403
+        final keyLower = entry.key.toLowerCase();
+        if (keyLower.startsWith('sec-') || keyLower == 'x-auth' || keyLower == 'authorization' || keyLower == 'range' || keyLower == 'origin') {
+          headersForProbe[entry.key] = entry.value;
+        }
       }
     }
+    
     if (cookieString != null) headersForProbe['Cookie'] = cookieString;
     headersForProbe['User-Agent'] = ua;
-    headersForProbe['Referer'] = widget.url;
-    headersForProbe['Origin'] = widget.url.split('/').take(3).join('/');
+    headersForProbe['Referer'] = referer;
+    // Si no hay Origin, lo derivamos del Referer para mayor credibilidad
+    headersForProbe['Origin'] = headersForProbe['Origin'] ?? referer.split('/').take(3).join('/');
+    headersForProbe['Accept'] = '*/*';
+    headersForProbe['Accept-Language'] = 'es-ES,es;q=0.9,en;q=0.8';
 
     // 2. Identify qualities & Explode (Like 1DM)
     try {
@@ -533,12 +730,8 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
 
         final masterUrl = await _resolveHlsMasterUrl(url, headersForProbe);
         final targetUrl = masterUrl ?? url;
-        if (masterUrl != null && masterUrl != url) {
-          print("[SNIFFER] Master HLS detectado: $masterUrl");
-        }
         final explodedQualities = await VideoService.getHlsQualities(targetUrl, headers: headersForProbe);
         
-        // Add each quality found as a separate media entry
         for (var q in explodedQualities) {
            final size = await _probeFileSize(q.url, headersForProbe);
            _addFoundMedia(
@@ -549,123 +742,25 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
              cookies: cookieString,
            );
         }
-
-        // Try direct MP4 if available
-        final mp4Fallback = await _tryFindMp4InDialog(url);
-        if (mp4Fallback != null) {
-          final size = await _probeFileSize(mp4Fallback, headersForProbe);
-          _addFoundMedia(
-            url: mp4Fallback,
-            resolution: "Descarga Directa (MP4)",
-            size: size,
-            headers: headersForProbe,
-            cookies: cookieString,
-          );
-        }
+      } else if (url.contains(".ts") || url.contains(".m4s")) {
+        print("[BYPASS] Sesión refrescada mediante fragmento de video.");
+        return;
       } else {
         final size = await _probeFileSize(url, headersForProbe);
         _addFoundMedia(
           url: url,
-          resolution: "Original (MP4)",
+          resolution: "Auto-Captura (Video)",
           size: size,
           headers: headersForProbe,
           cookies: cookieString,
         );
       }
     } catch (e) {
-      print("[SNIFFER] Error analizando calidades: $e");
+      print("[SNIFFER] Error en bypass: $e");
     }
   }
 
-  Future<void> _injectNetworkSniffer() async {
-    if (_snifferInjected || _webViewController == null || _isDisposed) return;
-    _snifferInjected = true;
-
-    _webViewController?.addJavaScriptHandler(
-      handlerName: 'snifferManifest',
-      callback: (args) async {
-        if (args.isEmpty) return;
-        final payload = args.first;
-        if (payload is Map) {
-          final url = payload['url']?.toString() ?? '';
-          final body = payload['body']?.toString() ?? '';
-          if (url.isNotEmpty && body.isNotEmpty) {
-            await _handleManifestText(url, body);
-          }
-        }
-      },
-    );
-
-    _webViewController?.addJavaScriptHandler(
-      handlerName: 'snifferUrl',
-      callback: (args) async {
-        if (args.isEmpty) return;
-        final url = args.first?.toString() ?? '';
-        if (url.isNotEmpty && _isVideoUrl(url)) {
-          _handleFoundVideo(url);
-        }
-      },
-    );
-
-    const js = '''
-      (function() {
-        if (window.__snifferHooked) return;
-        window.__snifferHooked = true;
-
-        function shouldCapture(url) {
-          if (!url) return false;
-          var u = url.toLowerCase();
-          return u.indexOf('.m3u8') !== -1 || u.indexOf('.mpd') !== -1;
-        }
-
-        var origFetch = window.fetch;
-        if (origFetch) {
-          window.fetch = function() {
-            return origFetch.apply(this, arguments).then(function(resp) {
-              try {
-                var url = resp.url || (arguments[0] && arguments[0].url) || arguments[0];
-                if (shouldCapture(url)) {
-                  resp.clone().text().then(function(txt) {
-                    try {
-                      window.flutter_inappwebview.callHandler('snifferManifest', {url: url, body: txt});
-                    } catch(e){}
-                  });
-                  window.flutter_inappwebview.callHandler('snifferUrl', url);
-                }
-              } catch(e){}
-              return resp;
-            });
-          };
-        }
-
-        var origOpen = XMLHttpRequest.prototype.open;
-        var origSend = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function(method, url) {
-          this.__snifferUrl = url;
-          return origOpen.apply(this, arguments);
-        };
-        XMLHttpRequest.prototype.send = function() {
-          this.addEventListener('load', function() {
-            try {
-              var url = this.__snifferUrl || '';
-              if (shouldCapture(url)) {
-                var txt = this.responseText;
-                try {
-                  window.flutter_inappwebview.callHandler('snifferManifest', {url: url, body: txt});
-                } catch(e){}
-                window.flutter_inappwebview.callHandler('snifferUrl', url);
-              }
-            } catch(e){}
-          });
-          return origSend.apply(this, arguments);
-        };
-      })();
-    ''';
-
-    try {
-      await _webViewController?.evaluateJavascript(source: js);
-    } catch (_) {}
-  }
+  // Método eliminado por redundancia con initialUserScripts
 
   Future<void> _handleManifestText(String url, String body) async {
     if (_isDisposed || !mounted) return;
@@ -963,20 +1058,106 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
             'x': (offset.dx + p.dx) * dpr,
             'y': (offset.dy + p.dy) * dpr
           });
-          await Future.delayed(const Duration(milliseconds: 500));
+          // Un poco más de tiempo entre clics para dejar que el sitio procese el anuncio
+          await Future.delayed(const Duration(milliseconds: 800));
         }
 
         // Click again after a short wait to ensure play trigger
         await Future.delayed(const Duration(milliseconds: 800));
         if (!_isDisposed) {
           await _webviewTouchChannel.invokeMethod('tapAt', {
-            'x': (offset.dx + w/2) * dpr,
-            'y': (offset.dy + h/2) * dpr
+            'x': (offset.dx + w / 2) * dpr,
+            'y': (offset.dy + h / 2) * dpr
           });
         }
       }
     } catch (e) {
       print("Error Algoritmo 2 Descarga: $e");
     }
+  }
+
+  String _getGhostSnifferCode() {
+    return r'''
+      (function() {
+        if (window._ghostPowered) return;
+        window._ghostPowered = true;
+        console.log('[DEBUG_JS] GHOST_SNIFFER_v5.5_DEEP_ENGINE_ACTIVE');
+
+        function notify(url, meta) {
+          if (!url || typeof url !== 'string' || url.startsWith('blob:') || url.length < 15) return;
+          if (url.includes('.js') || url.includes('.css') || url.includes('.png') || url.includes('analytics')) return;
+          try {
+            window.flutter_inappwebview.callHandler('snifferUrl', url, meta || {source: 'unknown'});
+          } catch(e) {}
+        }
+
+        // 1. Hook de URL.createObjectURL para capturar Blobs (Muy común en reproductores modernos)
+        const _createObjectURL = URL.createObjectURL;
+        URL.createObjectURL = function(blob) {
+          const url = _createObjectURL.apply(this, arguments);
+          if (blob.type && (blob.type.includes('mpegurl') || blob.type.includes('video'))) {
+             console.log('[DEBUG_JS] Blob Video Detectado: ' + url);
+             // No notificamos el blob, pero esto nos dice que el video está cargando por partes
+          }
+          return url;
+        };
+
+        // 2. Extraer de Motores de Streaming (HLS.js / Video.js)
+        const scanEngine = () => {
+          // HLS.js
+          if (window.Hls && window.Hls.instances) {
+            window.Hls.instances.forEach(h => notify(h.url, {engine: 'hls_instance'}));
+          }
+          // Video.js
+          if (window.videojs && window.videojs.getPlayers) {
+            const players = window.videojs.getPlayers();
+            for (let p in players) notify(players[p].currentSrc(), {engine: 'videojs'});
+          }
+          // JWPlayer (Global)
+          if (window.jwplayer && typeof jwplayer === 'function') {
+            try { 
+              const playlist = jwplayer().getPlaylist();
+              if (playlist) playlist.forEach(p => p.sources.forEach(s => notify(s.file, {engine: 'jwplayer'})));
+            } catch(e){}
+          }
+        };
+
+        // 3. Escaneo de reproducción activa (ReadyState > 2)
+        const deepScan = () => {
+          const videos = document.querySelectorAll('video');
+          videos.forEach(v => {
+            if (v.readyState >= 2) { // Video ya tiene datos o está reproduciendo
+               const src = v.src || v.currentSrc;
+               if (src && !src.startsWith('blob:')) notify(src, {status: 'playing', area: 'active_dom'});
+               
+               // Si es un Blob, intentamos buscar el playlist origen en el historial de red
+               if (src && src.startsWith('blob:')) {
+                 console.log('[DEBUG_JS] Video reproduciendo mediante BLOB. Buscando manifiesto...');
+               }
+            }
+          });
+          scanEngine();
+        };
+
+        // Interceptación de Red (Fetch/XHR)
+        const _fetch = window.fetch;
+        window.fetch = function(...args) {
+          let url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
+          if (url && (url.includes('.m3u8') || url.includes('.mp4'))) notify(url, {source: 'fetch_active'});
+          return _fetch.apply(this, args);
+        };
+
+        const _open = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(m, u) {
+          if (u && (u.includes('.m3u8') || u.includes('.mp4'))) notify(u, {source: 'xhr_active'});
+          return _open.apply(this, arguments);
+        };
+
+        setInterval(deepScan, 1000);
+        setInterval(() => window.flutter_inappwebview.callHandler('debugLog', 'GHOST_HEARTBEAT_v5.5'), 3000);
+        
+        notify('READY_SIGNAL', {status: 'v5.5_ready'});
+      })();
+    ''';
   }
 }

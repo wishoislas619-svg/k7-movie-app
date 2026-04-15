@@ -65,6 +65,7 @@ dependencies:
   google_mobile_ads: ^7.0.0
   unity_ads_plugin: ^0.3.11
   dart_cast: ^0.4.3
+  storage_space: ^1.0.1
 
 dev_dependencies:
   flutter_test:

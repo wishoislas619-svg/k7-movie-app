@@ -35,6 +35,8 @@ class MovieRepositorySqliteImpl implements MovieRepository {
       subtitleUrl: movie.subtitleUrl,
       isPopular: movie.isPopular,
       createdAt: movie.createdAt,
+      tmdbId: movie.tmdbId,
+      imdbId: movie.imdbId,
     );
     await db.insert('movies', model.toMap());
   }
