@@ -41,7 +41,8 @@ class InternalServerInfo {
   final String id;
   final String label;
   final String flagUrl;
-  InternalServerInfo({required this.id, required this.label, required this.flagUrl});
+  final String language;
+  InternalServerInfo({required this.id, required this.label, required this.flagUrl, this.language = ""});
 }
 
 class VideoPlayerPage extends ConsumerStatefulWidget {
@@ -169,6 +170,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   bool _useWebViewPlayer = false; // Nueva bandera para reproducción directa
   List<InternalServerInfo> _videasyServers = [];
   bool _isExtractingServers = false;
+  int _effectiveAlgorithm = 0;
+  bool _hasAutoSelectedServer = false;
 
   @override
   void initState() {
@@ -177,7 +180,14 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     _initialBrightness = widget.initialBrightness;
     if (widget.videoOptions.isNotEmpty) {
       _currentOption = widget.videoOptions.first;
+      final lcUrl = _currentOption.videoUrl.toLowerCase();
+      if (lcUrl.contains('embed.su') || lcUrl.contains('videasy')) {
+        _effectiveAlgorithm = 3;
+      } else {
+        _effectiveAlgorithm = widget.extractionAlgorithm;
+      }
     } else {
+      _effectiveAlgorithm = widget.extractionAlgorithm;
       // Evitar crash si la lista está vacía
       _errorMessage = "No hay opciones de video disponibles para este contenido.";
       _isLoading = false;
@@ -569,40 +579,125 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Future<void> _runScraper() async {
-    if (!mounted || _webViewController == null || !_isWebViewExtracting) return;
+    if (!mounted || _webViewController == null) return;
+    if (!_isWebViewExtracting && _effectiveAlgorithm != 3) return;
     
     _autoClickCount = 0;
     _scraperTimer?.cancel();
     _scraperTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-       if (!mounted || (!_isWebViewExtracting && !_isSwitchingStream)) {
-         timer.cancel();
-         return;
-       }
+        final bool shouldKeepRunning = _isWebViewExtracting || _isSwitchingStream || _effectiveAlgorithm == 3;
+        if (!mounted || !shouldKeepRunning) {
+          timer.cancel();
+          return;
+        }
 
-       // 1. Detección de Servers Videasy (Banderas)
+       // 1. REFINAMIENTO DE SCRAPER VIDEASY: NAVEGACION HUMANA EMULADA
        _webViewController?.evaluateJavascript(source: """
-         (function() {
-           var results = [];
-           var items = Array.from(document.querySelectorAll('.jw-settings-content-item, .art-setting-item, .vjs-menu-item, .list-server .item, .server-item'));
-           if (items.length === 0) {
-             items = Array.from(document.querySelectorAll('div, span, li, button')).filter(function(el) {
-               var t = el.innerText.trim().toLowerCase();
-               return t === 'latino' || t === 'castellano' || t === 'spanish' || t === 'english';
-             });
-           }
-           items.forEach(function(el) {
-             var img = el.querySelector('img') || (el.tagName === 'IMG' ? el : null);
-             var text = el.innerText.trim() || el.title || el.alt;
-             if (text && text.length < 30) {
-               results.push({ id: text, label: text, flagUrl: img ? img.src : '' });
-             }
-           });
-           if (results.length > 0) window.flutter_inappwebview.callHandler('onServersFound', results);
-           else {
-             var gear = document.querySelector('.jw-icon-settings, .art-icon-setting, .vjs-icon-cog, .settings-icon');
-             if (gear && Math.random() > 0.8) gear.click();
-           }
-         })();
+          (function() {
+            var loc = window.location.href;
+            console.log('🕵️ Scraper Videasy v7 en: ' + loc);
+
+            function isVisible(el) {
+               if (!el) return false;
+               var r = el.getBoundingClientRect();
+               return r.width > 0 && r.height > 0;
+            }
+
+            function forceClick(el) {
+              if (!el) return;
+              ["touchstart", "touchend", "mousedown", "click", "mouseup"].forEach(t => {
+                var ev = new MouseEvent(t, { bubbles: true, cancelable: true, view: window });
+                el.dispatchEvent(ev);
+              });
+            }
+
+            function findByText(root, text, exact = false) {
+              var all = root.querySelectorAll('*');
+              for (var el of all) {
+                var t = el.textContent.trim().toLowerCase();
+                if (exact ? t === text.toLowerCase() : t.includes(text.toLowerCase())) {
+                  if (isVisible(el)) return el;
+                }
+                if (el.shadowRoot) {
+                  var found = findByText(el.shadowRoot, text, exact);
+                  if (found) return found;
+                }
+              }
+              return null;
+            }
+
+            function findGear(root) {
+              var btn = root.querySelector('button[aria-label*="Setting"], button[aria-label*="Config"], .vds-settings-button, .vjs-settings-control');
+              if (btn && isVisible(btn)) return btn;
+              
+              var all = root.querySelectorAll('button, div[role="button"]');
+              for (var b of all) {
+                var svg = b.querySelector('svg');
+                if (svg && (svg.innerHTML.includes('M19.43') || svg.innerHTML.includes('12.98') || svg.innerHTML.includes('M12 15.5'))) {
+                  if (isVisible(b)) return b;
+                }
+              }
+              
+              for (var el of root.querySelectorAll('*')) {
+                if (el.shadowRoot) {
+                  var found = findGear(el.shadowRoot);
+                  if (found) return found;
+                }
+              }
+              return null;
+            }
+
+            // === PASO 1: ¿Menú de pestañas visible? (Radix UI / JWPlayer / VideoJS) ===
+            var tabList = document.querySelector('[role="tablist"]') || document.querySelector('.vds-menu-items') || findByText(document, 'Quality');
+            if (tabList) {
+               console.log('🔍 Menú de ajustes detectado');
+               var serversTab = findByText(document, 'Servers', true) || findByText(document, 'Servidores', true);
+               
+               if (serversTab) {
+                  var state = serversTab.getAttribute('data-state') || serversTab.getAttribute('aria-selected');
+                  if (state === 'active' || state === 'true') {
+                     // === PASO 2: Extracción de Servidores ===
+                     var panel = document.querySelector('[role="tabpanel"][data-state="active"]') || serversTab.parentElement.parentElement;
+                     var serverBtns = Array.from(panel.querySelectorAll('button, [role="radio"], [role="menuitem"]'));
+                     
+                     if (serverBtns.length > 0) {
+                        var results = serverBtns.map(btn => {
+                           var text = btn.textContent.trim();
+                           var img = btn.querySelector('img');
+                           var lang = "";
+                           var tLow = text.toLowerCase();
+                           if (tLow.includes('lat') || tLow.includes('español')) lang = "Latino";
+                           else if (tLow.includes('esp') || tLow.includes('cast')) lang = "Castellano";
+                           else if (tLow.includes('eng') || tLow.includes('org')) lang = "English";
+                           
+                           return { id: text, label: text, language: lang, flagUrl: img ? img.src : "" };
+                        }).filter(s => s.label.length > 0 && !s.label.toLowerCase().includes('back'));
+                        
+                        var unique = results.filter((v,i,a) => a.findIndex(t => t.label === v.label) === i);
+                        if (unique.length > 0) {
+                           console.log('✅ Servidores mapeados: ' + unique.length);
+                           window.flutter_inappwebview.callHandler('onServersFound', unique);
+                           return;
+                        }
+                     }
+                  } else {
+                     console.log('🖱️ Pestaña Servers inactiva, clickeando...');
+                     forceClick(serversTab);
+                     return;
+                  }
+               }
+            }
+
+            // === PASO 0: Abrir el engranaje ===
+            var gear = findGear(document);
+            if (gear) {
+               console.log('🖱️ Engranaje encontrado, abriendo...');
+               forceClick(gear);
+            } else {
+               // Fallback: Mover mouse para despertar UI
+               document.body.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 100, clientY: 100 }));
+            }
+          })();
        """);
 
        // 2. Sniffer Video Directo
@@ -619,67 +714,81 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
        _autoClickCount++;
     });
 
-    // --- ALGORITMO 2: EXTRACCIÓN ORIGINAL (CLICKS NATIVOS) ---
-    if (widget.extractionAlgorithm == 2) {
-       try {
-         final dpr = MediaQuery.of(context).devicePixelRatio;
-         final box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
-         if (box != null) {
-           final offset = box.localToGlobal(Offset.zero);
-           final w = box.size.width;
-           final h = box.size.height;
-           final points = [Offset(w/2, h/2), Offset(w/2+20, h/2), Offset(w/2, h/2+20), Offset(w/2, h/2)];
-           for (var p in points) {
-              await _webviewTouchChannel.invokeMethod('tapAt', {
-                'x': (offset.dx + p.dx) * dpr,
-                'y': (offset.dy + p.dy) * dpr
-              });
-              await Future.delayed(const Duration(milliseconds: 300));
-           }
 
-           // Escaneo ultra-simple: ¿Hay video ya?
-           final script = r'''
-              (function() {
-                 var v = document.querySelector('video');
-                 if (v && v.src && v.src.length > 10) return v.src;
-                 var sources = document.querySelectorAll('source');
-                 for (var s of sources) { if (s.src) return s.src; }
-                 return null;
-              })();
-           ''';
-           
-           final result = await _webViewController?.evaluateJavascript(source: script);
-           if (result != null) {
-              String vUrl = result.toString();
-              if (vUrl.startsWith('"') && vUrl.endsWith('"')) vUrl = vUrl.substring(1, vUrl.length - 1);
-              if (vUrl.startsWith('http') || vUrl.startsWith('blob:')) {
-                  print("🎯 ALGORITMO 2 ÉXITO: $vUrl");
-                  _hasInitialUrl = true;
-                  final String origUrl = widget.videoOptions.first.videoUrl.toLowerCase();
-                  final bool isProtectedServer = origUrl.contains('vidsrc') || origUrl.contains('videasy') || origUrl.contains('embed') || origUrl.contains('tmstr');
-                  if (vUrl.startsWith('blob:') || isProtectedServer) {
-                    print("🚀 REPRODUCCIÓN WEBVIEW ACTIVA");
-                    setState(() {
-                      _useWebViewPlayer = true;
-                      _isInitialLoading = false;
-                      _isWebViewExtracting = false;
-                      _isLoading = false;
-                    });
-                    _webViewController?.evaluateJavascript(source: "document.querySelector('video').style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999999;background:black;'; document.querySelector('video').play();");
-                    return;
-                  }
-                  setState(() {
-                    _isInitialLoading = false;
-                    _isWebViewExtracting = false;
-                  });
-                  _initializeVideoPlayer(vUrl);
-                  return;
+     // --- ALGORITMO 2 y 3: EXTRACCIÓN CON CLICKS NATIVOS ---
+     if (_effectiveAlgorithm == 2 || _effectiveAlgorithm == 3) {
+        try {
+          // Solo hacemos clicks nativos si no hemos detectado el video inicial
+          if (!_hasInitialUrl) {
+            final dpr = MediaQuery.of(context).devicePixelRatio;
+            final box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
+            if (box != null && box.hasSize) {
+              final offset = box.localToGlobal(Offset.zero);
+              final w = box.size.width;
+              final h = box.size.height;
+              // Puntos estratégicos de Play (centro y alrededores)
+              final points = [Offset(w/2, h/2), Offset(w/2+20, h/2), Offset(w/2, h/2+20), Offset(w/2-25, h/2-25)];
+              
+              for (var p in points) {
+                 if (_hasInitialUrl) break;
+                 await _webviewTouchChannel.invokeMethod('tapAt', {
+                   'x': (offset.dx + p.dx) * dpr,
+                   'y': (offset.dy + p.dy) * dpr
+                 });
+                 await Future.delayed(const Duration(milliseconds: 400));
               }
-           }
-         }
-       } catch(e) { print("Log: Error Algoritmo 2: $e"); }
-       return; // El Algoritmo 2 no continúa hacia la lógica de calidades (Algoritmo 1)
-    }
+            }
+          }
+
+          // Para Algoritmo 2 coordinamos detección manual, 
+          // pero para Algoritmo 3 confiamos en el MONITOR DE RED ya inyectado.
+          if (_effectiveAlgorithm == 2) {
+            // Escaneo ultra-simple: ¿Hay video ya? (Específico Alg 2)
+            final script = r'''
+               (function() {
+                  var v = document.querySelector('video');
+                  if (v && v.src && v.src.length > 10) return v.src;
+                  var sources = document.querySelectorAll('source');
+                  for (var s of sources) { if (s.src) return s.src; }
+                  return null;
+               })();
+            ''';
+            
+            final result = await _webViewController?.evaluateJavascript(source: script);
+            if (result != null) {
+               String vUrl = result.toString();
+               if (vUrl.startsWith('"') && vUrl.endsWith('"')) vUrl = vUrl.substring(1, vUrl.length - 1);
+               if (vUrl.startsWith('http') || vUrl.startsWith('blob:')) {
+                   print("🎯 ALGORITMO 2 ÉXITO: $vUrl");
+                   _hasInitialUrl = true;
+                   final String origUrl = widget.videoOptions.first.videoUrl.toLowerCase();
+                   final bool isProtectedServer = origUrl.contains('vidsrc') || origUrl.contains('videasy') || origUrl.contains('embed') || origUrl.contains('tmstr');
+                   if (vUrl.startsWith('blob:') || isProtectedServer) {
+                     print("🚀 REPRODUCCIÓN WEBVIEW ACTIVA");
+                     setState(() {
+                       _useWebViewPlayer = true;
+                       _isInitialLoading = false;
+                       _isWebViewExtracting = false;
+                       _isLoading = false;
+                     });
+                     _webViewController?.evaluateJavascript(source: "document.querySelector('video').style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999999;background:black;'; document.querySelector('video').play();");
+                     return;
+                   }
+                   setState(() {
+                     _isInitialLoading = false;
+                     _isWebViewExtracting = false;
+                   });
+                   _initializeVideoPlayer(vUrl);
+                   return;
+               }
+            }
+          } else {
+            // Algoritmo 3: Ya los clicks se hicieron arriba, dejamos que el MONITOR DE RED haga el resto
+            return; 
+          }
+        } catch(e) { print("Log: Error Clicks Alg 2/3: $e"); }
+        if (_effectiveAlgorithm == 2) return;
+     }
 
     // --- ALGORITMO 1: BUSQUEDA INTELIGENTE DE CALIDADES (MODERNO) ---
     print('🔵 DEBUG: _runScraper() llamado (Algoritmo 1), autoClickCount=$_autoClickCount');
@@ -1066,8 +1175,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       if (widget.isLocal) {
         _controller = VideoPlayerController.file(File(videoUrl));
       } else {
-        // Intercept 4meplayer (.txt but it is HLS)
-        final isHls = videoUrl.contains('cf-master') || videoUrl.contains('.m3u8');
+        // Intercept 4meplayer (.txt but it is HLS) and Videasy (.js/.txt masking)
+        final bool isHls = videoUrl.contains('cf-master') || 
+                           videoUrl.contains('.m3u8') || 
+                           videoUrl.contains('.js') || 
+                           videoUrl.contains('.txt') || 
+                           videoUrl.contains('/stream/') ||
+                           videoUrl.contains('playlist');
         
         // --- NUEVA LÓGICA DE HEADERS DINÁMICOS ---
         final initialHost = Uri.tryParse(_currentOption.videoUrl)?.host ?? 'vidsrc.to';
@@ -1720,7 +1834,19 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                           children: [
                              Icon(Icons.bug_report, color: Colors.white, size: 16),
                              SizedBox(width: 8),
-                              Expanded(child: Text("VISTA TECNICA")), IconButton(icon: Icon(Icons.close, color: Colors.white, size: 16), padding: EdgeInsets.zero, constraints: BoxConstraints(), onPressed: () => setState(() { _isInitialLoading = false; _isWebViewExtracting = false; })),
+                              Expanded(child: const Text("VISTA TECNICA", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10))),
+                              IconButton(
+                                icon: const Icon(Icons.refresh, color: Colors.white, size: 14),
+                                tooltip: "Re-escanear",
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () {
+                                  _runScraper();
+                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Re-escaneando..."), duration: Duration(seconds: 1)));
+                                }
+                              ),
+                              const SizedBox(width: 8),
+                              IconButton(icon: Icon(Icons.close, color: Colors.white, size: 16), padding: EdgeInsets.zero, constraints: BoxConstraints(), onPressed: () => setState(() { _isInitialLoading = false; _isWebViewExtracting = false; })),
                           ],
                        ),
                      ),
@@ -1752,32 +1878,95 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                             controller.addJavaScriptHandler(handlerName: 'onServersFound', callback: (args) {
                               if (args.isNotEmpty && args[0] is List) {
                                 final List<dynamic> serversData = args[0];
+                                print("📡 [ALGO 3] Servidores detectados: ${serversData.length}");
                                 final List<InternalServerInfo> newServers = serversData.map((s) => InternalServerInfo(
                                   id: s['id']?.toString() ?? '',
                                   label: s['label']?.toString() ?? '',
                                   flagUrl: s['flagUrl']?.toString() ?? '',
+                                  language: s['language']?.toString() ?? '',
                                 )).toList();
                                 
-                                if (newServers.isNotEmpty && _videasyServers.length != newServers.length) {
+                                if (newServers.isNotEmpty && mounted) {
                                   setState(() {
                                     _videasyServers = newServers;
                                   });
-                                  print("🌍 SERVIDORES VIDEASY ENCONTRADOS: ${_videasyServers.length}");
+
+                                  // --- AUTO-SELECCIÓN PARA ESPAÑOL ---
+                                  if (!_hasAutoSelectedServer && _effectiveAlgorithm == 3) {
+                                    InternalServerInfo? target;
+                                    
+                                    // 1. Buscar Gekko
+                                    try {
+                                      target = newServers.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
+                                    } catch (_) {
+                                      // 2. Buscar último que diga "Spanish Audio"
+                                      final spanishServers = newServers.where((s) => s.label.toLowerCase().endsWith('spanish audio')).toList();
+                                      if (spanishServers.isNotEmpty) {
+                                        target = spanishServers.last;
+                                      }
+                                    }
+
+                                    if (target != null) {
+                                      print("🤖 [AUTO-SELECT] Seleccionando automáticamente: ${target.label}");
+                                      _hasAutoSelectedServer = true;
+                                      _selectVideasyInternalServer(target);
+                                    }
+                                  }
                                 }
                               }
                             });
-                          },
+
+                             // MONITOR DE RED (FETCH/XHR)
+                             controller.addJavaScriptHandler(handlerName: 'onUrlDetected', callback: (args) {
+                               if (args.isNotEmpty && args[0] != null) {
+                                 _handleDetectedVideoUrl(args[0].toString());
+                               }
+                             });
+                           },
                          initialSettings: InAppWebViewSettings(
                            javaScriptEnabled: true,
                            domStorageEnabled: true,
                            useOnDownloadStart: true,
+                            useShouldInterceptRequest: true,
                            supportMultipleWindows: false,
                            javaScriptCanOpenWindowsAutomatically: false,
                            allowsInlineMediaPlayback: true,
                            mediaPlaybackRequiresUserGesture: false,
                            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
                          ),
-                         onCreateWindow: (controller, action) async => false,
+                         
+                          onLoadStart: (controller, url) async {
+                             const injectNetMonitor = r"""
+                                (function() {
+                                  if (window._netMonitorInjected) return;
+                                  window._netMonitorInjected = true;
+                                  console.log('📡 [NET_MONITOR] Injected');
+                                  
+                                  const oldFetch = window.fetch;
+                                  window.fetch = function() {
+                                    const arg = arguments[0];
+                                    const url = (typeof arg === "string") ? arg : (arg.url || "");
+                                    if (url && (url.includes(".m3u8") || url.includes(".mp4") || url.includes("/stream/") || url.includes(".txt") || url.includes("playlist"))) {
+                                       console.log('🎯 [FETCH_DETECTED]: ' + url);
+                                       if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler("onUrlDetected", url);
+                                    }
+                                    return oldFetch.apply(this, arguments);
+                                  };
+                                  
+                                  const oldXHR = window.XMLHttpRequest.prototype.open;
+                                  window.XMLHttpRequest.prototype.open = function() {
+                                    const url = arguments[1];
+                                    if (url && (url.includes(".m3u8") || url.includes(".mp4") || url.includes("/stream/") || url.includes(".txt") || url.includes("playlist"))) {
+                                       console.log('🎯 [XHR_DETECTED]: ' + url);
+                                       if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler("onUrlDetected", url);
+                                    }
+                                    return oldXHR.apply(this, arguments);
+                                  };
+                                })();
+                             """;
+                             await controller.evaluateJavascript(source: injectNetMonitor);
+                          },
+                          onCreateWindow: (controller, action) async => false,
                          shouldOverrideUrlLoading: (controller, navigationAction) async {
                            var uri = navigationAction.request.url;
                            if (uri != null && navigationAction.isForMainFrame) {
@@ -1790,97 +1979,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                          },
                           // --- ALGORITMO HIBRIDO (REPO + CLICKS) ---
                          onLoadResource: (controller, resource) {
-                           final url = resource.url?.toString() ?? '';
-                           final lcUrl = url.toLowerCase();
+                            final url = resource.url?.toString() ?? '';
+                            final lcUrl = url.toLowerCase();
+                            
+                            final bool hasVideoExt = lcUrl.contains('.mp4?') || lcUrl.endsWith('.mp4') || lcUrl.contains('.m3u8?') || lcUrl.endsWith('.m3u8') || lcUrl.contains('.m3u?') || lcUrl.endsWith('.m3u') || lcUrl.contains('.webm') || lcUrl.contains('.ts') || lcUrl.contains('.mov') || lcUrl.contains('.avi') || lcUrl.contains('.mkv');
+                            final bool isVideasyStream = (lcUrl.contains('videasy') || _effectiveAlgorithm == 3) && 
+                                                 (lcUrl.contains('.js') || lcUrl.contains('.txt') || lcUrl.contains('/stream/') || lcUrl.contains('playlist')) && 
+                                                 !lcUrl.contains('script.js') && !lcUrl.contains('ab.js') && !lcUrl.contains('beacon.min.js') && !lcUrl.contains('_next/static');
 
-                           // ================================================================
-                           // PROVEEDORES WEBVIEW-ONLY: nunca extraer stream, reproducir directo
-                           // Cubren videasy y sus CDNs (vidplus, thunderleaf), embed.su,
-                           // superembed, vidsrc.me, vidsrc.xyz y los originales tmstr4/neonhorizon
-                           // ================================================================
-                           final sourceHost = Uri.tryParse(_currentOption.videoUrl)?.host.toLowerCase() ?? '';
-                           bool isWebViewOnlySource =
-                               sourceHost.contains('embed.su') ||
-                               sourceHost.contains('superembed') ||
-                               sourceHost.contains('vidsrc.me') ||
-                               sourceHost.contains('vidsrc.xyz') ||
-                               sourceHost.contains('tmstr4') ||
-                               sourceHost.contains('neonhorizon');
-
-                           // Si el proveedor es WebView-only, forzar reproducción directa
-                           // en cuanto detectemos el primer frame de video (o sea listo)
-                           if (isWebViewOnlySource && !_useWebViewPlayer) {
-                             print("🌐 PROVEEDOR WEBVIEW-ONLY ($sourceHost) → Modo WebView puro activado");
-                             setState(() {
-                               _useWebViewPlayer = true;
-                               _isInitialLoading = false;
-                               _isWebViewExtracting = false;
-                               _isLoading = false;
-                             });
-                             // Maximizar el video del player del sitio
-                             controller.evaluateJavascript(source: """
-                               (function() {
-                                 var v = document.querySelector('video');
-                                 if (v) {
-                                   v.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999999;background:#000;object-fit:contain;';
-                                   v.setAttribute('playsinline', '');
-                                   v.play().catch(function(){});
-                                 }
-                                 // Ocultar overlays/ads del player
-                                 var ads = document.querySelectorAll('.ad-container,.overlay,.popup,.banner');
-                                 ads.forEach(function(a){ a.style.display='none'; });
-                               })();
-                             """);
-                             return;
-                           }
-
-                           bool isJunk = lcUrl.contains('analytics') || lcUrl.contains('google-analytics') || lcUrl.contains('doubleclick') || lcUrl.contains('collect?') || lcUrl.contains('facebook.com/tr/') || lcUrl.contains('yandex') || lcUrl.contains('yastatic') || lcUrl.contains('loading.mp4') || lcUrl.contains('mc.yandex.ru') || lcUrl.contains('hotjar') || lcUrl.contains('/pixel') || lcUrl.contains('popads') || lcUrl.contains('mixpanel');
-                           if (isJunk) return;
-                           bool hasVideoExt = lcUrl.contains('.mp4?') || lcUrl.endsWith('.mp4') || lcUrl.contains('.m3u8?') || lcUrl.endsWith('.m3u8') || lcUrl.contains('.m3u?') || lcUrl.endsWith('.m3u') || lcUrl.contains('.webm') || lcUrl.contains('.ts') || lcUrl.contains('.mov') || lcUrl.contains('.avi') || lcUrl.contains('.mkv');
-                           bool is4meStream = lcUrl.contains('cf-master') && lcUrl.contains('.txt');
-                            if ((hasVideoExt || is4meStream) && (_isWebViewExtracting || _isSwitchingStream)) {
-                              print("🎯 VIDEO_DETECTADO: $url");
-                              if (!_hasInitialUrl) {
-                                  _hasInitialUrl = true;
-
-                                  // DOMINIO PROTEGIDO (CDN) → WEBVIEW PLAYER (evita 403)
-                                  final String origUrl = widget.videoOptions.first.videoUrl.toLowerCase();
-                                  final bool isProtectedServer = origUrl.contains('vidsrc') || origUrl.contains('videasy') || origUrl.contains('embed') || origUrl.contains('tmstr');
-                                  
-                                  if (lcUrl.contains('neonhorizon') || isProtectedServer) {
-                                    print("🚀 CDN PROTEGIDO ($url) → REPRODUCIENDO EN WEBVIEW");
-                                    setState(() {
-                                      _useWebViewPlayer = true;
-                                      _isInitialLoading = false;
-                                      _isWebViewExtracting = false;
-                                      _isLoading = false;
-                                    });
-                                    controller.evaluateJavascript(source: "var v=document.querySelector('video');if(v){v.style.cssText='position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999999;background:black;';v.setAttribute('playsinline','');v.play();}");
-                                    return;
-                                  }
-
-                                   setState(() { 
-                                     _isInitialLoading = false; 
-                                     if (widget.extractionAlgorithm == 2) {
-                                       _isWebViewExtracting = false; 
-                                     }
-                                   });
-                                  _initializeVideoPlayer(url);
-                              } else {
-                                  bool isSameBase = false;
-                                  if (_controller != null && _controller!.dataSource.isNotEmpty) {
-                                      final currentBase = _controller!.dataSource.split('?').first;
-                                      final newBase = url.split('?').first;
-                                      isSameBase = currentBase == newBase;
-                                  }
-                                  if (!isSameBase && !url.contains('.ts')) {
-                                      _initializeVideoPlayer(url); // Actualizamos a mayor calidad si aparece
-                                  }
-                              }
+                            if ((hasVideoExt || isVideasyStream) && (_isWebViewExtracting || _isSwitchingStream)) {
+                               _handleDetectedVideoUrl(url);
                             }
-                         },
+                          },
                          onLoadStop: (controller, url) async {
-                           if (_isWebViewExtracting || _isSwitchingStream) {
+                           if (_isWebViewExtracting || _isSwitchingStream || _effectiveAlgorithm == 3) {
                              _runScraper();
                            }
                          },
@@ -1893,6 +2005,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                              } catch (e) { print("Download error: $e"); }
                            }
                          },
+                         onConsoleMessage: (controller, consoleMessage) {
+                            if (consoleMessage.messageLevel == ConsoleMessageLevel.ERROR) return;
+                            final msg = consoleMessage.message;
+                            if (msg.contains('🕵️') || msg.contains('🎯') || msg.contains('🖱️') || msg.contains('✅') || msg.contains('NET_MONITOR') || msg.contains('🔍') || msg.contains('⚠️') || msg.contains('🖼️') || msg.contains('🔘')) {
+                               print("📺 JS: $msg");
+                            }
+                          },
                        ),
                      ),
                    ],
@@ -1901,7 +2020,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
              ),
            ),
             // Pantalla negra que oculta la vista técnica al usuario
-            if ((_isWebViewExtracting || _isScrapingSubtitles) && _isInitialLoading)
+            if ((_isWebViewExtracting || _isScrapingSubtitles) && _isInitialLoading && _effectiveAlgorithm != 3)
               Positioned.fill(
                 child: Container(
                   color: Colors.black,
@@ -2377,18 +2496,35 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                _startHideTimer();
                              },
                            ),
-                           Row(
-                             mainAxisSize: MainAxisSize.min,
-                             children: [
+                            if (_effectiveAlgorithm == 3 || _videasyServers.isNotEmpty)
                                IconButton(
-                                 icon: const Icon(Icons.settings, color: Colors.white),
-                                 padding: EdgeInsets.zero,
-                                 constraints: const BoxConstraints(),
+                                 icon: Icon(Icons.public, color: _videasyServers.isNotEmpty ? const Color(0xFF4CAF50) : Colors.white24),
+                                 tooltip: 'Servidores Internos',
+                                 iconSize: 22,
                                  onPressed: () {
-                                   _showResolutionDialog();
+                                   if (_videasyServers.isEmpty) {
+                                      _runScraper();
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('Buscando servidores internos... espera un momento'), duration: Duration(seconds: 2))
+                                      );
+                                   } else {
+                                      _showServersDialog();
+                                   }
                                    _startHideTimer();
                                  },
                                ),
+                           Row(
+                             mainAxisSize: MainAxisSize.min,
+                             children: [
+                                 IconButton(
+                                 icon: const Icon(Icons.settings, color: Colors.white),
+                                 padding: EdgeInsets.zero,
+                                 constraints: const BoxConstraints(),
+                                  onPressed: () {
+                                    _showResolutionDialog();
+                                    _startHideTimer();
+                                  },
+                                ),
                                const SizedBox(width: 5),
                                Text(
                                  _currentQualityLabel ?? "Auto",
@@ -2508,77 +2644,153 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     );
   }
 
+  Future<void> _handleDetectedVideoUrl(String url) async {
+    if (!mounted) return;
+    
+    // Filtros de analíticas y basura
+    final lcUrl = url.toLowerCase();
+    if (lcUrl.contains('analytics') || lcUrl.contains('doubleclick') || lcUrl.contains('ads')) return;
+
+    if (!_hasInitialUrl) {
+      print("🎯 [NET_DETECT] Video inicial: $url");
+      _hasInitialUrl = true; 
+      setState(() { 
+        _isInitialLoading = false; 
+        if (_effectiveAlgorithm == 2) {
+          _isWebViewExtracting = false; 
+        }
+      });
+      _initializeVideoPlayer(url);
+
+      if (_effectiveAlgorithm == 3 && (_scraperTimer == null || !_scraperTimer!.isActive)) {
+        _runScraper();
+      }
+    } else {
+      bool isSameBase = false;
+      if (_controller != null && _controller!.dataSource.isNotEmpty) {
+        final currentBase = _controller!.dataSource.split('?').first;
+        final newBase = url.split('?').first;
+        isSameBase = currentBase == newBase;
+      }
+      
+      // Calidad superior o cambio manual (ignoramos segmentos .ts)
+      final bool isPotentialVideo = url.contains('m3u8') || url.contains('.js') || url.contains('.txt') || url.contains('/stream/') || url.contains('playlist');
+      if ((_isSwitchingStream && !isSameBase) || (!isSameBase && !url.contains('.ts') && isPotentialVideo)) {
+        print("🎯 [NET_DETECT] Nuevo stream: $url");
+        if (_isSwitchingStream) {
+           setState(() => _isSwitchingStream = false);
+        }
+        _initializeVideoPlayer(url);
+      }
+    }
+  }
+
   void _selectVideasyInternalServer(InternalServerInfo server) {
+    if (!mounted) return;
+    print("🌍 SOLICITANDO CAMBIO A SERVIDOR: ${server.label}");
     setState(() {
       _isLoading = true;
       _isSwitchingStream = true;
-      _videasyServers = []; // Limpiamos para re-escanear tras el cambio
+      _hasAutoSelectedServer = true; // Evitar que el auto-selector sobreescriba una elección manual o la repetida
     });
-    
-    // Mandamos el comando click al WebView
+
     _webViewController?.evaluateJavascript(source: """
-      (function() {
-        var items = Array.from(document.querySelectorAll('.jw-settings-content-item, .art-setting-item, .server-item, li[role="menuitem"], .vjs-menu-item'));
-        var target = items.find(function(el) { return el.innerText.trim() === '${server.label}'; });
-        if (target) {
-          target.click();
-          return true;
-        }
-        return false;
-      })();
+          (function() {
+            function findByText(root, text, exact = false) {
+              var all = root.querySelectorAll('*');
+              for (var el of all) {
+                var t = el.textContent.trim().toLowerCase();
+                if (exact ? t === text.toLowerCase() : t.includes(text.toLowerCase())) {
+                   var r = el.getBoundingClientRect();
+                   if (r.width > 0 && r.height > 0) return el;
+                }
+                if (el.shadowRoot) {
+                  var found = findByText(el.shadowRoot, text, exact);
+                  if (found) return found;
+                }
+              }
+              return null;
+            }
+
+            function forceClick(el) {
+              if (!el) return;
+              ["touchstart", "touchend", "mousedown", "click", "mouseup"].forEach(t => {
+                var ev = new MouseEvent(t, { bubbles: true, cancelable: true, view: window });
+                el.dispatchEvent(ev);
+              });
+            }
+
+            // 1. Aseguramos que la pestaña de servers esté activa
+            var serversTab = findByText(document, 'Servers', true) || findByText(document, 'Servidores', true);
+            if (serversTab) {
+               var state = serversTab.getAttribute('data-state') || serversTab.getAttribute('aria-selected');
+               if (state !== 'active' && state !== 'true') {
+                  console.log('🖱️ Abriendo tab de servers para selección...');
+                  forceClick(serversTab);
+                  return;
+               }
+            }
+
+            // 2. Buscamos el servidor específico
+            var target = findByText(document, "${server.label}", true);
+            if (target) {
+               console.log("🎯 Servidor '${server.label}' encontrado, clickeando...");
+               forceClick(target);
+            } else {
+               console.log("⚠️ No se encontró el servidor '${server.label}' en el DOM");
+            }
+          })();
     """);
   }
 
-  void _showVideasyServersDialog() {
-    showDialog(
+
+  void _showServersDialog() {
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF151515).withOpacity(0.95),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25), side: const BorderSide(color: Colors.white10, width: 1)),
-        title: Row(
-          children: [
-            const Icon(Icons.language, color: Color(0xFF00A3FF)),
-            const SizedBox(width: 10),
-            const Text('Idiomas / Servers', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        content: SizedBox(
-          width: double.maxFinite,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text("Selecciona un idioma o servidor interno:", style: TextStyle(color: Colors.white38, fontSize: 12)),
-              const SizedBox(height: 15),
+              const Text("Seleccionar Servidor", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+              const SizedBox(height: 10),
               Flexible(
-                child: ListView.separated(
+                child: ListView.builder(
                   shrinkWrap: true,
                   itemCount: _videasyServers.length,
-                  separatorBuilder: (c, i) => const Divider(color: Colors.white10),
                   itemBuilder: (context, index) {
                     final server = _videasyServers[index];
                     return ListTile(
-                      dense: true,
                       leading: server.flagUrl.isNotEmpty 
                         ? ClipRRect(
-                            borderRadius: BorderRadius.circular(2),
-                            child: Image.network(server.flagUrl, width: 28, height: 18, fit: BoxFit.cover, 
-                               errorBuilder: (c, e, s) => const Icon(Icons.flag, size: 24, color: Colors.white30))) 
-                        : const Icon(Icons.flag, size: 24, color: Colors.white30),
-                      title: Text(server.label, style: const TextStyle(color: Colors.white, fontSize: 14)),
-                      trailing: const Icon(Icons.play_circle_outline, color: Color(0xFF00A3FF), size: 20),
+                            borderRadius: BorderRadius.circular(4),
+                            child: Image.network(server.flagUrl, width: 30, height: 20, fit: BoxFit.cover, errorBuilder: (_,__,___) => const Icon(Icons.flag, color: Colors.white54))
+                          )
+                        : const Icon(Icons.dns, color: Colors.white54),
+                      title: Text(server.label, style: const TextStyle(color: Colors.white)),
+                      subtitle: server.language.isNotEmpty ? Text(server.language, style: const TextStyle(color: Colors.white54, fontSize: 12)) : null,
+                      trailing: const Icon(Icons.chevron_right, color: Colors.white24),
                       onTap: () {
-                         Navigator.pop(context);
-                         _selectVideasyInternalServer(server);
+                        Navigator.pop(context);
+                        _selectVideasyInternalServer(server);
                       },
                     );
                   },
                 ),
               ),
+              const SizedBox(height: 10),
             ],
           ),
-        ),
-      ),
+        );
+      },
     );
+  }
+
+  void _showVideasyServersDialog() {
+    _showServersDialog();
   }
 
   Future<void> _loadAndShowSubtitles() async {
@@ -2707,7 +2919,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Professional Section: AI and Online Search
                 _buildProfessionalSection(),
                 const Divider(color: Colors.white12, height: 30),
                 const Text('EXTRAER DE LA PÁGINA', 
@@ -2736,7 +2947,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
                         return Column(
                           children: [
-                            // Option to Disable Subtitles
                             ListTile(
                               contentPadding: EdgeInsets.zero,
                               leading: Icon(Icons.subtitles_off, 
@@ -2763,6 +2973,21 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                 _onSubtitleSelected(sub);
                               },
                             )),
+                            if (_internalSubtitles.isNotEmpty) ...[
+                              const Divider(color: Colors.white10),
+                              ..._internalSubtitles.map((sub) {
+                                bool isSelected = _currentSubtitle?.url == sub.url;
+                                return ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  title: Text(sub.language, style: TextStyle(color: isSelected ? const Color(0xFF00A3FF) : Colors.white70)),
+                                  trailing: isSelected ? const Icon(Icons.check, color: Color(0xFF00A3FF)) : null,
+                                  onTap: () {
+                                    Navigator.pop(context);
+                                    setState(() => _currentSubtitle = sub);
+                                  },
+                                );
+                              }),
+                            ],
                             if (isFetching) 
                               const LinearProgressIndicator(backgroundColor: Colors.transparent, color: Color(0xFF00A3FF)),
                           ],
@@ -2771,22 +2996,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                     );
                   },
                 ),
-                
-                if (_internalSubtitles.isNotEmpty) ...[
-                  const Divider(color: Colors.white12),
-                  ..._internalSubtitles.map((sub) {
-                    bool isSelected = _currentSubtitle?.url == sub.url;
-                    return ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text(sub.language, style: TextStyle(color: isSelected ? const Color(0xFF00A3FF) : Colors.white70)),
-                      trailing: isSelected ? const Icon(Icons.check, color: Color(0xFF00A3FF)) : null,
-                      onTap: () {
-                        Navigator.pop(context);
-                        setState(() => _currentSubtitle = sub);
-                      },
-                    );
-                  }),
-                ],
               ],
             ),
           ),
