@@ -106,6 +106,7 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
     final urlController = TextEditingController(text: option?.videoUrl ?? '');
     final imgController = TextEditingController(text: option?.serverImagePath ?? '');
     String? selectedLanguage = option?.language ?? 'Latino';
+    int selectedAlgorithm = option?.extractionAlgorithm ?? 1;
 
     showDialog(
       context: context,
@@ -147,6 +148,31 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
                     },
                   ),
                   const SizedBox(height: 12),
+                  DropdownButtonFormField<int>(
+                    dropdownColor: const Color(0xFF2C2C2C),
+                    value: [1, 2, 3].contains(selectedAlgorithm) ? selectedAlgorithm : 1,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: 'Algoritmo de Extracción',
+                      labelStyle: const TextStyle(color: Color(0xFF00A3FF), fontSize: 13, fontWeight: FontWeight.bold),
+                      filled: true,
+                      fillColor: Colors.white.withOpacity(0.04),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF00A3FF))),
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: 1, child: Text('Algoritmo 1: DOM + Calidades', style: TextStyle(color: Colors.white))),
+                      DropdownMenuItem(value: 2, child: Text('Algoritmo 2: Clicks Nativos', style: TextStyle(color: Colors.white))),
+                      DropdownMenuItem(value: 3, child: Text('Algoritmo 3: Enlace Mágico', style: TextStyle(color: Colors.white))),
+                    ],
+                    onChanged: (val) {
+                      setState(() {
+                        selectedAlgorithm = val ?? 1;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
                   _buildTextField(controller: urlController, labelText: 'URL de Extracción (o video directo)'),
                   const SizedBox(height: 12),
                   _buildTextField(controller: imgController, labelText: 'URL de la Imagen del Servidor'),
@@ -181,6 +207,7 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
                       videoUrl: urlController.text,
                       serverImagePath: imgController.text,
                       language: selectedLanguage,
+                      extractionAlgorithm: selectedAlgorithm,
                     );
                     if (option == null) {
                       await ref.read(seriesRepositoryProvider).addSeriesOption(newOption);

@@ -182,7 +182,7 @@ class CastService extends ChangeNotifier {
         if (headers != null) ...headers,
       },
       startPosition: startPosition,
-      subtitles: subtitleUrl != null
+      subtitles: (subtitleUrl != null && !isDlna) // DLNA (Samsung) suele fallar con subtítulos externos vía XML
           ? [dc.CastSubtitle(url: subtitleUrl, label: 'Subtítulos', language: 'es', format: 'vtt')]
           : [],
     );
@@ -190,13 +190,19 @@ class CastService extends ChangeNotifier {
     await _session!.loadMedia(media);
 
     if (isDlna) {
-      // 2. Ráfaga de Play (Command Burst)
+      // 2. Ráfaga de Play (Command Burst) y Sync de transporte
       // Samsung y LG a veces ignoran el primer Play si el buffer no ha empezado.
-      // Enviamos uno tras 1 seg y otro tras 2 seg para asegurar activación de controles.
+      // Aumentamos los retardos para permitir que el AVTransport cambie de estado.
+      await Future.delayed(const Duration(milliseconds: 2000));
+      await _session!.play();
       await Future.delayed(const Duration(milliseconds: 1500));
       await _session!.play();
-      await Future.delayed(const Duration(milliseconds: 1000));
-      await _session!.play();
+      
+      // Forzar un seek a la posición inicial para "despertar" la barra de progreso en Tizen/Orsay
+      if (startPosition > Duration.zero) {
+        await Future.delayed(const Duration(milliseconds: 1000));
+        await _session!.seek(startPosition);
+      }
     }
     
     notifyListeners();
@@ -257,9 +263,13 @@ class CastService extends ChangeNotifier {
 
   dc.CastMediaType _detectMediaType(String url) {
     final u = url.toLowerCase().split('?').first;
-    if (u.contains('.m3u8') || u.contains('.m3u')) return dc.CastMediaType.hls;
+    // Videasy y otros servidores suelen usar .txt o rutas sin extensión para HLS
+    if (u.contains('.m3u8') || u.contains('.m3u') || u.contains('.txt') || u.contains('/stream/') || u.contains('cf-master')) {
+      return dc.CastMediaType.hls;
+    }
     if (u.contains('.mkv'))  return dc.CastMediaType.mkv;
     if (u.contains('.ts'))   return dc.CastMediaType.mpegTs;
+    if (u.contains('.mp4'))  return dc.CastMediaType.mp4;
     return dc.CastMediaType.mp4;
   }
 

@@ -1819,7 +1819,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                    ignoring: !_isInitialLoading,
                    child: AnimatedOpacity(
                      duration: const Duration(milliseconds: 300),
-                     opacity: _isInitialLoading ? 1.0 : 0.0,
+                     opacity: _isInitialLoading ? 0.01 : 0.0,
                      child: Column(
                        children: [
                          Container(
@@ -1984,8 +1984,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                             
                             final bool hasVideoExt = lcUrl.contains('.mp4?') || lcUrl.endsWith('.mp4') || lcUrl.contains('.m3u8?') || lcUrl.endsWith('.m3u8') || lcUrl.contains('.m3u?') || lcUrl.endsWith('.m3u') || lcUrl.contains('.webm') || lcUrl.contains('.ts') || lcUrl.contains('.mov') || lcUrl.contains('.avi') || lcUrl.contains('.mkv');
                             final bool isVideasyStream = (lcUrl.contains('videasy') || _effectiveAlgorithm == 3) && 
-                                                 (lcUrl.contains('.js') || lcUrl.contains('.txt') || lcUrl.contains('/stream/') || lcUrl.contains('playlist')) && 
-                                                 !lcUrl.contains('script.js') && !lcUrl.contains('ab.js') && !lcUrl.contains('beacon.min.js') && !lcUrl.contains('_next/static');
+                                                 (lcUrl.contains('.txt') || lcUrl.contains('/stream/') || lcUrl.contains('playlist')) && 
+                                                 !lcUrl.contains('.js') && !lcUrl.contains('script.js') && !lcUrl.contains('ab.js') && !lcUrl.contains('beacon.min.js') && !lcUrl.contains('_next/static');
 
                             if ((hasVideoExt || isVideasyStream) && (_isWebViewExtracting || _isSwitchingStream)) {
                                _handleDetectedVideoUrl(url);

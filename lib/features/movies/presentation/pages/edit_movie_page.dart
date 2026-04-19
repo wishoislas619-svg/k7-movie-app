@@ -200,6 +200,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                     items: const [
                        DropdownMenuItem(value: 1, child: Text('Algoritmo 1: DOM + Calidades')),
                        DropdownMenuItem(value: 2, child: Text('Algoritmo 2: Clicks Nativos')),
+                       DropdownMenuItem(value: 3, child: Text('Algoritmo 3: Enlace Mágico')),
                     ],
                     onChanged: (newValue) {
                       setState(() {
@@ -333,76 +334,22 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
       return;
     }
 
-    // ================================================================
-    // SERVIDORES VERIFICADOS 2025 - URLs correctas documentadas
-    // Todos funcionan en modo WebView (extractionAlgorithm: 2)
-    // Los marcados con 🌐 tienen selector de idioma integrado en el player
-    // ================================================================
-    final servers = [
-      {
-        'name': '🌐 Videasy (Multi-idioma)',
-        'url': 'https://player.videasy.net/movie/$id',
-        'icon': 'https://videasy.net/logo.png',
-        'lang': 'Latino / Inglés / Multi',
-        // Documentado en videasy.net — player con selector de idioma integrado
-      },
-      {
-        'name': '🌐 Embed.su (Multi-idioma)',
-        'url': 'https://embed.su/embed/movie/$id',
-        'icon': 'https://embed.su/favicon.ico',
-        'lang': 'Latino / Inglés / Multi',
-        // Muy usado en proyectos de GitHub, selector de fuente integrado
-      },
-      {
-        'name': '🌐 SuperEmbed (Multi-fuente)',
-        'url': 'https://www.superembed.stream/?tmdb=$id&tmdb=1',
-        'icon': 'https://www.superembed.stream/favicon.ico',
-        'lang': 'Multi-idioma',
-        // Agrega tmdb=1 para usar TMDB ID en vez de IMDB ID
-      },
-      {
-        'name': '🎬 VidSrc.me (Multi-servidor)',
-        'url': 'https://vidsrc.me/embed/movie?tmdb=$id',
-        'icon': 'https://vidsrc.me/favicon.ico',
-        'lang': 'Inglés / Multi',
-        // Diferente a vidsrc.TO — tiene más proveedores alternativos
-      },
-      {
-        'name': '✅ VidSrc.to (Probado)',
-        'url': 'https://vidsrc.to/embed/movie/$id',
-        'icon': 'https://vidsrc.to/favicon.ico',
-        'lang': 'Inglés/Multi',
-        // Funciona pero solo inglés — mantener como respaldo
-      },
-      {
-        'name': '🌐 VidSrc.xyz (Latino)',
-        'url': 'https://vidsrc.xyz/embed/movie?tmdb=$id',
-        'icon': 'https://vidsrc.xyz/favicon.ico',
-        'lang': 'Latino / Multi',
-        // Variante con más idiomas disponibles
-      },
-    ];
-
-    int added = 0;
-    for (final s in servers) {
-      final newOpt = VideoOption(
-        id: '',
-        movieId: widget.movie!.id,
-        serverImagePath: s['icon']!,
-        resolution: s['name']!,
-        videoUrl: s['url']!,
-        language: s['lang'],
-        extractionAlgorithm: 2,
-      );
-      await ref.read(movieRepositoryProvider).addVideoOption(newOpt);
-      added++;
-    }
+    final newOpt = VideoOption(
+      id: '',
+      movieId: widget.movie!.id,
+      serverImagePath: 'https://videasy.net/logo.png',
+      resolution: '1080P',
+      videoUrl: 'https://player.videasy.net/movie/$id',
+      language: 'Latino',
+      extractionAlgorithm: 3,
+    );
+    await ref.read(movieRepositoryProvider).addVideoOption(newOpt);
 
     _loadOptions();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$added servidores añadidos (incluye selector de idioma)'),
+        const SnackBar(
+          content: Text('Servidor Videasy (Latino, 1080P) añadido.'),
           backgroundColor: Colors.green,
         ),
       );

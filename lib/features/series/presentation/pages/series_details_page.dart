@@ -337,109 +337,33 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
     final seasonNum = _selectedSeason?.seasonNumber ?? 1;
     final epNum = episode.episodeNumber;
 
-    final servers = [
-      {
-        'name': 'Videasy',
-        'lang': '🌐 Multi-idioma (selector integrado)',
-        'url': 'https://player.videasy.net/tv/$tmdbId/$seasonNum/$epNum',
-        'icon': 'https://videasy.net/logo.png',
-        'color': const Color(0xFF00C853),
-        // URL documentada oficialmente — player con selector de idioma
-      },
-      {
-        'name': 'Embed.su',
-        'lang': '🌐 Latino / Inglés / Multi',
-        'url': 'https://embed.su/embed/tv/$tmdbId/$seasonNum/$epNum',
-        'icon': 'https://embed.su/favicon.ico',
-        'color': const Color(0xFF2979FF),
-        // Muy usado en proyectos reales de GitHub
-      },
-      {
-        'name': 'SuperEmbed',
-        'lang': '🌐 Multi-fuente / Multi-idioma',
-        'url': 'https://www.superembed.stream/?tmdb=$tmdbId&tmdb=1&s=$seasonNum&e=$epNum',
-        'icon': 'https://www.superembed.stream/favicon.ico',
-        'color': const Color(0xFFFF6D00),
-        // Agrega tmdb=1 para TMDB ID
-      },
-      {
-        'name': 'VidSrc.me',
-        'lang': '🌐 Multi-servidor (≠ vidsrc.to)',
-        'url': 'https://vidsrc.me/embed/tv?tmdb=$tmdbId&season=$seasonNum&episode=$epNum',
-        'icon': 'https://vidsrc.me/favicon.ico',
-        'color': const Color(0xFFAA00FF),
-        // Diferente a vidsrc.to — más proveedores
-      },
-      {
-        'name': 'VidSrc.to ✅',
-        'lang': '🇺🇸 Inglés / Multi (probado)',
-        'url': 'https://vidsrc.to/embed/tv/$tmdbId/$seasonNum/$epNum',
-        'icon': 'https://vidsrc.to/favicon.ico',
-        'color': const Color(0xFF6200EA),
-        // Funciona correctamente — respaldo confiable
-      },
-      {
-        'name': 'VidSrc.xyz',
-        'lang': '🇲🇽 Latino / Multi',
-        'url': 'https://vidsrc.xyz/embed/tv?tmdb=$tmdbId&season=$seasonNum&episode=$epNum',
-        'icon': 'https://vidsrc.xyz/favicon.ico',
-        'color': const Color(0xFFD50000),
-        // Variante con más idiomas
-      },
-    ];
+    // Solo Videasy (Latino, Servidor 3, 1080P) según requerimiento
+    final serverName = 'Videasy (Servidor 3)';
+    final serverUrl = 'https://player.videasy.net/tv/$tmdbId/$seasonNum/$epNum';
+    final serverIcon = 'https://videasy.net/logo.png';
 
-    showModalBottomSheet(
-      context: ctx,
-      backgroundColor: const Color(0xFF1A1A2E),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (bCtx) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 12),
-          Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(4))),
-          const SizedBox(height: 16),
-          const Text('⚡ Elige Servidor', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
-          const SizedBox(height: 4),
-          Text('T$seasonNum · E$epNum', style: const TextStyle(color: Colors.white54, fontSize: 13)),
-          const SizedBox(height: 12),
-          ...servers.map((s) => ListTile(
-            leading: CircleAvatar(
-              backgroundColor: (s['color'] as Color).withOpacity(0.2),
-              child: Text(s['name'].toString()[0], style: TextStyle(color: s['color'] as Color, fontWeight: FontWeight.bold)),
-            ),
-            title: Text(s['name'].toString(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-            subtitle: Text(s['lang'].toString(), style: const TextStyle(color: Colors.white54, fontSize: 12)),
-            trailing: const Icon(Icons.play_circle, color: Color(0xFF00A3FF)),
-            onTap: () {
-              Navigator.pop(bCtx);
-              Navigator.push(ctx, MaterialPageRoute(
-                builder: (_) => VideoPlayerPage(
-                  movieName: '${widget.series.name} - S${seasonNum}E${epNum}',
-                  mediaId: widget.series.id,
-                  episodeId: episode.id,
-                  mediaType: 'series',
-                  imagePath: widget.series.imagePath,
-                  subtitleLabel: s['name'].toString(),
-                  extractionAlgorithm: 2,
-                  videoOptions: [
-                    VideoOption(
-                      id: episode.id,
-                      movieId: widget.series.id,
-                      serverImagePath: s['icon'].toString(),
-                      resolution: s['name'].toString(),
-                      videoUrl: s['url'].toString(),
-                      language: s['lang'].toString(),
-                      extractionAlgorithm: 2,
-                    ),
-                  ],
-                ),
-              ));
-            },
-          )).toList(),
-          const SizedBox(height: 16),
+    Navigator.push(ctx, MaterialPageRoute(
+      builder: (_) => VideoPlayerPage(
+        movieName: '${widget.series.name} - S${seasonNum}E${epNum}',
+        mediaId: widget.series.id,
+        episodeId: episode.id,
+        mediaType: 'series',
+        imagePath: widget.series.imagePath,
+        subtitleLabel: serverName,
+        extractionAlgorithm: 2,
+        videoOptions: [
+          VideoOption(
+            id: episode.id,
+            movieId: widget.series.id,
+            serverImagePath: serverIcon,
+            resolution: '1080P',
+            videoUrl: serverUrl,
+            language: 'Latino',
+            extractionAlgorithm: 2,
+          ),
         ],
       ),
-    );
+    ));
   }
 
   void _showServerSelectionModal(Episode episode) {

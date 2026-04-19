@@ -1,4 +1,4 @@
-
+import 'dart:async';
 import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -177,9 +177,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                 maxHeight: double.infinity,
                 alignment: Alignment.center,
                 child: SizedBox(
-                  // Use screen size if Alg 2 to match player exactly
-                  width: widget.extractionAlgorithm == 2 ? MediaQuery.of(context).size.width : 500,
-                  height: widget.extractionAlgorithm == 2 ? MediaQuery.of(context).size.height : 280,
+                  // Use screen size if Alg 2 or 3 to match player exactly
+                  width: (widget.extractionAlgorithm == 2 || widget.extractionAlgorithm == 3) ? MediaQuery.of(context).size.width : 500,
+                  height: (widget.extractionAlgorithm == 2 || widget.extractionAlgorithm == 3) ? MediaQuery.of(context).size.height : 280,
                   child: Opacity(
                     opacity: _showWebView ? 1.0 : 0.01,
                     child: IgnorePointer(
@@ -199,8 +199,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                             supportMultipleWindows: false,
                             useShouldOverrideUrlLoading: true,
                             isInspectable: true,
-                            userAgent:
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                            userAgent: widget.extractionAlgorithm == 1 
+                                ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+                                : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
                           ),
                           initialUserScripts: UnmodifiableListView<UserScript>([
                             UserScript(
@@ -355,6 +356,20 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                               await Future.delayed(const Duration(milliseconds: 1500));
                               if (!_isDisposed) {
                                 _runAlgorithm2();
+                              }
+                            }
+                            if (widget.extractionAlgorithm == 3) {
+                              await Future.delayed(const Duration(milliseconds: 1500));
+                              if (!_isDisposed) {
+                                _runAlgorithm3();
+                                // Bucle de re-clics cada 3 segs para forzar el inicio en Alg 3
+                                Timer.periodic(const Duration(seconds: 4), (timer) {
+                                  if (_isDisposed || _foundMedia.isNotEmpty) {
+                                    timer.cancel();
+                                    return;
+                                  }
+                                  _runAlgorithm3();
+                                });
                               }
                             }
                           },
@@ -1073,6 +1088,96 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
       }
     } catch (e) {
       print("Error Algoritmo 2 Descarga: $e");
+    }
+  }
+
+  Future<void> _runAlgorithm3() async {
+    if (_isDisposed || !mounted) return;
+    try {
+      final dpr = MediaQuery.of(context).devicePixelRatio;
+      final box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
+      
+      // 1. Clics JS (Copiados del reproductor para asegurar activación de Videasy)
+      _webViewController?.evaluateJavascript(source: r"""
+          (function() {
+            function isVisible(el) {
+               if (!el) return false;
+               var r = el.getBoundingClientRect();
+               return r.width > 0 && r.height > 0;
+            }
+            function forceClick(el) {
+              if (!el) return;
+              ["touchstart", "touchend", "mousedown", "click", "mouseup"].forEach(t => {
+                var ev = new MouseEvent(t, { bubbles: true, cancelable: true, view: window });
+                el.dispatchEvent(ev);
+              });
+            }
+            function findByText(root, text, exact = false) {
+              var all = root.querySelectorAll('*');
+              for (var el of all) {
+                var t = el.textContent.trim().toLowerCase();
+                if (exact ? t === text.toLowerCase() : t.includes(text.toLowerCase())) {
+                   if (isVisible(el)) return el;
+                }
+                if (el.shadowRoot) {
+                  var found = findByText(el.shadowRoot, text, exact);
+                  if (found) return found;
+                }
+              }
+              return null;
+            }
+            function findGear(root) {
+              var btn = root.querySelector('button[aria-label*="Setting"], button[aria-label*="Config"], .vds-settings-button, .vjs-settings-control');
+              if (btn && isVisible(btn)) return btn;
+              var all = root.querySelectorAll('button, div[role="button"]');
+              for (var b of all) {
+                var svg = b.querySelector('svg');
+                if (svg && (svg.innerHTML.includes('M19.43') || svg.innerHTML.includes('12.98') || svg.innerHTML.includes('M12 15.5'))) {
+                  if (isVisible(b)) return b;
+                }
+              }
+              return null;
+            }
+
+            // Abrir engranaje o clickear servidores para forzar el load del video
+            var gear = findGear(document);
+            if (gear) forceClick(gear);
+            
+            var serversTab = findByText(document, 'Servers', true) || findByText(document, 'Servidores', true);
+            if (serversTab) forceClick(serversTab);
+            
+            // Forzar click en cualquier botón que parezca un servidor si el tab está abierto
+            var serverBtn = document.querySelector('[role="tabpanel"] button');
+            if (serverBtn) forceClick(serverBtn);
+          })();
+      """);
+
+      // 2. Clics Nativos (Copiados exactamente del reproductor)
+      if (box != null && box.hasSize) {
+        final offset = box.localToGlobal(Offset.zero);
+        final w = box.size.width;
+        final h = box.size.height;
+
+        print("[SNIFFER] Ejecutando Algoritmo 3 de Clics Humanos para descarga...");
+
+        final points = [
+          Offset(w / 2, h / 2),
+          Offset(w / 2 + 20, h / 2),
+          Offset(w / 2, h / 2 + 20),
+          Offset(w / 2 - 25, h / 2 - 25)
+        ];
+
+        for (var p in points) {
+          if (_isDisposed || _foundMedia.isNotEmpty) break;
+          await _webviewTouchChannel.invokeMethod('tapAt', {
+            'x': (offset.dx + p.dx) * dpr,
+            'y': (offset.dy + p.dy) * dpr
+          });
+          await Future.delayed(const Duration(milliseconds: 600));
+        }
+      }
+    } catch (e) {
+      print("Error Algoritmo 3 Descarga: $e");
     }
   }
 
