@@ -11,6 +11,7 @@ import 'package:movie_app/features/auth/presentation/providers/auth_provider.dar
 import 'package:movie_app/shared/widgets/marquee_text.dart';
 import 'package:movie_app/features/movies/presentation/pages/downloads_page.dart';
 import 'package:movie_app/features/series/presentation/pages/series_grid_page.dart';
+import 'package:movie_app/features/tv/presentation/pages/tv_channels_page.dart';
 import 'package:movie_app/features/auth/presentation/pages/profile_page.dart';
 import 'package:movie_app/features/movies/presentation/providers/history_provider.dart';
 import 'package:movie_app/features/movies/domain/entities/watch_history.dart';
@@ -59,6 +60,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         children: [
           _buildMoviesView(),
           const SeriesGridPage(),
+          const TvChannelsPage(),
           const DownloadsPage(),
           const ProfilePage(),
         ],
@@ -710,6 +712,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.movie_creation_outlined), label: 'PELÍCULAS'),
           BottomNavigationBarItem(icon: Icon(Icons.live_tv_outlined), label: 'SERIES'),
+          BottomNavigationBarItem(icon: Icon(Icons.tv_outlined), label: 'TV VIVO'),
           BottomNavigationBarItem(icon: Icon(Icons.download_rounded), label: 'DESCARGAS'),
           BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'PERFIL'),
         ],

@@ -45,6 +45,8 @@ class TmdbService {
           'rating': (data['vote_average'] as num).toDouble(),
           'image': 'https://image.tmdb.org/t/p/w500${data['poster_path']}',
           'backdrop': 'https://image.tmdb.org/t/p/original${data['backdrop_path']}',
+          'seasons': data['seasons'], // Basic info of all seasons
+          'num_seasons': data['number_of_seasons'],
         };
       }
     } catch (e) {

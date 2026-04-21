@@ -322,49 +322,6 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
       );
     }
   }
-  // ========================================================
-  // SELECTOR DE SERVIDOR INTELIGENTE CON SOPORTE LATINO
-  // ========================================================
-  void _showSmartServerPicker(BuildContext ctx, Episode episode) {
-    final tmdbId = widget.series.tmdbId;
-    if (tmdbId == null || tmdbId.isEmpty) {
-      ScaffoldMessenger.of(ctx).showSnackBar(
-        const SnackBar(content: Text('Esta serie no tiene TMDB ID. Agrégalo en Editar Serie.'), backgroundColor: Colors.orange),
-      );
-      return;
-    }
-
-    final seasonNum = _selectedSeason?.seasonNumber ?? 1;
-    final epNum = episode.episodeNumber;
-
-    // Solo Videasy (Latino, Servidor 3, 1080P) según requerimiento
-    final serverName = 'Videasy (Servidor 3)';
-    final serverUrl = 'https://player.videasy.net/tv/$tmdbId/$seasonNum/$epNum';
-    final serverIcon = 'https://videasy.net/logo.png';
-
-    Navigator.push(ctx, MaterialPageRoute(
-      builder: (_) => VideoPlayerPage(
-        movieName: '${widget.series.name} - S${seasonNum}E${epNum}',
-        mediaId: widget.series.id,
-        episodeId: episode.id,
-        mediaType: 'series',
-        imagePath: widget.series.imagePath,
-        subtitleLabel: serverName,
-        extractionAlgorithm: 2,
-        videoOptions: [
-          VideoOption(
-            id: episode.id,
-            movieId: widget.series.id,
-            serverImagePath: serverIcon,
-            resolution: '1080P',
-            videoUrl: serverUrl,
-            language: 'Latino',
-            extractionAlgorithm: 2,
-          ),
-        ],
-      ),
-    ));
-  }
 
   void _showServerSelectionModal(Episode episode) {
     if (episode.urls.isEmpty) {
@@ -391,28 +348,6 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                 child: ListView(
                   shrinkWrap: true,
                   children: [
-                    // --- OPCIÓN INTELIGENTE (SI HAY TMDB ID) ---
-                    if (widget.series.tmdbId != null && widget.series.tmdbId!.isNotEmpty)
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [const Color(0xFF00A3FF).withOpacity(0.2), const Color(0xFFD400FF).withOpacity(0.2)],
-                          ),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.3)),
-                        ),
-                        child: ListTile(
-                          leading: const Icon(Icons.bolt, color: Colors.amber),
-                          title: const Text('⚡ SERVIDOR INTELIGENTE', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                          subtitle: const Text('Elige idioma: Latino / Inglés / Multi', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                          trailing: const Icon(Icons.chevron_right, color: Color(0xFF00A3FF)),
-                          onTap: () {
-                            Navigator.pop(context);
-                            _showSmartServerPicker(context, episode);
-                          },
-                        ),
-                      ),
                     
                     // --- OPCIONES MANUALES ---
                     ...List.generate(episode.urls.length, (index) {

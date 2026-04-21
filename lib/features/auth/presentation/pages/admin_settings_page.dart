@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/services/supabase_service.dart';
+import '../../../../features/movies/presentation/pages/admin_m3u_importer_page.dart';
 
 class AdminSettingsPage extends ConsumerStatefulWidget {
   const AdminSettingsPage({super.key});
@@ -75,11 +76,12 @@ class _AdminSettingsPageState extends ConsumerState<AdminSettingsPage> {
       ),
       body: _isLoading 
         ? const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF)))
-        : Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+        : SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                 const Text(
                   'Actualización del Sistema',
                   style: TextStyle(color: Color(0xFF00A3FF), fontSize: 18, fontWeight: FontWeight.bold),
@@ -106,9 +108,43 @@ class _AdminSettingsPageState extends ConsumerState<AdminSettingsPage> {
                     child: const Text('GUARDAR CAMBIOS', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
                   ),
                 ),
+                const SizedBox(height: 40),
+                const Text(
+                  'Herramientas Avanzadas',
+                  style: TextStyle(color: Color(0xFFD400FF), fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 10),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Container(
+                     padding: const EdgeInsets.all(10),
+                     decoration: BoxDecoration(color: const Color(0xFFD400FF).withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+                     child: const Icon(Icons.playlist_add_circle_rounded, color: Color(0xFFD400FF)),
+                  ),
+                  title: const Text('Importador Masivo M3U', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  subtitle: const Text('Importa catálogos enteros desde links o archivos M3U de manera veloz.', style: TextStyle(color: Colors.white54, fontSize: 13)),
+                  trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+                  onTap: () {
+                     Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminM3uImporterPage()));
+                  },
+                ),
+                const SizedBox(height: 40),
+                SizedBox(
+                  width: double.infinity,
+                  height: 55,
+                  child: ElevatedButton(
+                    onPressed: _saveConfig,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF00A3FF),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('GUARDAR CAMBIOS DE SISTEMA', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                  ),
+                ),
               ],
             ),
           ),
+        ),
     );
   }
 

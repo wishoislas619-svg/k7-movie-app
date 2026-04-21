@@ -185,7 +185,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<int>(
-                    value: [1, 2].contains(selectedAlgorithm) ? selectedAlgorithm : 1,
+                    value: [1, 2, 3].contains(selectedAlgorithm) ? selectedAlgorithm : 1,
                     dropdownColor: const Color(0xFF1E1E1E),
                     style: const TextStyle(color: Colors.white),
                     decoration: InputDecoration(
@@ -520,7 +520,13 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('OPCIONES DE VIDEO', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
+                   const Expanded(
+                    child: Text(
+                      'OPCIONES DE VIDEO', 
+                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.2),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
                   TextButton.icon(
                     onPressed: _generateSmartLink,
                     icon: const Icon(Icons.bolt, color: Colors.amber, size: 18),

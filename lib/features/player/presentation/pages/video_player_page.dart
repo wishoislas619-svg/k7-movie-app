@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:collection';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -106,6 +107,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   // Segundos REALES vistos (no posición). Para no disparar el midroll al hacer seek.
   int _realWatchedSeconds = 0;
   DateTime? _lastTickTime;
+  Duration? _savedRotationPosition; // Protege la posicion durante rotaciones rapidas
 
   VideoPlayerController? _controller;
   bool _isLoading = true;
@@ -153,6 +155,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   String? _currentQualityLabel;
   Timer? _progressSaveTimer;
   bool _hasCheckedResume = false;
+  bool _isCheckingResumeInProgress = false; // Lock para evitar doble ejecución
   bool _isInitialLoading = true;
   
   bool _showSkipIntroButton = false;
@@ -172,6 +175,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   bool _isExtractingServers = false;
   int _effectiveAlgorithm = 0;
   bool _hasAutoSelectedServer = false;
+  Set<String> _failedVideasyServers = {};
+  InternalServerInfo? _currentVideasyServer;
+  Duration? _pendingResumeDuration;
 
   @override
   void initState() {
@@ -280,12 +286,21 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               _isAdVerified = true;
               _adError = null;
             });
-            // AUTO-PLAY INMEDIATO
-            if (_controller != null && _controller!.value.isInitialized) {
-              _controller!.play();
-              _startHideTimer();
-            } else {
+
+            // Ya no damos play aquí, lo hará _checkResume tras validar historial
+            if (_controller == null || !_controller!.value.isInitialized) {
               _startPlayback();
+            }
+
+            if (_effectiveAlgorithm == 3) {
+              _runScraper();
+            }
+
+            if (_controller != null && _controller!.value.isInitialized) {
+               print("🎬 [AD_FINISH] Controller listo, verificando reanudación...");
+               _checkResume(_controller!);
+            } else {
+               print("🎬 [AD_FINISH] Controller no listo aún, _checkResume se llamará al inicializar.");
             }
             _pollVerification(completedTicketId);
           }
@@ -342,6 +357,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               _isLoadingAd = false;
               _adError = null;
             });
+            
             // Reanudar o iniciar según el caso
             if (_isMidrollShown) {
                _controller?.play();
@@ -352,6 +368,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                } else {
                  _startPlayback();
                }
+            }
+
+            if (_effectiveAlgorithm == 3) {
+               _runScraper();
+            }
+            if (_controller != null && _controller!.value.isInitialized) {
+               _checkResume(_controller!);
             }
           }
           return;
@@ -497,45 +520,93 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Future<void> _checkResume(VideoPlayerController controller) async {
-    if (_hasCheckedResume) return;
-    _hasCheckedResume = true;
-
-    // Si venimos desde "Continuar Viendo" con posición inyectada, reproducir directo sin diálogo
-    if (widget.startPosition != null && widget.startPosition!.inMilliseconds > 0) {
-      await controller.seekTo(widget.startPosition!);
-      if (!_isLoadingAd && _isAdVerified) {
-        controller.play();
-        _startHideTimer();
-      }
+    if (_isCheckingResumeInProgress) {
+      print("⏳ [CHECK_RESUME] Ya hay un chequeo en curso, ignorando duplicado.");
       return;
     }
 
-    final history = await ref.read(historyProvider.notifier).getProgress(widget.episodeId ?? widget.mediaId);
+    print("🔍 [CHECK_RESUME] Verificando... pending: ${_pendingResumeDuration != null}, checked: $_hasCheckedResume, widget.startPosition: ${widget.startPosition}");
     
-    if (history != null && history.lastPosition > 10000) { // More than 10 seconds
-      // Pause immediately to ask
+    if (_pendingResumeDuration != null || _hasCheckedResume) {
+       // Si ya sabemos qué posición queremos reanudar, la aplicamos a este nuevo controlador
+       if (_pendingResumeDuration != null && _effectiveAlgorithm != 3) {
+          await controller.seekTo(_pendingResumeDuration!);
+       }
+       return;
+    }
+
+    _isCheckingResumeInProgress = true;
+    
+    try {
+      final historyId = (widget.episodeId != null && widget.episodeId!.isNotEmpty) 
+          ? widget.episodeId! 
+          : widget.mediaId;
+
+      int lastPos = 0;
+      if (widget.startPosition != null && widget.startPosition!.inMilliseconds > 10000) {
+        lastPos = widget.startPosition!.inMilliseconds;
+        print("📥 [CHECK_RESUME] Usando posición inyectada: ${lastPos}ms");
+      } else {
+        final history = await ref.read(historyProvider.notifier).getProgress(historyId);
+        if (history != null && history.lastPosition >= 10000) {
+          lastPos = history.lastPosition;
+          print("📋 [CHECK_RESUME] Historial DB encontrado: ${lastPos}ms");
+        }
+      }
+      
+      if (lastPos < 10000) { 
+        print("ℹ️ [CHECK_RESUME] No hay historial válido (>10s). Play directo.");
+        _hasCheckedResume = true;
+        _isCheckingResumeInProgress = false;
+        if (mounted) controller.play();
+        return;
+      }
+      
+      print("🎭 [CHECK_RESUME] Preparando diálogo para reanudar en ${lastPos}ms...");
+      
+      if (!mounted) {
+        _isCheckingResumeInProgress = false;
+        return;
+      }
+
+      // NO pausar todavía si es Algoritmo 3 y apenas está cargando
+      if (_effectiveAlgorithm != 3) {
+        controller.pause();
+      }
+
+      // Esperar un momento a que las transiciones de UI terminen
+      await Future.delayed(const Duration(milliseconds: 600));
+        
+      if (!mounted) {
+        _isCheckingResumeInProgress = false;
+        return;
+      }
+
+      print("🎭 [CHECK_RESUME] Solicitando diálogo de reanudación...");
+      
+      // Asegurar pausa justo antes del modal (si no estaba pausado)
       controller.pause();
       
-      if (!mounted) return;
-
-      final resume = await showDialog<bool>(
+      bool? resumeResult;
+      resumeResult = await showDialog<bool>(
         context: context,
+        useRootNavigator: true, 
         barrierDismissible: false,
         builder: (context) => AlertDialog(
           backgroundColor: const Color(0xFF1A1A1A),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text("Continuar Viendo", style: TextStyle(color: Colors.white)),
           content: Text(
-            "¿Quieres retomar desde donde te quedaste? (${_formatDuration(Duration(milliseconds: history.lastPosition))})",
+            "¿Quieres retomar desde donde te quedaste? (${_formatDuration(Duration(milliseconds: lastPos))})",
             style: const TextStyle(color: Colors.white70),
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context, false),
+              onPressed: () => Navigator.of(context, rootNavigator: true).pop(false),
               child: const Text("Desde el inicio", style: TextStyle(color: Colors.white54)),
             ),
             ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
+              onPressed: () => Navigator.of(context, rootNavigator: true).pop(true),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF00A3FF),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -546,23 +617,38 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         ),
       );
 
-      if (resume == true) {
-        await controller.seekTo(Duration(milliseconds: history.lastPosition));
+      if (resumeResult == true) {
+        _pendingResumeDuration = Duration(milliseconds: lastPos);
+        _hasCheckedResume = true;
+        print("✅ [CHECK_RESUME] Usuario eligió REANUDAR en ${lastPos}ms");
+        
+        if (_controller != null) {
+          print("🚀 [CHECK_RESUME] Ejecutando seek asíncrono...");
+          _controller!.seekTo(_pendingResumeDuration!).then((_) {
+             Future.delayed(const Duration(milliseconds: 500), () {
+                if (mounted) _controller?.play();
+             });
+          });
+        }
+      } else if (resumeResult == false) {
+        print("🔄 [CHECK_RESUME] Usuario eligió EMPEZAR DE CERO");
+        _hasCheckedResume = true;
+        _pendingResumeDuration = null;
+        if (mounted) _controller?.play();
       }
       
-      // SOLO dar play si NO hay un anuncio cargándose y está verificado
-      if (!_isLoadingAd && _isAdVerified && mounted) {
-        controller.play();
-        _startHideTimer();
-      }
-    } else {
-      // Si no hay historial y ya pasaron los checks de anuncios
-      if (!_isLoadingAd && _isAdVerified && mounted) {
-        controller.play();
-        _startHideTimer();
-      }
+      _isCheckingResumeInProgress = false;
+      if (mounted) _startHideTimer();
+    } catch (e) {
+      print("❌ [CHECK_RESUME] Error en proceso: $e");
+    } finally {
+      _isCheckingResumeInProgress = false;
+      _hasCheckedResume = true; 
+      // Removed global play here to let the async seek->play do its job without race conditions 
     }
   }
+
+
 
   String _formatDuration(Duration duration) {
     String twoDigits(int n) => n.toString().padLeft(2, "0");
@@ -702,16 +788,21 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
        // 2. Sniffer Video Directo
        _webViewController?.evaluateJavascript(source: "(function(){ var v=document.querySelector('video'); return (v && v.src) ? v.src : null; })();").then((v) {
-         if (v != null && v.toString().startsWith('http') && !_hasInitialUrl) {
-           _initializeVideoPlayer(v.toString());
-         }
+         final threshold = (_effectiveAlgorithm == 3) ? 15 : 25;
+         // Fallback si: 1. No hay URL inicial, 2. Hay error, o 3. Estamos cargando por demasiado tiempo
+         final bool isStuck = !_hasInitialUrl || _errorMessage != null || (_isLoading && _autoClickCount > threshold + 5);
+         
+         if (_autoClickCount > threshold && isStuck) {
+          if (_effectiveAlgorithm == 3 && _videasyServers.isNotEmpty) {
+             print("⚠️ [FALLBACK] Reintentando por inactividad/error ($threshold seg)...");
+             _tryNextVideasyServer();
+          } else {
+             _webViewController?.reload();
+          }
+          _autoClickCount = 0;
+        }
+        _autoClickCount++;
        });
-
-       if (_autoClickCount > 20 && !_hasInitialUrl) {
-         _webViewController?.reload();
-         _autoClickCount = 0;
-       }
-       _autoClickCount++;
     });
 
 
@@ -719,7 +810,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
      if (_effectiveAlgorithm == 2 || _effectiveAlgorithm == 3) {
         try {
           // Solo hacemos clicks nativos si no hemos detectado el video inicial
-          if (!_hasInitialUrl) {
+          if (!_hasInitialUrl && _isAdVerified) {
             final dpr = MediaQuery.of(context).devicePixelRatio;
             final box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
             if (box != null && box.hasSize) {
@@ -893,7 +984,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           final double dy = (jsY as num).toDouble();
           
           final RenderBox? box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
-          if (box != null && dx > 0 && dy > 0) {
+          if (box != null && dx > 0 && dy > 0 && _isAdVerified) {
             final Offset offset = box.localToGlobal(Offset.zero);
             // Uso flexible de dpr para evitar errores tras desmontar
             final double dpr = View.of(context).devicePixelRatio;
@@ -975,7 +1066,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           final String? label = data['label'];
 
           final RenderBox? box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
-          if (box != null && jsX > 0 && jsY > 0) {
+          if (box != null && jsX > 0 && jsY > 0 && _isAdVerified) {
             final Offset offset = box.localToGlobal(Offset.zero);
             final double dpr = MediaQueryData.fromView(View.of(context)).devicePixelRatio;
             final double screenX = (offset.dx + jsX) * dpr;
@@ -1160,18 +1251,28 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Future<void> _initializeVideoPlayer(String videoUrl) async {
-    // Ya no cancelamos el scraper aquí para permitir que siga buscando calidades en segundo plano.
-    // _scraperTimer solo se cancela tras el timeout de clics o éxito total.
+    Duration? lastPosition;
+    if (_controller != null) {
+      if (_controller!.value.position.inSeconds > 2) {
+        lastPosition = _controller!.value.position;
+        _savedRotationPosition = lastPosition;
+      } else if (_savedRotationPosition != null) {
+        lastPosition = _savedRotationPosition;
+      }
+    } else if (_savedRotationPosition != null) {
+      lastPosition = _savedRotationPosition;
+    }
+    
+    if (_controller != null) {
+      await _controller!.dispose();
+    }
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
-      final Duration? lastPosition = _controller?.value.position;
-
-      _controller?.dispose();
-
       if (widget.isLocal) {
         _controller = VideoPlayerController.file(File(videoUrl));
       } else {
@@ -1222,13 +1323,17 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           _isLoading = false;
           _isSwitchingStream = false;
         });
-        if (lastPosition != null) {
-          _controller?.seekTo(lastPosition);
-        }
+        // Determinamos qué posición final necesitamos para el seek
+        Duration? targetSeekPosition;
         
-        // SOLO dar play si NO hay un anuncio cargándose y está verificado
-        if (!_isLoadingAd && _isAdVerified) {
-          _controller?.play();
+        if (!_hasCheckedResume && !_isCheckingResumeInProgress) {
+          // Dejamos que _checkResume decida y haga el seek
+        } else if (_hasCheckedResume) {
+          if (_pendingResumeDuration != null) {
+            targetSeekPosition = _pendingResumeDuration;
+          } else if (lastPosition != null) {
+            targetSeekPosition = lastPosition;
+          }
         }
 
         if (!_hasIncrementedView) {
@@ -1257,22 +1362,55 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         // Iniciar el temporizador para guardar progreso automáticamente
         _startProgressTimer();
 
-        // Check for resume after initialization
-        _checkResume(_controller!);
+        if (_isAdVerified) {
+          if (!_hasCheckedResume && !_isCheckingResumeInProgress) {
+            _checkResume(_controller!);
+          } else if (_hasCheckedResume) {
+            if (targetSeekPosition != null) {
+              print("🚀 [INIT] Restaurando posición asegurada tras rotación/init: $targetSeekPosition");
+              _controller?.seekTo(targetSeekPosition).then((_) {
+                 Future.delayed(const Duration(milliseconds: 500), () {
+                   if (mounted) {
+                     print("▶️ [INIT] Play automático tras seek inicial de rotación.");
+                     _controller?.play();
+                   }
+                 });
+              });
+            } else {
+              print("▶️ [INIT] Reanudación ya verificada, no hay posición extraída, iniciando Play automático desde 0:00.");
+              _controller?.play();
+            }
+          }
+        }
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _isSwitchingStream = false;
-          _errorMessage = e.toString();
-        });
+        if (_effectiveAlgorithm == 3 && _videasyServers.isNotEmpty) {
+           print("⚠️ [ERROR_FALLBACK] Error inicializando (${e.toString()}), buscando otro servidor...");
+           _tryNextVideasyServer();
+        } else {
+          setState(() {
+            _isLoading = false;
+            _isSwitchingStream = false;
+            _errorMessage = e.toString();
+          });
+        }
       }
     }
   }
 
   void _onVideoTick() {
-    if (_controller == null || !_controller!.value.isInitialized) return;
+    if (_controller == null) return;
+
+    if (_controller!.value.hasError) {
+       print("⚠️ [VIDEO_ERROR] Detectado error en reproducción: ${_controller!.value.errorDescription}");
+       if (_effectiveAlgorithm == 3 && _videasyServers.isNotEmpty) {
+          _tryNextVideasyServer();
+          return;
+       }
+    }
+
+    if (!_controller!.value.isInitialized) return;
 
     final posSecs = _controller!.value.position.inSeconds;
     final isPlaying = _controller!.value.isPlaying;
@@ -1289,6 +1427,18 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       _lastTickTime = now;
     } else {
       _lastTickTime = null;
+    }
+
+    if (_pendingResumeDuration != null && _controller!.value.isPlaying) {
+        if (_controller!.value.position.inSeconds >= (_pendingResumeDuration!.inSeconds - 5)) {
+            print("✅ [RESUME] Posición confirmada en UI. Liberando pendiente.");
+            _savedRotationPosition = _pendingResumeDuration; // Asegurar backup
+            _pendingResumeDuration = null;
+        } else if (_controller!.value.position.inSeconds < 5) {
+            // Protección contra el bug de fallback a 0:00
+            print("⚠️ [RESUME] Video en el inicio ignorando seek. Forzando nuevamente a $_pendingResumeDuration");
+            _controller!.seekTo(_pendingResumeDuration!);
+        }
     }
 
     // Disparar midroll al llegar a la mitad del tiempo REAL visto (no posición)
@@ -1892,26 +2042,35 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                   });
 
                                   // --- AUTO-SELECCIÓN PARA ESPAÑOL ---
-                                  if (!_hasAutoSelectedServer && _effectiveAlgorithm == 3) {
-                                    InternalServerInfo? target;
-                                    
-                                    // 1. Buscar Gekko
-                                    try {
-                                      target = newServers.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
-                                    } catch (_) {
-                                      // 2. Buscar último que diga "Spanish Audio"
-                                      final spanishServers = newServers.where((s) => s.label.toLowerCase().endsWith('spanish audio')).toList();
-                                      if (spanishServers.isNotEmpty) {
-                                        target = spanishServers.last;
+                                    if ((!_hasAutoSelectedServer || _errorMessage != null) && _effectiveAlgorithm == 3) {
+                                      InternalServerInfo? target;
+                                      
+                                      // Filtrar los que ya fallaron
+                                      final availableServers = newServers.where((s) => !_failedVideasyServers.contains(s.id)).toList();
+                                      
+                                      if (availableServers.isNotEmpty) {
+                                        // 1. Intentar Gekko primero si está disponible y no ha fallado
+                                        try {
+                                          target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
+                                        } catch (_) {
+                                          // 2. Intentar último que diga "Spanish Audio"
+                                          final spanishServers = availableServers.where((s) => s.label.toLowerCase().endsWith('spanish audio')).toList();
+                                          if (spanishServers.isNotEmpty) {
+                                            target = spanishServers.last;
+                                          } else {
+                                            // 3. Cualquier otro disponible como último recurso
+                                            target = availableServers.first;
+                                          }
+                                        }
+
+                                        if (target != null) {
+                                          print("🤖 [AUTO-SELECT] Seleccionando automáticamente: ${target.label}");
+                                          _hasAutoSelectedServer = true;
+                                          _errorMessage = null; // Limpiar errores previos si estamos reintentando
+                                          _selectVideasyInternalServer(target);
+                                        }
                                       }
                                     }
-
-                                    if (target != null) {
-                                      print("🤖 [AUTO-SELECT] Seleccionando automáticamente: ${target.label}");
-                                      _hasAutoSelectedServer = true;
-                                      _selectVideasyInternalServer(target);
-                                    }
-                                  }
                                 }
                               }
                             });
@@ -1934,6 +2093,27 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                            mediaPlaybackRequiresUserGesture: false,
                            userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
                          ),
+                         initialUserScripts: UnmodifiableListView<UserScript>([
+                            UserScript(
+                              source: """
+                                // Mute all videos aggressively to prevent Audio Focus loss in Android
+                                setInterval(function() {
+                                  var v = document.querySelectorAll('video');
+                                  for(var i=0; i<v.length; i++) {
+                                    if (!v[i].muted) v[i].muted = true;
+                                    v[i].volume = 0;
+                                  }
+                                }, 500);
+                                
+                                var oldPlay = HTMLVideoElement.prototype.play;
+                                HTMLVideoElement.prototype.play = function() {
+                                   this.muted = true;
+                                   return oldPlay.apply(this, arguments);
+                                };
+                              """,
+                              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                            )
+                         ]),
                          
                           onLoadStart: (controller, url) async {
                              const injectNetMonitor = r"""
@@ -2691,9 +2871,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     setState(() {
       _isLoading = true;
       _isSwitchingStream = true;
-      _hasAutoSelectedServer = true; // Evitar que el auto-selector sobreescriba una elección manual o la repetida
+      _currentVideasyServer = server;
+      _hasAutoSelectedServer = true;
+      _autoClickCount = 0; // Reiniciamos contador al cambiar de server
     });
-
+    
     _webViewController?.evaluateJavascript(source: """
           (function() {
             function findByText(root, text, exact = false) {
@@ -2741,6 +2923,38 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
             }
           })();
     """);
+  }
+
+  void _tryNextVideasyServer() {
+    if (_videasyServers.isEmpty) return;
+    if (_currentVideasyServer != null) {
+      _failedVideasyServers.add(_currentVideasyServer!.id);
+      print("❌ [FALLBACK] Servidor fallido añadido a lista negra: ${_currentVideasyServer!.label}");
+    }
+    
+    // Buscar el siguiente disponible en la lista
+    InternalServerInfo? target;
+    final available = _videasyServers.where((s) => !_failedVideasyServers.contains(s.id)).toList();
+    
+    if (available.isNotEmpty) {
+      // Intentar mantener preferencia Gekko/Spanish si el anterior falló
+      try {
+        target = available.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
+      } catch (_) {
+        final spanish = available.where((s) => s.label.toLowerCase().endsWith('spanish audio')).toList();
+        target = spanish.isNotEmpty ? spanish.last : available.first;
+      }
+      
+      if (target != null) {
+        _selectVideasyInternalServer(target);
+      }
+    } else {
+       print("🚫 [FALLBACK] No quedan servidores disponibles por probar.");
+       setState(() {
+         _isLoading = false;
+         _errorMessage = "No se pudo encontrar un servidor funcional en este momento.";
+       });
+    }
   }
 
 

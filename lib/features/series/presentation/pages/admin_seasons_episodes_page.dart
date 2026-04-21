@@ -7,6 +7,7 @@ import '../../domain/entities/season.dart';
 import '../../domain/entities/episode.dart';
 import '../../domain/entities/series_option.dart';
 import '../../../../shared/widgets/series_scraper_dialog.dart';
+import '../../../../core/services/tmdb_service.dart';
 
 class AdminSeasonsEpisodesPage extends ConsumerStatefulWidget {
   final Series series;
@@ -301,11 +302,7 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
       return;
     }
 
-    final url = widget.series.detailsUrl;
-    if (url == null || url.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('La serie no tiene una URL de detalles definida.')));
-      return;
-    }
+     final url = widget.series.detailsUrl ?? '';
 
     // Modal to choose Server Option
     final SeriesOption? selectedOption = await showDialog<SeriesOption>(
@@ -356,28 +353,47 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
 
         int addedCount = 0;
         int updatedCount = 0;
-        int episodeCounter = existingEps.length;
-
+        int sequentialCounter = 0;
         for (var scraped in extractions) {
+          sequentialCounter++;
+          int currentEpisodeIndex = sequentialCounter;
+          
+          if (scraped is ScrapedEpisode && scraped.index != null) {
+              currentEpisodeIndex = scraped.index!;
+          } else if (scraped is Map && scraped['index'] != null) {
+              // En caso de que se haya pasado como un mapa crudo en otra parte
+              currentEpisodeIndex = scraped['index'] as int;
+          }
+
           Episode? existing;
           try {
-            existing = existingEps.firstWhere((e) => e.name.toLowerCase() == scraped.title.toLowerCase() || e.url == scraped.url);
+            // Refined matching: URL first, then Title, then Episode Number
+            existing = existingEps.firstWhere((e) => 
+               e.url == scraped.url || 
+               e.name.toLowerCase() == scraped.title.toLowerCase() ||
+               e.episodeNumber == currentEpisodeIndex
+            );
           } catch (_) {}
 
           if (existing != null) {
             final currentUrls = List<EpisodeUrl>.from(existing.urls);
             if (!currentUrls.any((u) => u.url == scraped.url)) {
-              currentUrls.add(EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution));
+              currentUrls.add(EpisodeUrl(
+                url: scraped.url, 
+                optionId: selectedOption.id, 
+                quality: selectedOption.resolution,
+                extractionAlgorithm: selectedOption.extractionAlgorithm,
+              ));
               await repo.updateEpisode(existing.copyWith(urls: currentUrls));
               updatedCount++;
             }
           } else {
-            episodeCounter++;
+            // New episode logic using 'currentEpisodeIndex'
             final newEp = Episode(
               id: const Uuid().v4(),
               seasonId: targetSeason.id,
-              episodeNumber: episodeCounter,
-              name: 'Capítulo $episodeCounter',
+              episodeNumber: currentEpisodeIndex,
+              name: scraped.title ?? 'Capítulo $currentEpisodeIndex',
               url: scraped.url,
               urls: [EpisodeUrl(url: scraped.url, optionId: selectedOption.id, quality: selectedOption.resolution, extractionAlgorithm: selectedOption.extractionAlgorithm)],
               extractionAlgorithm: selectedOption.extractionAlgorithm,
@@ -403,6 +419,202 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
     }
   }
 
+  void _generateVideasyEpisodes() async {
+    final tmdbId = widget.series.tmdbId;
+    if (tmdbId == null || tmdbId.isEmpty) {
+       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('La serie no tiene un TMDB ID configurado.')));
+       return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Consultando TMDB...'), duration: Duration(seconds: 1)));
+    final tmdbData = await TmdbService.getSeriesMetadata(tmdbId);
+
+    // Modal to ask for S and E
+    final result = await showDialog<Map<String, dynamic>>(
+       context: context,
+       builder: (context) {
+          int? selectedSeason;
+          bool isAnime = false;
+          final sController = TextEditingController(text: '1');
+          final eController = TextEditingController(text: '12');
+
+          List<dynamic> tmdbSeasons = [];
+          if (tmdbData != null && tmdbData['seasons'] != null) {
+             tmdbSeasons = tmdbData['seasons'] as List;
+          }
+
+          return StatefulBuilder(
+            builder: (context, setDialogState) {
+              return AlertDialog(
+                 backgroundColor: const Color(0xFF1E1E1E),
+                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                 title: const Text('Generar Capítulos (Videasy)', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                 content: SingleChildScrollView(
+                   child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                         const Text('Detectado desde TMDB para auto-completar:', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                         const SizedBox(height: 12),
+                         if (tmdbSeasons.isNotEmpty) ...[
+                            DropdownButtonFormField<int>(
+                               dropdownColor: const Color(0xFF1E1E1E),
+                               value: selectedSeason,
+                               isExpanded: true,
+                               style: const TextStyle(color: Colors.white, fontSize: 13),
+                               decoration: InputDecoration(
+                                  labelText: 'Selecciona Temporada',
+                                  labelStyle: const TextStyle(color: Color(0xFF00A3FF), fontSize: 12),
+                                  filled: true,
+                                  fillColor: Colors.white.withOpacity(0.04),
+                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+                               ),
+                               items: tmdbSeasons.map<DropdownMenuItem<int>>((s) {
+                                  return DropdownMenuItem<int>(
+                                     value: s['season_number'],
+                                     child: Text('${s['name']} (${s['episode_count']} eps)', maxLines: 1, overflow: TextOverflow.ellipsis),
+                                  );
+                               }).toList(),
+                               onChanged: (val) {
+                                  final sInfo = tmdbSeasons.firstWhere((s) => s['season_number'] == val);
+                                  setDialogState(() {
+                                     selectedSeason = val;
+                                     sController.text = val.toString();
+                                     eController.text = sInfo['episode_count'].toString();
+                                  });
+                               },
+                            ),
+                            const SizedBox(height: 20),
+                            const Divider(color: Colors.white10),
+                            const SizedBox(height: 12),
+                         ],
+                         TextField(
+                           controller: sController, 
+                           keyboardType: TextInputType.number, 
+                           style: const TextStyle(color: Colors.white),
+                           decoration: const InputDecoration(labelText: 'Temporada Manual', labelStyle: TextStyle(color: Colors.white54, fontSize: 12)),
+                         ),
+                         const SizedBox(height: 12),
+                         TextField(
+                           controller: eController, 
+                           keyboardType: TextInputType.number, 
+                           style: const TextStyle(color: Colors.white),
+                           decoration: const InputDecoration(labelText: 'Capítulos a generar', labelStyle: TextStyle(color: Colors.white54, fontSize: 12)),
+                         ),
+                         const SizedBox(height: 12),
+                         CheckboxListTile(
+                           title: const Text('Corresponde a un Anime', style: TextStyle(color: Colors.amber, fontSize: 13, fontWeight: FontWeight.bold)),
+                           subtitle: const Text('Usa "anime" en vez de "tv" en la URL', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                           value: isAnime,
+                           activeColor: Colors.amber,
+                           checkColor: Colors.black,
+                           dense: true,
+                           contentPadding: EdgeInsets.zero,
+                           controlAffinity: ListTileControlAffinity.leading,
+                           onChanged: (val) {
+                             setDialogState(() {
+                               isAnime = val ?? false;
+                             });
+                           },
+                         ),
+                      ],
+                   ),
+                 ),
+                 actions: [
+                    TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR', style: TextStyle(color: Colors.white38))),
+                    ElevatedButton(
+                       onPressed: () => Navigator.pop(context, {
+                          'season': int.tryParse(sController.text) ?? 1,
+                          'count': int.tryParse(eController.text) ?? 1,
+                          'isAnime': isAnime,
+                       }),
+                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF)),
+                       child: const Text('GENERAR AHORA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    )
+                 ],
+              );
+            }
+          );
+       }
+    );
+
+    if (result == null) return;
+
+    final seasonNum = result['season']! as int;
+    final count = result['count']! as int;
+    final isAnime = result['isAnime']! as bool;
+    final urlSlug = isAnime ? 'tv' : 'tv';
+
+    setState(() => _isLoading = true);
+
+    // Find or create Season
+    final repo = ref.read(seriesRepositoryProvider);
+    Season? targetSeason;
+    try {
+      targetSeason = _seasons.firstWhere((s) => s.seasonNumber == seasonNum);
+    } catch (_) {
+      targetSeason = Season(
+        id: const Uuid().v4(),
+        seriesId: widget.series.id,
+        name: 'Temporada $seasonNum',
+        seasonNumber: seasonNum,
+      );
+      await repo.addSeason(targetSeason);
+    }
+
+    // Ensure we have a Videasy Option for the Series
+    SeriesOption? selectedOption;
+    try {
+       selectedOption = _options.firstWhere((o) => o.extractionAlgorithm == 3);
+    } catch (_) {
+       // if not found, create one automatically
+       selectedOption = SeriesOption(
+          id: const Uuid().v4(),
+          seriesId: widget.series.id,
+          serverImagePath: 'https://videasy.net/logo.png',
+          resolution: '1080P',
+          videoUrl: 'https://player.videasy.net/$urlSlug/$tmdbId', 
+          language: 'Latino',
+          extractionAlgorithm: 3,
+       );
+       await repo.addSeriesOption(selectedOption);
+    }
+
+    final existingEps = await repo.getEpisodesForSeason(targetSeason.id);
+
+    for (int i = 1; i <= count; i++) {
+        Episode? existing;
+        try {
+           existing = existingEps.firstWhere((e) => e.episodeNumber == i);
+        } catch (_) {}
+
+        final videoUrl = 'https://player.videasy.net/$urlSlug/$tmdbId/$seasonNum/$i';
+        
+        if (existing != null) {
+           final currentUrls = List<EpisodeUrl>.from(existing.urls);
+           if (!currentUrls.any((u) => u.optionId == selectedOption!.id)) {
+              currentUrls.add(EpisodeUrl(url: videoUrl, optionId: selectedOption!.id, quality: selectedOption!.resolution, extractionAlgorithm: 3));
+              await repo.updateEpisode(existing.copyWith(urls: currentUrls));
+           }
+        } else {
+           final newEp = Episode(
+              id: const Uuid().v4(),
+              seasonId: targetSeason.id,
+              episodeNumber: i,
+              name: 'Capítulo $i',
+              url: videoUrl,
+              urls: [EpisodeUrl(url: videoUrl, optionId: selectedOption.id, quality: selectedOption.resolution, extractionAlgorithm: 3)],
+              extractionAlgorithm: 3,
+           );
+           await repo.addEpisode(newEp);
+        }
+    }
+
+    await _loadData();
+    if (mounted) {
+       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Capítulos generados con éxito.'), backgroundColor: Colors.green));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) return const Scaffold(backgroundColor: Colors.black, body: Center(child: CircularProgressIndicator()));
@@ -411,12 +623,17 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: const Color(0xFF0A0A0A),
-        title: const Text('TEMPORADAS Y CAPÍTULOS', style: TextStyle(color: Color(0xFF00A3FF), fontSize: 16, fontWeight: FontWeight.bold)),
+        title: const Text('TEMPORADAS Y CAPÍTULOS', style: TextStyle(color: Color(0xFF00A3FF), fontSize: 14, fontWeight: FontWeight.bold)),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.bolt, color: Colors.amber),
+            onPressed: _generateVideasyEpisodes,
+            tooltip: 'Generar enlaces Videasy',
+          ),
           IconButton(
             icon: const Icon(Icons.auto_awesome, color: Color(0xFFD400FF)),
             onPressed: _startAutoScraping,
-            tooltip: 'Auto-mapear capítulos',
+            tooltip: 'Auto-mapear capítulos (Scraper)',
           ),
           IconButton(
             icon: const Icon(Icons.add, color: Colors.white),

@@ -286,6 +286,35 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
     setState(() => _isScraping = false);
   }
 
+  void _generateSmartLink() async {
+    final id = _tmdbIdController.text.trim();
+    if (id.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Introduce un TMDB ID primero')));
+      return;
+    }
+
+    final newOpt = SeriesOption(
+      id: const Uuid().v4(),
+      seriesId: widget.series!.id,
+      serverImagePath: 'https://videasy.net/logo.png',
+      resolution: '1080P',
+      videoUrl: 'https://player.videasy.net/tv/$id', // Corrected base URL for TV shows
+      language: 'Latino',
+      extractionAlgorithm: 3,
+    );
+    await ref.read(seriesRepositoryProvider).addSeriesOption(newOpt);
+
+    _loadOptions();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Servidor Videasy (Latino, 1080P) añadido.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
   Widget _buildTextField({required TextEditingController controller, required String labelText, int maxLines = 1, TextInputType? keyboardType}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -393,9 +422,25 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
             const SizedBox(height: 16),
             _buildTextField(controller: _descriptionController, labelText: 'Descripción de la Serie', maxLines: 5),
             const SizedBox(height: 32),
-            const Text('OPCIONES DE SERVIDORES Y EXTRACCIÓN', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 2)),
-            const SizedBox(height: 8),
-            if (widget.series == null)
+            Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'SERVIDORES Y EXTRACCIÓN', 
+                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.2),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: _generateSmartLink,
+                    icon: const Icon(Icons.bolt, color: Colors.amber, size: 18),
+                    label: const Text('ENLACE API', style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (widget.series == null)
               const Text('Guarda la serie primero para agregar opciones y mapear temporadas.', style: TextStyle(color: Colors.white38))
             else ...[
               Container(

@@ -66,6 +66,7 @@ dependencies:
   unity_ads_plugin: ^0.3.11
   dart_cast: ^0.4.3
   storage_space: ^1.0.1
+  file_picker: ^11.0.2
 
 dev_dependencies:
   flutter_test:

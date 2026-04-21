@@ -7,8 +7,9 @@ import '../../features/series/domain/entities/season.dart';
 class ScrapedEpisode {
   final String title;
   final String url;
+  final int? index;
 
-  ScrapedEpisode({required this.title, required this.url});
+  ScrapedEpisode({required this.title, required this.url, this.index});
 }
 
 class SeriesScraperDialog extends StatefulWidget {
@@ -26,16 +27,22 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
   List<ScrapedEpisode> _foundEpisodes = [];
   int _targetSeason = 1;
   late TextEditingController _seasonController;
+  late TextEditingController _startFilterController;
+  late TextEditingController _endFilterController;
 
   @override
   void initState() {
     super.initState();
     _seasonController = TextEditingController(text: '1');
+    _startFilterController = TextEditingController();
+    _endFilterController = TextEditingController();
   }
 
   @override
   void dispose() {
     _seasonController.dispose();
+    _startFilterController.dispose();
+    _endFilterController.dispose();
     super.dispose();
   }
 
@@ -72,12 +79,15 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
           }
         });
 
-        // Search for direct <source> tags
+        // Filter junk direct tags
         document.querySelectorAll('source, video').forEach(v => {
           const src = v.src || v.getAttribute('src');
           if (src && videoExtRegex.test(src)) {
-            if (!episodes.find(e => e.url === src)) {
-              episodes.push({title: 'Stream directo detectado', url: src});
+            // Only add direct streams if they look like they belong to an episode (optional, but requested to filter)
+            // If we want to be strict, we check if the URL contains 'capitulo', 'serie', etc.
+            const isLikelyEpisode = src.toLowerCase().includes('cap') || src.toLowerCase().includes('ep');
+            if (isLikelyEpisode && !episodes.find(e => e.url === src)) {
+              episodes.push({title: 'Stream de Episodio', url: src});
             }
           }
         });
@@ -173,14 +183,22 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
                        final result = await _webViewController!.evaluateJavascript(source: _scraperJs);
                        if (result != null && result is List) {
                          setState(() {
-                           _foundEpisodes.clear();
+                           int newlyAdded = 0;
                            for(var item in result) {
                              if (item is Map) {
-                               _foundEpisodes.add(ScrapedEpisode(title: item['title'].toString(), url: item['url'].toString()));
+                               String u = item['url'].toString();
+                               if (!_foundEpisodes.any((e) => e.url == u)) {
+                                 _foundEpisodes.add(ScrapedEpisode(
+                                    title: item['title'].toString(), 
+                                    url: u, 
+                                    index: _foundEpisodes.length + 1
+                                 ));
+                                 newlyAdded++;
+                               }
                              }
                            }
+                           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('+\$newlyAdded episodios nuevos (Total: \${_foundEpisodes.length})')));
                          });
-                         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Se encontraron \${_foundEpisodes.length} episodios!')));
                        }
                      }
                    },
@@ -235,13 +253,27 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
                           bool is4meStream = lcUrl.contains('cf-master') && lcUrl.contains('.txt');
 
                           if (hasVideoExt || is4meStream) {
-                            // Find if already added
+                            // Check if URL looks like an episode or movie, or it's from a known safe domain
+                            // To avoid 'junk' detections requested by user
+                            final fileName = url.split('/').last.toLowerCase();
+                            final isLikelyEpisode = fileName.contains('cap') || 
+                                                    fileName.contains('ep') || 
+                                                    fileName.contains('serie') ||
+                                                    lcUrl.contains('storage') || 
+                                                    lcUrl.contains('video');
+
+                            // If it's a generic detection and doesn't look like an episode, we skip it
+                            if (!isLikelyEpisode && !is4meStream) return;
+
                             if (!_foundEpisodes.any((e) => e.url == url)) {
                               setState(() {
-                                // Extract a name based on the current page title or similar
-                                String title = 'Video detectado (Red)';
+                                String title = 'Video Encontrado';
                                 if (is4meStream) title = 'HLS (4meplayer)';
-                                _foundEpisodes.add(ScrapedEpisode(title: title, url: url));
+                                else if (fileName.contains('cap')) {
+                                   final match = RegExp(r'cap(?:itulo)?\s*(\d+)', caseSensitive: false).firstMatch(fileName);
+                                   if (match != null) title = 'Capítulo ${match.group(1)}';
+                                }
+                                _foundEpisodes.add(ScrapedEpisode(title: title, url: url, index: _foundEpisodes.length + 1));
                               });
                             }
                           }
@@ -291,10 +323,49 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
                     color: const Color(0xFF121212),
                     child: Column(
                       children: [
-                         const Padding(
-                           padding: EdgeInsets.all(8.0),
-                           child: Text('Extraídos', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold)),
+                         Padding(
+                           padding: const EdgeInsets.all(8.0),
+                           child: Text('Extraídos: ${_foundEpisodes.length}', style: const TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold)),
                          ),
+                         if (_foundEpisodes.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(vertical: 4),
+                                      decoration: BoxDecoration(border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.2)))),
+                                      child: TextField(
+                                        controller: _startFilterController,
+                                        keyboardType: TextInputType.number,
+                                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                                        decoration: InputDecoration.collapsed(
+                                          hintText: 'Del ej: 50', 
+                                          hintStyle: const TextStyle(color: Colors.white54, fontSize: 11), 
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(vertical: 4),
+                                      decoration: BoxDecoration(border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.2)))),
+                                      child: TextField(
+                                        controller: _endFilterController,
+                                        keyboardType: TextInputType.number,
+                                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                                        decoration: InputDecoration.collapsed(
+                                          hintText: 'Al ej: 70', 
+                                          hintStyle: const TextStyle(color: Colors.white54, fontSize: 11), 
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                          Expanded(
                            child: ListView.builder(
                              itemCount: _foundEpisodes.length,
@@ -302,7 +373,7 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
                                final ep = _foundEpisodes[index];
                                return ListTile(
                                  visualDensity: VisualDensity.compact,
-                                 title: Text(ep.title, style: const TextStyle(color: Colors.white, fontSize: 12)),
+                                 title: Text('${index + 1}. ${ep.title}', style: const TextStyle(color: Colors.white, fontSize: 12)),
                                  subtitle: Text(ep.url, style: const TextStyle(color: Colors.white38, fontSize: 10), maxLines: 1, overflow: TextOverflow.ellipsis),
                                  trailing: IconButton(
                                    icon: const Icon(Icons.remove_circle, color: Colors.redAccent, size: 16),
@@ -317,10 +388,25 @@ class _SeriesScraperDialogState extends State<SeriesScraperDialog> {
                              padding: const EdgeInsets.all(8.0),
                              child: ElevatedButton(
                                onPressed: () {
-                                 Navigator.pop(context, {'seasonNumber': _targetSeason, 'episodes': _foundEpisodes});
+                                 int total = _foundEpisodes.length;
+                                 int start = int.tryParse(_startFilterController.text.trim()) ?? 1;
+                                 int end = int.tryParse(_endFilterController.text.trim()) ?? total;
+
+                                 if (start < 1) start = 1;
+                                 if (start > total || end > total) {
+                                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: El límite ingresado supera el total ($total).'), backgroundColor: Colors.red));
+                                   return;
+                                 }
+                                 if (start > end) {
+                                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error: Intervalo inválido (Del > Al).'), backgroundColor: Colors.red));
+                                   return;
+                                 }
+                                 
+                                 List<ScrapedEpisode> toSave = _foundEpisodes.sublist(start - 1, end);
+                                 Navigator.pop(context, {'seasonNumber': _targetSeason, 'episodes': toSave});
                                },
                                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A3FF), foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 40)),
-                               child: const Text('GUARDAR ESTOS CAPÍTULOS'),
+                               child: const Text('GUARDAR SELECCIÓN'),
                              ),
                            )
                       ],
