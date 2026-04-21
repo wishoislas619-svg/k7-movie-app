@@ -245,6 +245,9 @@ class CastService extends ChangeNotifier {
     await _session!.loadMedia(media);
 
     if (isDlna) {
+      // Sincronizamos con la ráfaga de castUrl para mayor estabilidad en Smart TVs
+      await Future.delayed(const Duration(milliseconds: 2000));
+      await _session!.play();
       await Future.delayed(const Duration(milliseconds: 1500));
       await _session!.play();
     }
@@ -263,13 +266,32 @@ class CastService extends ChangeNotifier {
 
   dc.CastMediaType _detectMediaType(String url) {
     final u = url.toLowerCase().split('?').first;
-    // Videasy y otros servidores suelen usar .txt o rutas sin extensión para HLS
-    if (u.contains('.m3u8') || u.contains('.m3u') || u.contains('.txt') || u.contains('/stream/') || u.contains('cf-master')) {
+    // Patrones comunes para HLS / M3U8 e IPTV
+    if (u.contains('.m3u8') || 
+        u.contains('.m3u') || 
+        u.contains('.txt') || 
+        u.contains('/stream/') || 
+        u.contains('cf-master') ||
+        u.contains('/live/') ||
+        u.contains('/hls/') ||
+        u.contains('playlist')) {
       return dc.CastMediaType.hls;
     }
     if (u.contains('.mkv'))  return dc.CastMediaType.mkv;
     if (u.contains('.ts'))   return dc.CastMediaType.mpegTs;
     if (u.contains('.mp4'))  return dc.CastMediaType.mp4;
+    if (u.contains('.mov') || u.contains('.avi') || u.contains('.flv') || u.contains('.wmv')) return dc.CastMediaType.mp4; // Fallback a mp4 container
+    
+    // Si no tiene extensión pero parece un stream de puerto (común en IPTV)
+    if (RegExp(r':\d+/\w+').hasMatch(url)) {
+      return dc.CastMediaType.hls; 
+    }
+    
+    // Si la URL contiene "master.m3u8" o "playlist" (común en VOD de pelis)
+    if (u.contains('master') || u.contains('playlist')) {
+      return dc.CastMediaType.hls;
+    }
+
     return dc.CastMediaType.mp4;
   }
 

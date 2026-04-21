@@ -5,6 +5,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
 import '../../../../shared/widgets/marquee_text.dart';
+import '../../../../core/services/ad_service.dart';
+import '../../../cast/presentation/widgets/cast_button.dart';
 
 class TvPlayerPage extends StatefulWidget {
   final List<Map<String, dynamic>> channels;
@@ -22,9 +24,12 @@ class TvPlayerPage extends StatefulWidget {
 
 class _TvPlayerPageState extends State<TvPlayerPage> {
   VideoPlayerController? _controller;
+  final ScrollController _scrollController = ScrollController();
   late int _currentIndex;
   bool _showControls = true;
   bool _isLoading = true;
+  Timer? _adTimer;
+  static const int adIntervalMinutes = 30;
 
   double _volume = 0.5;
   double _brightness = 0.5;
@@ -41,6 +46,53 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
     _initSettings();
     _currentIndex = widget.initialIndex;
     _initializePlayer(widget.channels[_currentIndex]['stream_url']);
+    _startAdTimer();
+    
+    // Initial scroll to current channel
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToCurrentChannel();
+    });
+  }
+
+  void _startAdTimer() {
+    _adTimer?.cancel();
+    _adTimer = Timer.periodic(const Duration(minutes: adIntervalMinutes), (timer) {
+      _triggerPeriodicAd();
+    });
+  }
+
+  void _triggerPeriodicAd() {
+    // Pause player while ad shows
+    _controller?.pause();
+    
+    AdService.showRewardedAd(
+      ticketId: "tv_periodic_reward",
+      onAdWatched: (_) {
+        // Resume playback
+        _controller?.play();
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Gracias por ver el anuncio. Puedes seguir disfrutando de la TV.")));
+      },
+      onAdFailed: (error) {
+        // If ad fails (no coverage), we let them continue but notify
+        _controller?.play();
+      },
+      onAdDismissedIncomplete: () {
+        // User didn't watch - kick out
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Debes ver el anuncio para seguir viendo TV.")));
+      }
+    );
+  }
+
+  void _scrollToCurrentChannel() {
+    if (_scrollController.hasClients) {
+      final double itemWidth = 136.0; // 120 width + 16 margin
+      _scrollController.animateTo(
+        _currentIndex * itemWidth,
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
+      );
+    }
   }
 
   void _initSettings() async {
@@ -52,7 +104,9 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
   Future<void> _initializePlayer(String url) async {
     setState(() => _isLoading = true);
     if (_controller != null) {
-      await _controller!.dispose();
+      final oldController = _controller;
+      _controller = null; 
+      await oldController!.dispose();
     }
     _controller = VideoPlayerController.networkUrl(Uri.parse(url));
     try {
@@ -60,23 +114,49 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
       _controller!.play();
       if (mounted) setState(() => _isLoading = false);
     } catch (e) {
-      debugPrint("Error loading channel: \$e");
+      debugPrint("Error loading channel: $e");
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
   void _changeChannel(int index) {
     if (index == _currentIndex) return;
-    setState(() {
-      _currentIndex = index;
-    });
-    _initializePlayer(widget.channels[index]['stream_url']);
+    
+    // Show rewarded ad when changing channel in-player
+    AdService.showRewardedAd(
+      ticketId: "tv_change_channel",
+      onAdWatched: (_) {
+        setState(() {
+          _currentIndex = index;
+        });
+        _initializePlayer(widget.channels[index]['stream_url']);
+        _scrollToCurrentChannel();
+        // Reset the 30-minute timer when a channel is manually changed with an ad
+        _startAdTimer();
+      },
+      onAdFailed: (error) {
+        // If ad fails to load, we allow the change but notify
+        setState(() {
+          _currentIndex = index;
+        });
+        _initializePlayer(widget.channels[index]['stream_url']);
+        _scrollToCurrentChannel();
+      },
+      onAdDismissedIncomplete: () {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Debes ver el anuncio completo para cambiar de canal."))
+        );
+      }
+    );
   }
 
   void _toggleControls() {
     setState(() {
       _showControls = !_showControls;
     });
+    if (_showControls) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToCurrentChannel());
+    }
   }
 
   void _handleVerticalDrag(DragUpdateDetails details, bool isLeftSide) {
@@ -116,7 +196,9 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
   void dispose() {
     WakelockPlus.disable();
     _labelHideTimer?.cancel();
+    _adTimer?.cancel();
     _controller?.dispose();
+    _scrollController.dispose();
     VolumeController.instance.showSystemUI = true;
     VolumeController.instance.removeListener();
     super.dispose();
@@ -259,6 +341,11 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
+                            CastButton(
+                              videoUrl: widget.channels[_currentIndex]['stream_url'],
+                              title: channelName,
+                              imageUrl: channelLogo,
+                            ),
                           ],
                         ),
                       ),
@@ -276,6 +363,7 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
                           ),
                         ),
                         child: ListView.builder(
+                          controller: _scrollController,
                           scrollDirection: Axis.horizontal,
                           itemCount: widget.channels.length,
                           itemBuilder: (context, index) {

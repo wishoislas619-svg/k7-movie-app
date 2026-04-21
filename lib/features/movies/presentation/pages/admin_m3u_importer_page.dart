@@ -155,6 +155,43 @@ class _AdminM3uImporterPageState extends State<AdminM3uImporterPage> {
      }
   }
 
+  Future<void> _deleteAllChannels() async {
+     setState(() => _isLoading = true);
+     try {
+       await SupabaseService.client.from('tv_channels').delete().neq('name', '___NON_EXISTENT___'); // Delete all rows
+       if (mounted) {
+         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('¡Base de datos de canales limpiada con éxito!')));
+       }
+     } catch (e) {
+       if (mounted) {
+         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al limpiar: $e'), backgroundColor: Colors.redAccent));
+       }
+     } finally {
+       if (mounted) setState(() => _isLoading = false);
+     }
+  }
+
+  void _confirmDeleteAll(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF141414),
+        title: const Text('¿Borrar TODO?', style: TextStyle(color: Colors.white)),
+        content: const Text('Se eliminarán todos los canales de TV VIVO de la base de datos permanentemente.', style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCELAR')),
+          TextButton(
+            onPressed: () {
+               Navigator.pop(context);
+               _deleteAllChannels();
+            }, 
+            child: const Text('BORRAR TODO', style: TextStyle(color: Colors.redAccent))
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -162,6 +199,13 @@ class _AdminM3uImporterPageState extends State<AdminM3uImporterPage> {
       appBar: AppBar(
          title: const Text('IMPORTADOR MASIVO M3U', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
          backgroundColor: const Color(0xFF0A0A0A),
+         actions: [
+            IconButton(
+               icon: const Icon(Icons.delete_forever, color: Colors.redAccent),
+               tooltip: 'Borrar todos los canales',
+               onPressed: () => _confirmDeleteAll(context),
+            )
+         ],
       ),
       body: Column(
          children: [
