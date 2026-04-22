@@ -90,18 +90,19 @@ class MediaProxyService {
     final isAlgo1 = headers['X-Proxy-Algorithm'] == '1' || (url.contains('m3u8') && !url.contains('embed.su') && !url.contains('videasy'));
     final isAlgo2Or3 = headers['X-Proxy-Algorithm'] == '2' || headers['X-Proxy-Algorithm'] == '3' || url.contains('videasy') || url.contains('embed.su');
 
+    // SPOOFING: Usamos un User-Agent de alta reputación (Desktop Chrome) por defecto
+    // Esto evita que servidores como los de James Uncren detecten un móvil y manden redirecciones (ads/tiktok)
+    headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+    headers['Accept'] ??= '*/*';
+    headers['Accept-Language'] ??= 'en-US,en;q=0.9,es;q=0.8';
+    
     if (isAlgo1) {
-      headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
-      print('📱 [PROXY] Aplicando User-Agent móvil (Algo 1)');
+      print('📱 [PROXY] Aplicando cabeceras de compatibilidad Algo 1');
     } else if (isAlgo2Or3) {
-      headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
       headers['Sec-Fetch-Dest'] ??= 'video';
       headers['Sec-Fetch-Mode'] ??= 'cors';
       headers['Sec-Fetch-Site'] ??= 'cross-site';
-      print('💻 [PROXY] Aplicando User-Agent Desktop (Algo 2/3)');
-    } else {
-      // User Agent amigable para SmartTVs por defecto
-      headers['User-Agent'] ??= 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+      print('💻 [PROXY] Aplicando cabeceras extendidas Algo 2/3');
     }
     
     // Limpiar headers internos de control antes de enviar al upstream
@@ -143,6 +144,10 @@ class MediaProxyService {
         final body = await response.stream.bytesToString();
         final rewrittenBody = _rewriteM3u8(body, url, headers, requestHost);
         
+        // Debug: Inspección de las primeras 5 líneas
+        final firstLines = LineSplitter.split(rewrittenBody).take(5).join('\n');
+        print('🔍 [DEBUG] Primeras líneas reescritas:\n$firstLines');
+
         // Importante: Enviar el nuevo Content-Length para que VLC no se pierda
         final bytes = utf8.encode(rewrittenBody);
         request.response.headers.contentLength = bytes.length;
