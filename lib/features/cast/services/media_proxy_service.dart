@@ -115,16 +115,23 @@ class MediaProxyService {
     final isAlgo1 = algoParam == '1' || (algoParam == null && url.contains('m3u8') && !url.contains('embed.su') && !url.contains('videasy'));
     final isAlgo2Or3 = algoParam == '2' || algoParam == '3' || url.contains('videasy') || url.contains('embed.su');
 
-    // 🎭 SUPER SPOOFING: Solo forzamos Dalvik si es Algo 1. Para Algo 2/3 usamos el UA original del player.
-    if (isAlgo1 || (headers['User-Agent'] == null && algoParam == '1')) {
+    // 🎭 SUPER SPOOFING: 
+    // Si es Algo 1, nos hacemos pasar por un celular (Android).
+    if (isAlgo1) {
       headers['User-Agent'] = 'Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)';
+    } 
+    // Si es Algo 2 o 3, nos hacemos pasar por un navegador de escritorio (Chrome)
+    // Esto es vital para VLC/TVs, porque si el servidor ve "VLC" o "Tizen", sirve anuncios de TikTok.
+    else if (isAlgo2Or3) {
+      headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
     }
+    
     headers['Connection'] ??= 'Keep-Alive';
     headers['Accept-Encoding'] ??= 'gzip';
     
     // 🛡️ Filtro de cabeceras para el upstream
     if (url.contains('.m3u8')) {
-      headers.remove('Range'); // El Range en un M3U8 puede ser detectado como bot
+      headers.remove('Range'); 
     } else if (incomingHeaders.containsKey('range')) {
       headers['Range'] = incomingHeaders['range']!;
     }
@@ -135,7 +142,7 @@ class MediaProxyService {
       headers['Sec-Fetch-Dest'] ??= 'video';
       headers['Sec-Fetch-Mode'] ??= 'cors';
       headers['Sec-Fetch-Site'] ??= 'cross-site';
-      print('💻 [PROXY] Aplicando cabeceras extendidas Algo 2/3');
+      print('💻 [PROXY] Aplicando camuflaje Chrome Desktop para Algo 2/3');
     }
     
     headers.remove('X-Proxy-Algorithm');
@@ -159,26 +166,15 @@ class MediaProxyService {
         final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
         final body = response.body;
         
-        // Debug: Diagnóstico de contenido crudo
-        final sample = body.length > 100 ? body.substring(0, 100).replaceAll('\n', ' ') : body;
-        print('🔍 [DEBUG] M3U8 Recibido: $sample');
-
-        final rewrittenBody = _rewriteM3u8(body, url, headers, requestHost);
+        final rewrittenBody = _rewriteM3u8(body, url, headers, requestHost, algorithm: algoParam != null ? int.tryParse(algoParam) : null);
         
-        // Debug: Inspección de integridad
-        final allLines = LineSplitter.split(rewrittenBody).toList();
-        final firstLines = allLines.take(5).join('\n');
-        final lastLines = allLines.length > 5 ? allLines.skip(allLines.length - 5).join('\n') : '';
-        print('🔍 [DEBUG] M3U8 reescrito - Inicio:\n$firstLines');
-        print('🔍 [DEBUG] M3U8 reescrito - Fin:\n$lastLines');
-
         final bytes = utf8.encode(rewrittenBody);
         request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
         request.response.headers.contentLength = bytes.length;
         request.response.headers.set('Access-Control-Allow-Origin', '*');
         request.response.add(bytes);
         await request.response.close();
-        print('♻️ [PROXY] Lista M3U8 reescrita (${bytes.length} bytes)');
+        print('♻️ [PROXY] Lista M3U8 reescrita con algoritmo persistente');
       } else {
         // Streaming directo para segmentos (.ts)
         final client = http.Client();
@@ -208,34 +204,31 @@ class MediaProxyService {
     }
   }
 
-  String _rewriteM3u8(String content, String baseUrl, Map<String, String> originalHeaders, String host) {
+  String _rewriteM3u8(String content, String baseUrl, Map<String, String> originalHeaders, String host, {int? algorithm}) {
     final lines = LineSplitter.split(content);
     final rewrittenLines = <String>[];
     final baseUri = Uri.parse(baseUrl);
 
     for (var line in lines) {
       final trimmedLine = line.trim();
-      if (trimmedLine.isEmpty) {
-        rewrittenLines.add(line);
-        continue;
-      }
+      if (trimmedLine.isEmpty) continue;
 
       if (trimmedLine.startsWith('#')) {
-        // Buscar URIs dentro de tags (ej: #EXT-X-KEY:METHOD=AES-128,URI="...")
-        var newLine = trimmedLine;
-        final uriRegex = RegExp(r'URI="([^"]+)"');
-        final match = uriRegex.firstMatch(trimmedLine);
-        if (match != null) {
-          final internalUrl = match.group(1)!;
-          final absoluteUri = baseUri.resolve(internalUrl);
-          final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host);
-          newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl.trim());
+        String newLine = trimmedLine;
+        if (trimmedLine.startsWith('#EXT-X-KEY:')) {
+           final uriMatch = RegExp(r'URI="([^"]+)"').firstMatch(trimmedLine);
+           if (uriMatch != null) {
+              final internalUrl = uriMatch.group(1)!;
+              final absoluteUri = baseUri.resolve(internalUrl);
+              final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host, algorithm: algorithm);
+              newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl.trim());
+           }
         }
         rewrittenLines.add(newLine);
       } else {
         // Es una URL de segmento o de sub-playlist, la proxiamos usando el host actual
         final absoluteUri = baseUri.resolve(trimmedLine);
-        final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host);
+        final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host, algorithm: algorithm);
         rewrittenLines.add(proxiedUrl.trim());
       }
     }
