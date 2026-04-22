@@ -79,19 +79,26 @@ class MediaProxyService {
 
     print('🚀 [PROXY] Redirigiendo a: $url');
 
-    // Forzar headers de seguridad si es Algoritmo 3
+    // Aplicar cabeceras por defecto solo si no vienen en la petición original
     if (url.contains('videasy') || url.contains('embed.su') || url.contains('mdisk')) {
-       headers['Referer'] = 'https://embed.su/';
-       headers['Origin'] = 'https://embed.su';
+       headers['Referer'] ??= 'https://embed.su/';
+       headers['Origin'] ??= 'https://embed.su';
     }
     
     // SPOOFING: Si es Algoritmo 1, nos hacemos pasar por un celular (Android)
     // Muchos servidores de Algoritmo 1 bloquean si el User-Agent parece una TV o Desktop
-    final isAlgo1 = headers['X-Proxy-Algorithm'] == '1' || url.contains('m3u8') && !url.contains('embed.su');
-    
+    final isAlgo1 = headers['X-Proxy-Algorithm'] == '1' || (url.contains('m3u8') && !url.contains('embed.su') && !url.contains('videasy'));
+    final isAlgo2Or3 = headers['X-Proxy-Algorithm'] == '2' || headers['X-Proxy-Algorithm'] == '3' || url.contains('videasy') || url.contains('embed.su');
+
     if (isAlgo1) {
       headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
       print('📱 [PROXY] Aplicando User-Agent móvil (Algo 1)');
+    } else if (isAlgo2Or3) {
+      headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+      headers['Sec-Fetch-Dest'] ??= 'video';
+      headers['Sec-Fetch-Mode'] ??= 'cors';
+      headers['Sec-Fetch-Site'] ??= 'cross-site';
+      print('💻 [PROXY] Aplicando User-Agent Desktop (Algo 2/3)');
     } else {
       // User Agent amigable para SmartTVs por defecto
       headers['User-Agent'] ??= 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';

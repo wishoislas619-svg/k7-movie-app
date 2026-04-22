@@ -233,18 +233,20 @@ class CastService extends ChangeNotifier {
 
     if (algorithm == 3 || url.contains('embed.su') || url.contains('videasy')) {
       combinedHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
-      combinedHeaders['Referer'] = 'https://embed.su/';
-      combinedHeaders['Origin'] = 'https://embed.su';
+      combinedHeaders['Referer'] = headers?['Referer'] ?? 'https://embed.su/';
+      combinedHeaders['Origin'] = headers?['Origin'] ?? 'https://embed.su';
       combinedHeaders['Sec-Fetch-Dest'] = 'video';
       combinedHeaders['Sec-Fetch-Mode'] = 'cors';
       combinedHeaders['Sec-Fetch-Site'] = 'cross-site';
-      _log('  Headers: Excepción Algoritmo 3 (Embed.su)');
+      _log('  Headers: Aplicada configuración Algoritmo 3 (Embed.su/Videasy)');
     } else if (algorithm == 2) {
       combinedHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+      combinedHeaders['Referer'] = headers?['Referer'] ?? url;
+      combinedHeaders['Origin'] = headers?['Origin'] ?? (Uri.tryParse(url)?.origin ?? '');
       combinedHeaders['Sec-Fetch-Dest'] = 'video';
       combinedHeaders['Sec-Fetch-Mode'] = 'cors';
       combinedHeaders['Sec-Fetch-Site'] = 'cross-site';
-      _log('  Headers: Excepción Algoritmo 2');
+      _log('  Headers: Aplicada configuración Algoritmo 2 (Cuevana/Vidsrc)');
     } else {
       _log('  UA: Android móvil (Estándar)');
     }
@@ -260,7 +262,11 @@ class CastService extends ChangeNotifier {
     // En DLNA, si el video es un archivo estándar (MP4/MKV), la librería no suele proxearlo.
     // Esto hace que la TV pida el enlace directo SIN los headers que necesitamos.
     // Forzamos el uso de nuestro proxy local para inyectar Referer/UA/Origin.
-    if (isDlna && mediaType != dc.CastMediaType.hls) {
+    final bool isAlreadyProxied = url.contains('127.0.0.1') || 
+                                  url.contains('localhost') || 
+                                  RegExp(r'http://(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|127\.)').hasMatch(url);
+    
+    if (isDlna && mediaType != dc.CastMediaType.hls && !isAlreadyProxied) {
       _log('  DLNA: Forzando proxy local para inyectar cabeceras en video estándar');
       try {
         await _localFileProxy.stop();
@@ -382,12 +388,9 @@ class CastService extends ChangeNotifier {
     // 3. Colapsar espacios múltiples
     title = title.replaceAll(RegExp(r'\s+'), ' ').trim();
 
-    // 4. Escapar caracteres especiales XML
-    title = title
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;');
+    // 4. No escapamos XML manualmente aquí, la librería lo hará. 
+    // Escapar dos veces (ej. &amp;amp;) rompe el protocolo en muchas TVs.
+    title = title.replaceAll(RegExp(r'[^\x00-\x7F]+'), ''); // Solo ASCII para máxima compatibilidad
 
     // 5. Límite de longitud (algunos TVs ignoran títulos muy largos)
     if (title.length > 80) title = title.substring(0, 80).trim();
@@ -438,7 +441,11 @@ class CastService extends ChangeNotifier {
       return dc.CastMediaType.hls;
     }
     if (u.contains('.mkv'))  return dc.CastMediaType.mkv;
-    if (u.contains('.ts'))   return dc.CastMediaType.mpegTs;
+    if (u.contains('.ts')) {
+       // Muchas TVs DLNA no soportan el MIME video/mp2t que envía mpegTs.
+       // Engañarlas con mp4 (video/mp4) suele funcionar si el codec es H264.
+       return dc.CastMediaType.mp4;
+    }
     if (u.contains('.mp4'))  return dc.CastMediaType.mp4;
     if (u.contains('.mov') || u.contains('.avi') || u.contains('.flv') || u.contains('.wmv')) return dc.CastMediaType.mp4;
     
