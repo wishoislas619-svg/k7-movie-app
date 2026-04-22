@@ -68,18 +68,28 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
 
   Future<void> _connectAndCast(CastDeviceInfo device) async {
     setState(() => _casting = true);
+    debugPrint('🎬 [SHEET] _connectAndCast() → ${device.name}');
+    debugPrint('🎬 [SHEET]   localFilePath : ${widget.localFilePath}');
+    debugPrint('🎬 [SHEET]   videoUrl      : ${widget.videoUrl}');
+    debugPrint('🎬 [SHEET]   title         : ${widget.title}');
+    debugPrint('🎬 [SHEET]   algorithm     : ${widget.algorithm}');
+    debugPrint('🎬 [SHEET]   headers       : ${widget.headers}');
+    debugPrint('🎬 [SHEET]   startPosition : ${widget.startPosition.inSeconds}s');
 
     // 1. Conectar al dispositivo
     await _castService.connectTo(device);
     if (!_castService.isConnected) {
+      debugPrint('❌ [SHEET] connectTo() falló — isConnected=false. error=${_castService.errorMessage}');
       if (mounted) setState(() => _casting = false);
       return;
     }
+    debugPrint('✅ [SHEET] Conectado a ${device.name}');
 
     // 2. Verificar Anuncio (Solo si no es VIP/Admin)
     final user = Supabase.instance.client.auth.currentUser;
     final role = user?.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
     final isAdminOrVip = role == 'admin' || role == 'uservip';
+    debugPrint('🎬 [SHEET] role=$role isAdminOrVip=$isAdminOrVip');
 
     if (!isAdminOrVip) {
       final ticketId = const Uuid().v4();
@@ -93,6 +103,7 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
       );
 
       final result = await adCompleter.future;
+      debugPrint('🎬 [SHEET] Ad result: $result');
       if (!result) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -107,9 +118,31 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
       }
     }
 
+    // Verificar que la sesión DLNA sigue activa después del anuncio
+    // (el anuncio puede durar >30s y la TV desconecta por idle)
+    if (!_castService.isConnected) {
+      debugPrint('🎬 [SHEET] Sesión perdida durante el anuncio — reconectando...');
+      await _castService.connectTo(device);
+      if (!_castService.isConnected) {
+        debugPrint('❌ [SHEET] Reconexión fallida: ${_castService.errorMessage}');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Se perdió la conexión con la TV. Intenta de nuevo.'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+          setState(() => _casting = false);
+        }
+        return;
+      }
+      debugPrint('✅ [SHEET] Reconexión exitosa');
+    }
+
     // 3. Cargar el contenido en el dispositivo
     try {
       if (widget.localFilePath != null) {
+        debugPrint('🎬 [SHEET] Transmitiendo archivo local...');
         await _castService.castLocalFile(
           filePath: widget.localFilePath!,
           title: widget.title,
@@ -117,6 +150,7 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
           startPosition: widget.startPosition,
         );
       } else {
+        debugPrint('🎬 [SHEET] Transmitiendo URL remota...');
         await _castService.castUrl(
           url: widget.videoUrl,
           title: widget.title,
@@ -127,13 +161,16 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
         );
       }
 
+      debugPrint('✅ [SHEET] Transmisión iniciada correctamente');
       // 4. Cerrar el sheet y disparar el callback UNA SOLA VEZ
       if (mounted && !_castStartedFired) {
         _castStartedFired = true;
         Navigator.pop(context);
         widget.onCastStarted?.call();
       }
-    } catch (e) {
+    } catch (e, stack) {
+      debugPrint('❌ [SHEET] Error al transmitir: $e');
+      debugPrint('❌ [SHEET] Stack: $stack');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -165,12 +202,13 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
           _buildHandle(),
           _buildHeader(),
           const Divider(color: Colors.white12, height: 1),
-          if (_casting)
-            _buildConnecting()
-          else if (_castService.isConnected)
-            _buildConnectedView()
-          else
-            _buildDeviceList(),
+          Flexible(
+            child: _casting
+                ? _buildConnecting()
+                : _castService.isConnected
+                    ? _buildConnectedView()
+                    : _buildDeviceList(),
+          ),
           const SizedBox(height: 24),
         ],
       ),
@@ -276,13 +314,10 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
       );
     }
 
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxHeight: 350),
-      child: ListView.builder(
-        shrinkWrap: true,
-        itemCount: devices.length,
-        itemBuilder: (context, i) => _buildDeviceTile(devices[i]),
-      ),
+    return ListView.builder(
+      shrinkWrap: true,
+      itemCount: devices.length,
+      itemBuilder: (context, i) => _buildDeviceTile(devices[i]),
     );
   }
 

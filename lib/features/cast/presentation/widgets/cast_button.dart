@@ -70,6 +70,13 @@ class _CastButtonState extends State<CastButton> with SingleTickerProviderStateM
       return;
     }
 
+    if (widget.videoUrl.isEmpty && widget.localFilePath == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Espera a que el video comience a reproducirse para transmitir.')),
+      );
+      return;
+    }
+
     // Si no está conectado, muestra la hoja de selección de dispositivos
     showModalBottomSheet(
       context: context,

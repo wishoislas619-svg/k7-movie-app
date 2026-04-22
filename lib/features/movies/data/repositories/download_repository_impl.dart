@@ -973,7 +973,7 @@ class DownloadRepository {
                 _progressInfos.remove(id);
                 
                 String? finalPath;
-                if (!guardadoSeguro && Platform.isAndroid) {
+                if (!AppConstants.secureSave && Platform.isAndroid) {
                     try {
                         print("[PUBLIC DL] Movie completing. Moving to Shared Storage...");
                         final sharedPath = await FileDownloader().moveToSharedStorage(

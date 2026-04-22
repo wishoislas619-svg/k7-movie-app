@@ -77,6 +77,12 @@ class MovieRepositorySupabaseImpl implements MovieRepository {
 
   @override
   Future<void> incrementViews(String id) async {
+    // Si la película es local o descargada no incrementamos vistas porque la BD (Supabase) arrojará error de UUID inválido
+    if (id.startsWith('local_')) {
+      print('--- [VISTAS] Omitiendo incremento para película local/descargada: $id ---');
+      return;
+    }
+
     try {
       print('--- [VISTAS] Incrementando vistas para película: $id ---');
       await _client.rpc('increment_movie_views', params: {'p_id': id});

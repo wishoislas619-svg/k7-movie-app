@@ -1274,6 +1274,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Future<void> _initializeVideoPlayer(String videoUrl) async {
+    _extractedVideoUrl = videoUrl;
     Duration? lastPosition;
     if (_controller != null) {
       if (_controller!.value.position.inSeconds > 2) {
@@ -3629,10 +3630,21 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
     final currentUrl = _extractedVideoUrl ?? _currentOption.videoUrl;
     
+    // Cálculo de Origin base para Algoritmo 2 u otros
+    final initialHost = Uri.tryParse(_currentOption.videoUrl)?.host ?? 'vidsrc.to';
+    final initialOrigin = (Uri.tryParse(_currentOption.videoUrl)?.hasScheme ?? false) 
+        ? Uri.tryParse(_currentOption.videoUrl)!.origin 
+        : 'https://$initialHost';
+
     // Lógica específica para Algoritmo 3 (Embed.su / Videasy)
     if (_effectiveAlgorithm == 3 || currentUrl.contains('videasy') || currentUrl.contains('embed.su')) {
       h['Referer'] = 'https://embed.su/';
       h['Origin'] = 'https://embed.su';
+    } 
+    // Lógica para Algoritmo 2 (Cuevana / Vidsrc)
+    else if (_effectiveAlgorithm == 2) {
+      h['Referer'] = _currentOption.videoUrl;
+      h['Origin'] = initialOrigin;
     }
     
     return h;

@@ -1,9 +1,13 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:dart_cast/dart_cast.dart' as dc;
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'cast_device_info.dart';
-import 'media_proxy_service.dart';
+
+/// Helper para emitir logs de cast visibles en logcat con prefijo [CAST]
+void _log(String msg) => debugPrint('🎬 [CAST] $msg');
+void _logErr(String msg) => debugPrint('❌ [CAST] $msg');
 
 /// Estados posibles de la sesión de transmisión
 enum CastConnectionState {
@@ -26,6 +30,7 @@ class CastService extends ChangeNotifier {
   StreamSubscription? _stateSubscription;
   StreamSubscription? _positionSubscription;
   StreamSubscription? _durationSubscription;
+  final dc.MediaProxy _localFileProxy = dc.MediaProxy();
 
   List<CastDeviceInfo> _devices = [];
   CastConnectionState _state = CastConnectionState.idle;
@@ -38,7 +43,7 @@ class CastService extends ChangeNotifier {
   String? _currentTitle;
   String? _currentImageUrl;
   String? _currentVideoUrl;
-  int? _currentAlgorithm; // Algoritmo activo para el proxy de medios
+  int? _currentAlgorithm;
 
   // ── Public Getters ─────────────────────────────────────────────────────────
   List<CastDeviceInfo> get devices => _devices;
@@ -59,11 +64,10 @@ class CastService extends ChangeNotifier {
   Future<void> startScan() async {
     if (_state == CastConnectionState.scanning) return;
     
-    // 1. Solicitar permisos necesarios para descubrimiento en red local
     if (!kIsWeb) {
       final status = await [
         Permission.location,
-        Permission.nearbyWifiDevices, // Android 13+
+        Permission.nearbyWifiDevices,
       ].request();
       
       if (status[Permission.location]?.isDenied ?? false) {
@@ -78,9 +82,7 @@ class CastService extends ChangeNotifier {
     _state = CastConnectionState.scanning;
     _errorMessage = null;
     notifyListeners();
-
-    // Iniciamos el proxy de medios para cuando se necesite transmitir
-    await MediaProxyService().start();
+    _log('Iniciando escaneo de dispositivos...');
 
     try {
       _rawService?.dispose();
@@ -90,15 +92,21 @@ class CastService extends ChangeNotifier {
       _discoverySubscription = _rawService!.startDiscovery().listen(
         (rawDevices) {
           _devices = rawDevices.map((d) => CastDeviceInfo.fromCastDevice(d)).toList();
+          _log('Dispositivos encontrados: ${_devices.length}');
+          for (final d in _devices) {
+            _log('  • ${d.name} [${d.subtitle}] proto=${d.protocol}');
+          }
           notifyListeners();
         },
         onError: (e) {
+          _logErr('Error durante escaneo: $e');
           _errorMessage = 'Error al escanear: $e';
           _state = CastConnectionState.idle;
           notifyListeners();
         },
       );
     } catch (e) {
+      _logErr('No se pudo iniciar el escaneo: $e');
       _errorMessage = 'No se pudo iniciar el escaneo: $e';
       _state = CastConnectionState.idle;
       notifyListeners();
@@ -121,10 +129,13 @@ class CastService extends ChangeNotifier {
     _state = CastConnectionState.connecting;
     _errorMessage = null;
     notifyListeners();
+    _log('Conectando a: ${device.name} [proto=${device.protocol}]');
 
     try {
       _rawService ??= _buildCastService();
+      _log('Llamando _rawService.connect()...');
       _session = await _rawService!.connect(device.rawDevice);
+      _log('Sesión establecida: ${_session.runtimeType}');
 
       _connectedDevice = device;
       _state = CastConnectionState.connected;
@@ -132,6 +143,7 @@ class CastService extends ChangeNotifier {
       // Monitorear estado de reproducción
       _stateSubscription?.cancel();
       _stateSubscription = _session!.stateStream.listen((s) {
+        _log('Estado de sesión cambió → $s');
         _isPlaying = s == dc.SessionState.playing;
         notifyListeners();
       });
@@ -146,8 +158,11 @@ class CastService extends ChangeNotifier {
         notifyListeners();
       });
 
+      _log('✅ Conectado a ${device.name}');
       notifyListeners();
-    } catch (e) {
+    } catch (e, stack) {
+      _logErr('Fallo al conectar a ${device.name}: $e');
+      _logErr('Stack: $stack');
       _errorMessage = 'No se pudo conectar a ${device.name}: $e';
       _state = CastConnectionState.error;
       notifyListeners();
@@ -155,19 +170,24 @@ class CastService extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    _log('Desconectando...');
     _stateSubscription?.cancel();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     try { 
       await _session?.stop();
       await _session?.disconnect(); 
-    } catch (_) {}
+    } catch (e) {
+      _logErr('Error durante disconnect: $e');
+    }
     _session = null;
+    _localFileProxy.stop();
     _connectedDevice = null;
     _state = CastConnectionState.idle;
     _position = Duration.zero;
     _duration = Duration.zero;
     _isPlaying = false;
+    _log('Desconectado.');
     notifyListeners();
   }
 
@@ -181,72 +201,109 @@ class CastService extends ChangeNotifier {
     Map<String, String>? headers,
     Duration startPosition = Duration.zero,
     String? subtitleUrl,
-    int? algorithm, // Algoritmo de extracción para el proxy (1=m3u8 directo, 3=Videasy/embed.su)
+    int? algorithm,
   }) async {
-    if (_session == null) return;
-    
-    _currentAlgorithm = algorithm; // Guardar para que el proxy sepa qué UA usar
+    if (_session == null) {
+      _logErr('castUrl llamado sin sesión activa');
+      return;
+    }
+
+    _currentAlgorithm = algorithm;
     _currentTitle = title;
     _currentImageUrl = imageUrl;
-    
-    // Si es una URL remota y no es un canal simple, usamos el PROXY para inyectar Referer y saltar CORS
-    // Pasamos el algoritmo al proxy para que aplique el User-Agent correcto
-    final proxyHeaders = {
+    _currentVideoUrl = url;
+
+    _log('══════════════════════════════════════');
+    _log('castUrl() iniciado');
+    _log('  title    : $title');
+    _log('  url      : $url');
+    _log('  algorithm: $algorithm');
+    _log('  startPos : ${startPosition.inSeconds}s');
+    _log('  subtitle : $subtitleUrl');
+
+    // Construir headers con excepciones por algoritmo
+    final Map<String, String> combinedHeaders = {
+      // Por defecto: UA Móvil (Algoritmo 1 / Estándar)
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Language': 'es-ES,es;q=0.9',
+      'Connection': 'keep-alive',
       ...?headers,
-      if (_currentAlgorithm != null) 'X-Proxy-Algorithm': _currentAlgorithm!.toString(),
     };
-    final proxiedUrl = MediaProxyService().getProxiedUrl(url, proxyHeaders);
-    _currentVideoUrl = proxiedUrl;
 
-    print('🔗 [CAST] Original: $url');
-    print('🛡️ [CAST] Proxied: $proxiedUrl');
+    if (algorithm == 3 || url.contains('embed.su') || url.contains('videasy')) {
+      combinedHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+      combinedHeaders['Referer'] = 'https://embed.su/';
+      combinedHeaders['Origin'] = 'https://embed.su';
+      combinedHeaders['Sec-Fetch-Dest'] = 'video';
+      combinedHeaders['Sec-Fetch-Mode'] = 'cors';
+      combinedHeaders['Sec-Fetch-Site'] = 'cross-site';
+      _log('  Headers: Excepción Algoritmo 3 (Embed.su)');
+    } else if (algorithm == 2) {
+      combinedHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+      combinedHeaders['Sec-Fetch-Dest'] = 'video';
+      combinedHeaders['Sec-Fetch-Mode'] = 'cors';
+      combinedHeaders['Sec-Fetch-Site'] = 'cross-site';
+      _log('  Headers: Excepción Algoritmo 2');
+    } else {
+      _log('  UA: Android móvil (Estándar)');
+    }
 
-    // Protocolo de compatibilidad Samsung/SmartTV
     final isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
+    final mediaType = _detectMediaType(url);
+    _log('  isDlna   : $isDlna');
+    _log('  mediaType: $mediaType');
+
+    String finalUrl = url;
     
+    // --- LÓGICA DE PROXY PARA DLNA ---
+    // En DLNA, si el video es un archivo estándar (MP4/MKV), la librería no suele proxearlo.
+    // Esto hace que la TV pida el enlace directo SIN los headers que necesitamos.
+    // Forzamos el uso de nuestro proxy local para inyectar Referer/UA/Origin.
+    if (isDlna && mediaType != dc.CastMediaType.hls) {
+      _log('  DLNA: Forzando proxy local para inyectar cabeceras en video estándar');
+      try {
+        await _localFileProxy.stop();
+        await _localFileProxy.start(targetDeviceIp: _connectedDevice?.address);
+        finalUrl = _localFileProxy.registerMedia(url, headers: combinedHeaders);
+        _log('  URL original proxied a: $finalUrl');
+      } catch (e) {
+        _logErr('  Error al registrar en proxy local: $e');
+      }
+    }
+
     if (isDlna) {
-      // 1. Limpiar cualquier transporte anterior que tenga atascada la TV
-      try { await _session!.stop(); } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 300));
+      _log('  DLNA: enviando Stop previo...');
+      try { await _session!.stop(); } catch (e) { _log('  DLNA Stop ignorado: $e'); }
+      // Pausa un poco más larga para TVs que tardan en liberar el socket
+      await Future.delayed(const Duration(milliseconds: 600));
     }
 
     final media = dc.CastMedia(
-      url: proxiedUrl,
-      type: _detectMediaType(url),
-      title: title,
+      url: finalUrl,
+      type: mediaType,
+      title: _sanitizeTitleForDlna(title),
       imageUrl: imageUrl,
-      httpHeaders: {
-        'User-Agent': 'Samsung-SmartTV/7.0 (SM-G950F)', // Hack: Fingimos ser otra TV o un cliente amigable
-        if (headers != null) ...headers,
-      },
+      httpHeaders: combinedHeaders,
       startPosition: startPosition,
-      subtitles: (subtitleUrl != null && !isDlna) // DLNA (Samsung) suele fallar con subtítulos externos vía XML
+      subtitles: (subtitleUrl != null && !isDlna)
           ? [dc.CastSubtitle(url: subtitleUrl, label: 'Subtítulos', language: 'es', format: 'vtt')]
           : [],
     );
-    
-    await _session!.loadMedia(media);
 
-    if (isDlna) {
-      // 2. Ráfaga de Play (Command Burst) y Sync de transporte
-      // Samsung y LG a veces ignoran el primer Play si el buffer no ha empezado.
-      // Aumentamos los retardos para permitir que el AVTransport cambie de estado.
-      await Future.delayed(const Duration(milliseconds: 2000));
-      await _session!.play();
-      await Future.delayed(const Duration(milliseconds: 1500));
-      await _session!.play();
-      
-      // Forzar un seek a la posición inicial para "despertar" la barra de progreso en Tizen/Orsay
-      if (startPosition > Duration.zero) {
-        await Future.delayed(const Duration(milliseconds: 1000));
-        await _session!.seek(startPosition);
-      }
+    _log('  Llamando session.loadMedia() con URL: $finalUrl');
+    try {
+      await _session!.loadMedia(media);
+      _log('  ✅ loadMedia completado');
+    } catch (e, stack) {
+      _logErr('  loadMedia falló: $e');
+      _logErr('  Stack: $stack');
+      rethrow;
     }
-    
+    _log('══════════════════════════════════════');
     notifyListeners();
   }
 
-  /// Transmite un archivo local descargado
   Future<void> castLocalFile({
     required String filePath,
     required String title,
@@ -254,15 +311,28 @@ class CastService extends ChangeNotifier {
     Duration startPosition = Duration.zero,
   }) async {
     if (_session == null) throw StateError('No hay sesión activa');
-    
-    _currentTitle = title;
+
+    final cleanTitle = _sanitizeTitleForDlna(title);
+    _currentTitle = cleanTitle;
     _currentImageUrl = imageUrl;
     _currentVideoUrl = filePath;
 
-    final isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
-    if (isDlna) {
-      try { await _session!.stop(); } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 300));
+    _log('══════════════════════════════════════');
+    _log('castLocalFile() iniciado');
+    _log('  title original : $title');
+    _log('  title DLNA     : $cleanTitle');
+    _log('  path    : $filePath');
+    _log('  startPos: ${startPosition.inSeconds}s');
+
+    // Verificar que el archivo existe antes de intentar transmitirlo
+    final file = File(filePath);
+    final exists = await file.exists();
+    _log('  exists  : $exists');
+    if (exists) {
+      final size = await file.length();
+      _log('  size    : ${(size / 1024 / 1024).toStringAsFixed(2)} MB');
+    } else {
+      _logErr('  ⚠️ El archivo NO existe en: $filePath');
     }
 
     final ext = filePath.toLowerCase().split('.').last;
@@ -271,62 +341,84 @@ class CastService extends ChangeNotifier {
       'ts'  => dc.CastMediaType.mpegTs,
       _     => dc.CastMediaType.mp4,
     };
+    _log('  ext     : .$ext → mediaType=$mediaType');
 
-    final media = dc.CastMedia.file(
-      filePath: filePath,
-      type: mediaType,
+    // Iniciar el servidor local de archivos (Proxy directo)
+    // Detenemos cualquier instancia previa para liberar el puerto
+    await _localFileProxy.stop();
+    await _localFileProxy.start(targetDeviceIp: _connectedDevice?.address);
+    
+    // Registrar el archivo para obtener una URL http:// accesible para la TV
+    // Esto sirve el archivo crudo vía HTTP/1.0 sin transformaciones HLS
+    final proxyUrl = _localFileProxy.registerFile(filePath);
+    _log('  Archivo local registrado en: $proxyUrl');
+
+    // Transmitir usando la lógica estándar de castUrl (UA móvil, stop previo, etc.)
+    return castUrl(
+      url: proxyUrl,
       title: title,
       imageUrl: imageUrl,
       startPosition: startPosition,
     );
-    
-    await _session!.loadMedia(media);
+  }
 
-    if (isDlna) {
-      // Sincronizamos con la ráfaga de castUrl para mayor estabilidad en Smart TVs
-      await Future.delayed(const Duration(milliseconds: 2000));
-      await _session!.play();
-      await Future.delayed(const Duration(milliseconds: 1500));
-      await _session!.play();
-    }
+  /// Limpia el título para incluirlo de forma segura en XML SOAP DLNA.
+  /// Samsung TV rechaza peticiones con títulos que contienen extensiones
+  /// de archivo, indicadores de formato (HLS/TS) o caracteres no ASCII
+  /// sin escapar en el DIDL-Lite.
+  String _sanitizeTitleForDlna(String title) {
+    // 1. Quitar extensión de archivo
+    final lastDot = title.lastIndexOf('.');
+    if (lastDot > 0) title = title.substring(0, lastDot);
 
-    notifyListeners();
+    // 2. Quitar artefactos de descarga HLS
+    title = title
+        .replaceAll(RegExp(r'\(Streaming \(HLS\)\)', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\(HLS\)', caseSensitive: false), '')
+        .replaceAll(RegExp(r'Resolución\s+Auto', caseSensitive: false), '')
+        .replaceAll(RegExp(r'_+'), ' ')  // guiones bajos → espacios
+        .trim();
+
+    // 3. Colapsar espacios múltiples
+    title = title.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+    // 4. Escapar caracteres especiales XML
+    title = title
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+
+    // 5. Límite de longitud (algunos TVs ignoran títulos muy largos)
+    if (title.length > 80) title = title.substring(0, 80).trim();
+
+    return title.isEmpty ? 'Video' : title;
   }
 
   // ── Playback Controls ──────────────────────────────────────────────────────
   
-  // Mejora para Samsung/DLNA: Los controles a veces necesitan "despertar" al dispositivo
   Future<void> play() async {
     if (_session == null) return;
+    _log('play()');
     await _session!.play();
-    if (_connectedDevice?.protocol == dc.CastProtocol.dlna) {
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _session!.play(); // Segunda ráfaga para asegurar en Samsung/LG
-    }
   }
 
   Future<void> pause() async {
     if (_session == null) return;
+    _log('pause()');
     await _session!.pause();
-    if (_connectedDevice?.protocol == dc.CastProtocol.dlna) {
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _session!.pause();
-    }
   }
 
   Future<void> stop() async {
     if (_session == null) return;
+    _log('stop()');
     await _session!.stop();
   }
 
   Future<void> seekTo(Duration position) async {
     if (_session == null) return;
+    _log('seekTo(${position.inSeconds}s)');
     await _session!.seek(position);
-    if (_connectedDevice?.protocol == dc.CastProtocol.dlna) {
-      // Forzar un play después del seek en DLNA porque algunas TVs se quedan en PAUSE tras el seek
-      await Future.delayed(const Duration(milliseconds: 1000));
-      await _session!.play();
-    }
   }
 
   Future<void> setVolume(double volume) => _session?.setVolume(volume) ?? Future.value();
@@ -335,7 +427,6 @@ class CastService extends ChangeNotifier {
 
   dc.CastMediaType _detectMediaType(String url) {
     final u = url.toLowerCase().split('?').first;
-    // Patrones comunes para HLS / M3U8 e IPTV
     if (u.contains('.m3u8') || 
         u.contains('.m3u') || 
         u.contains('.txt') || 
@@ -349,14 +440,11 @@ class CastService extends ChangeNotifier {
     if (u.contains('.mkv'))  return dc.CastMediaType.mkv;
     if (u.contains('.ts'))   return dc.CastMediaType.mpegTs;
     if (u.contains('.mp4'))  return dc.CastMediaType.mp4;
-    if (u.contains('.mov') || u.contains('.avi') || u.contains('.flv') || u.contains('.wmv')) return dc.CastMediaType.mp4; // Fallback a mp4 container
+    if (u.contains('.mov') || u.contains('.avi') || u.contains('.flv') || u.contains('.wmv')) return dc.CastMediaType.mp4;
     
-    // Si no tiene extensión pero parece un stream de puerto (común en IPTV)
     if (RegExp(r':\d+/\w+').hasMatch(url)) {
       return dc.CastMediaType.hls; 
     }
-    
-    // Si la URL contiene "master.m3u8" o "playlist" (común en VOD de pelis)
     if (u.contains('master') || u.contains('playlist')) {
       return dc.CastMediaType.hls;
     }
@@ -365,6 +453,7 @@ class CastService extends ChangeNotifier {
   }
 
   dc.CastService _buildCastService() {
+    _log('Construyendo CastService con providers: DLNA, Chromecast, AirPlay');
     return dc.CastService(
       discoveryProviders: [
         dc.DlnaDiscoveryProvider(),
@@ -372,17 +461,22 @@ class CastService extends ChangeNotifier {
         dc.AirPlayDiscoveryProvider(),
       ],
       sessionFactory: (device) {
+        _log('sessionFactory llamado para: ${device.name} [proto=${device.protocol}]');
         switch (device.protocol) {
           case dc.CastProtocol.chromecast:
+            _log('  → ChromecastSession');
             return dc.ChromecastSession(device: device);
           case dc.CastProtocol.airplay:
+            _log('  → AirPlaySession');
             return dc.AirPlaySession(device);
           case dc.CastProtocol.dlna:
             try {
-              return dc.DlnaSession.fromDevice(device);
+              _log('  → DlnaSession.fromDevice()');
+              final session = dc.DlnaSession.fromDevice(device);
+              _log('  → DlnaSession creado OK');
+              return session;
             } catch (e) {
-              // Si falla fromDevice, creamos uno mock para que la factory no se rompa (no debería pasar si viene del scanner)
-              // Pero preferimos lanzar excepción para que lo ataje el try/catch de connectTo()
+              _logErr('  DlnaSession.fromDevice() falló: $e');
               throw Exception('El dispositivo DLNA no tiene metadatos AVTransportControlUrl: $e');
             }
         }
@@ -397,6 +491,7 @@ class CastService extends ChangeNotifier {
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     try { _session?.disconnect(); } catch (_) {}
+    _localFileProxy.stop();
     _rawService?.dispose();
     super.dispose();
   }
