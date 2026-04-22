@@ -110,6 +110,13 @@ class MediaProxyService {
        headers['Referer'] ??= 'https://embed.su/';
        headers['Origin'] ??= 'https://embed.su';
     }
+
+    // Los segmentos de TikTok CDN requieren el Referer del player original
+    if (url.contains('tiktokcdn.com') || url.contains('muscdn.com') || url.contains('bytecdn')) {
+      headers['Referer'] = 'https://player.videasy.net/';
+      headers['Origin'] = 'https://player.videasy.net';
+      print('🔑 [PROXY] TikTok CDN detectado - aplicando Referer de Videasy');
+    }
     
     // SPOOFING: Prioridad al parámetro 'a' de la URL
     final isAlgo1 = algoParam == '1' || (algoParam == null && url.contains('m3u8') && !url.contains('embed.su') && !url.contains('videasy'));
