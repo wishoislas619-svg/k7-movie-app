@@ -40,13 +40,10 @@ class MediaProxyService {
         }
       }
 
-      print('🎬 [PROXY] Servidor iniciado en http://$_localIp:$_port');
-      print('🎬 [PROXY] También escuchando en http://127.0.0.1:$_port');
-      print('🚀 [ADB_TIP] Para usar VLC en Mac por USB, ejecuta: adb forward tcp:$_port tcp:$_port');
-      print('🚀 [ADB_TIP] Y usa la URL: http://127.0.0.1:$_port/proxy?url=...');
+      print('🎬 [PROXY] Listo — Red: http://$_localIp:$_port  |  Local: http://127.0.0.1:$_port');
+      print('💡 [ADB] Para VLC en Mac: adb forward tcp:$_port tcp:$_port → usa http://127.0.0.1:$_port/proxy?...');
 
       _server!.listen((HttpRequest request) async {
-        print('📥 [PROXY_IN] Petición detectada: ${request.method} ${request.uri.path}');
         try {
           if (request.uri.path == '/proxy') {
             await _handleProxyRequest(request);
@@ -74,7 +71,7 @@ class MediaProxyService {
     final encodedHeaders = request.uri.queryParameters['h'] ?? request.uri.queryParameters['headers'];
     final algoParam = request.uri.queryParameters['a'];
 
-    print('🔍 [PROXY_REQ] url_param: ${encodedUrl?.substring(0, encodedUrl.length > 30 ? 30 : encodedUrl.length)}... (Algo: $algoParam)');
+
 
     if (encodedUrl == null) {
       print('❌ [PROXY] Error: Falta el parámetro "url" en la petición.');
@@ -98,12 +95,8 @@ class MediaProxyService {
       headers = Map<String, String>.from(json.decode(decoded));
     }
 
-    // Log de diagnóstico: ¿Qué nos está pidiendo el reproductor?
     final incomingHeaders = <String, String>{};
     request.headers.forEach((key, value) => incomingHeaders[key] = value.join(', '));
-    print('📥 [PROXY_REQ] Cabeceras entrantes: $incomingHeaders');
-
-    print('🚀 [PROXY] Redirigiendo a: $url');
 
     // Aplicar cabeceras por defecto solo si no vienen en la petición original
     if (url.contains('videasy') || url.contains('embed.su') || url.contains('mdisk') || algoParam == '3') {
@@ -115,7 +108,7 @@ class MediaProxyService {
     if (url.contains('tiktokcdn.com') || url.contains('muscdn.com') || url.contains('bytecdn')) {
       headers['Referer'] = 'https://player.videasy.net/';
       headers['Origin'] = 'https://player.videasy.net';
-      print('🔑 [PROXY] TikTok CDN detectado - aplicando Referer de Videasy');
+
     }
     
     // SPOOFING: Prioridad al parámetro 'a' de la URL
@@ -143,13 +136,10 @@ class MediaProxyService {
       headers['Range'] = incomingHeaders['range']!;
     }
 
-    if (isAlgo1) {
-      print('📱 [PROXY] Usando perfil Dalvik/Android para Algo 1');
-    } else if (isAlgo2Or3) {
+    if (isAlgo2Or3) {
       headers['Sec-Fetch-Dest'] ??= 'video';
       headers['Sec-Fetch-Mode'] ??= 'cors';
       headers['Sec-Fetch-Site'] ??= 'cross-site';
-      print('💻 [PROXY] Aplicando camuflaje Chrome Desktop para Algo 2/3');
     }
     
     headers.remove('X-Proxy-Algorithm');
@@ -168,8 +158,7 @@ class MediaProxyService {
           return;
         }
 
-        print('📥 [PROXY] Upstream respondió: 200 (${response.headers['content-type']})');
-        
+
         final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
         final body = response.body;
         
@@ -181,7 +170,7 @@ class MediaProxyService {
         request.response.headers.set('Access-Control-Allow-Origin', '*');
         request.response.add(bytes);
         await request.response.close();
-        print('♻️ [PROXY] Lista M3U8 reescrita con algoritmo persistente');
+        print('♻️ [PROXY] M3U8 reescrita — ${bytes.length} bytes → $requestHost');
       } else {
         // Streaming directo para segmentos (.ts/.image/etc.)
         final client = http.Client();
@@ -190,8 +179,6 @@ class MediaProxyService {
           ..followRedirects = true;
 
         final response = await client.send(proxyRequest);
-        final segType = url.split('/').last.split('?').first;
-        print('📦 [SEG] $segType → HTTP ${response.statusCode} | Content-Type: ${response.headers['content-type']} | Content-Length: ${response.headers['content-length']}');
 
         if (response.statusCode != 200 && response.statusCode != 206) {
           print('❌ [SEG] Error del CDN: ${response.statusCode} para ${url.split('?').first}');
@@ -217,7 +204,6 @@ class MediaProxyService {
         final upstreamContentType = response.headers['content-type'] ?? '';
         if (upstreamContentType.contains('image') || url.contains('tiktokcdn') || url.contains('.image')) {
           request.response.headers.contentType = ContentType.parse('video/MP2T');
-          print('🎭 [SEG] Content-Type corregido: image → video/MP2T');
         } else {
           request.response.headers.set('content-type', upstreamContentType);
         }
