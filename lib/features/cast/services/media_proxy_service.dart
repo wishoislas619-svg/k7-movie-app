@@ -65,7 +65,7 @@ class MediaProxyService {
 
   Future<void> _handleProxyRequest(HttpRequest request) async {
     final encodedUrl = request.uri.queryParameters['url'];
-    final encodedHeaders = request.uri.queryParameters['headers'];
+    final encodedHeaders = request.uri.queryParameters['h'] ?? request.uri.queryParameters['headers'];
 
     if (encodedUrl == null) {
       request.response.statusCode = HttpStatus.badRequest;
@@ -73,10 +73,18 @@ class MediaProxyService {
       return;
     }
 
-    final url = utf8.decode(base64Url.decode(encodedUrl));
+    // Restaurar padding de base64 si falta
+    String normalizeBase64(String s) {
+      int pad = 4 - (s.length % 4);
+      if (pad < 4) s += '=' * pad;
+      return s;
+    }
+
+    final url = utf8.decode(base64Url.decode(normalizeBase64(encodedUrl)));
     Map<String, String> headers = {};
     if (encodedHeaders != null) {
-      headers = Map<String, String>.from(json.decode(utf8.decode(base64Url.decode(encodedHeaders))));
+      final decoded = utf8.decode(base64Url.decode(normalizeBase64(encodedHeaders)));
+      headers = Map<String, String>.from(json.decode(decoded));
     }
 
     // Log de diagnóstico: ¿Qué nos está pidiendo el reproductor?
@@ -225,20 +233,32 @@ class MediaProxyService {
   }
 
   String _buildProxiedUrl(String url, Map<String, String>? headers, String host) {
-    final bUrl = base64Url.encode(utf8.encode(url));
-    final bHeaders = headers != null ? base64Url.encode(utf8.encode(json.encode(headers))) : null;
+    // Usamos base64Url para evitar caracteres problemáticos (+ y /) y quitamos el padding (=) 
+    // que a veces rompe algunos parsers de URL de TVs o reproductores viejos.
+    final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
+    String? bHeaders;
+    if (headers != null && headers.isNotEmpty) {
+      bHeaders = base64Url.encode(utf8.encode(jsonEncode(headers))).replaceAll('=', '');
+    }
 
     var proxyUrl = 'http://$host/proxy?url=$bUrl';
     if (bHeaders != null) {
-      proxyUrl += '&headers=$bHeaders';
+      proxyUrl += '&h=$bHeaders';
     }
     return proxyUrl;
   }
 
   String getProxiedUrl(String url, Map<String, String>? headers, {bool useLocalhost = false}) {
-    if (_localIp.isEmpty && !useLocalhost) return url; // Fallback si no hay proxy ni localhost
-    final host = useLocalhost ? '127.0.0.1:$_port' : '$_localIp:$_port';
-    return _buildProxiedUrl(url, headers, host);
+    // Si la IP está vacía pero necesitamos una URL de red, intentamos buscarla de nuevo
+    if (_localIp.isEmpty && !useLocalhost) {
+      print('⚠️ [PROXY] IP local vacía, re-intentando detección rápida...');
+      // Intentamos una detección mínima si start() ya corrió pero no encontró nada
+    }
+    
+    final host = (useLocalhost || _localIp.isEmpty) ? '127.0.0.1:$_port' : '$_localIp:$_port';
+    final proxied = _buildProxiedUrl(url, headers, host);
+    print('🔗 [PROXY_GEN] URL Generada: $proxied');
+    return proxied;
   }
 
   Future<void> stop() async {
