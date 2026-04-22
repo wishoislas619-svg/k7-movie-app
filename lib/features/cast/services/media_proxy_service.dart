@@ -97,9 +97,10 @@ class MediaProxyService {
     final isAlgo1 = headers['X-Proxy-Algorithm'] == '1' || (url.contains('m3u8') && !url.contains('embed.su') && !url.contains('videasy'));
     final isAlgo2Or3 = headers['X-Proxy-Algorithm'] == '2' || headers['X-Proxy-Algorithm'] == '3' || url.contains('videasy') || url.contains('embed.su');
 
-    // 🎭 SUPER SPOOFING: Nos hacemos pasar por el reproductor nativo de Android (Dalvik/ExoPlayer)
-    // Esto es lo que el worker espera ver para soltar el video real y no publicidad.
-    headers['User-Agent'] = 'Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)';
+    // 🎭 SUPER SPOOFING: Solo forzamos Dalvik si es Algo 1. Para Algo 2/3 usamos el UA original del player.
+    if (isAlgo1 || headers['User-Agent'] == null) {
+      headers['User-Agent'] = 'Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)';
+    }
     headers['Connection'] ??= 'Keep-Alive';
     headers['Accept-Encoding'] ??= 'gzip';
     
@@ -198,15 +199,6 @@ class MediaProxyService {
       final trimmedLine = line.trim();
       if (trimmedLine.isEmpty) {
         rewrittenLines.add(line);
-        continue;
-      }
-
-      // 🛡️ FILTRO DE PUBLICIDAD: Si la línea parece un anuncio de TikTok, la saltamos
-      if (trimmedLine.contains('tiktok') || trimmedLine.contains('.image')) {
-        // Si la línea anterior era un #EXTINF, tenemos que quitarla también
-        if (rewrittenLines.isNotEmpty && rewrittenLines.last.startsWith('#EXTINF')) {
-          rewrittenLines.removeLast();
-        }
         continue;
       }
 

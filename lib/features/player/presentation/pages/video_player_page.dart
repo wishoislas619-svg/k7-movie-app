@@ -1281,12 +1281,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     
     // Si el modo proxy está activo, envolvemos la URL en nuestro proxy local
     if (_useProxy && !videoUrl.startsWith('http://127.0.0.1') && !videoUrl.startsWith('http://localhost') && !widget.isLocal) {
+      await MediaProxyService().start();
       final headers = _getHeadersForCast();
+      
+      // La URL para el reproductor INTERNO usa localhost (127.0.0.1)
       effectiveUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: true);
-      print("🛡️ [PROXY_MODE] Usando URL proxiada para el player y cast: $effectiveUrl");
+      
+      // La URL para CAST/VLC usa la IP de la red (172.16.x.x)
+      _extractedVideoUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: false);
+      
+      print("🛡️ [PROXY_MODE] Player URL (Local): $effectiveUrl");
+      print("🛡️ [PROXY_MODE] Cast URL (Network): $_extractedVideoUrl");
+    } else {
+      _extractedVideoUrl = effectiveUrl;
     }
-
-    _extractedVideoUrl = effectiveUrl;
     Duration? lastPosition;
     if (_controller != null) {
       if (_controller!.value.position.inSeconds > 2) {
