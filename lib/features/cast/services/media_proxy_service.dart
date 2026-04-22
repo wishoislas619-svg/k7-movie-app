@@ -101,8 +101,10 @@ class MediaProxyService {
     headers['Connection'] ??= 'Keep-Alive';
     headers['Accept-Encoding'] ??= 'gzip';
     
-    // Pasar cabeceras importantes del reproductor original (ej: VLC) al servidor de video
-    if (incomingHeaders.containsKey('range')) {
+    // 🛡️ Filtro de cabeceras para el upstream
+    if (url.contains('.m3u8')) {
+      headers.remove('Range'); // El Range en un M3U8 puede ser detectado como bot
+    } else if (incomingHeaders.containsKey('range')) {
       headers['Range'] = incomingHeaders['range']!;
     }
 
@@ -119,62 +121,63 @@ class MediaProxyService {
     headers.remove('X-Proxy-Algorithm');
 
     try {
-      final client = http.Client();
-      final proxyRequest = http.Request('GET', Uri.parse(url))
-        ..headers.addAll(headers)
-        ..followRedirects = true;
-
-      final response = await client.send(proxyRequest);
-
-      final statusCode = response.statusCode;
-      final contentType = response.headers['content-type']?.toLowerCase() ?? '';
-      final isM3u8 = contentType.contains('mpegurl') || url.toLowerCase().contains('.m3u8');
-
-      print('📥 [PROXY] Upstream respondió: $statusCode ($contentType)');
-
-      // Copiar headers de respuesta (importante para Content-Type y Rangos)
-      request.response.statusCode = statusCode;
-      response.headers.forEach((key, value) {
-        final k = key.toLowerCase();
-        // Omitimos headers que cambian al reescribir o que maneja el servidor automáticamente
-        if (k != 'transfer-encoding' && k != 'content-encoding') {
-          if (isM3u8 && k == 'content-length') return; 
-          request.response.headers.set(key, value);
-        }
-      });
-
-      // Habilitar CORS para el dispositivo receptor
-      request.response.headers.set('Access-Control-Allow-Origin', '*');
-      request.response.headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
-      request.response.headers.set('Access-Control-Allow-Headers', '*');
-
       if (isM3u8) {
-        // 📝 REESCRITURA DE M3U8: Leemos la lista y proxiamos cada enlace interno
+        // Usamos http.get para listas M3U8 para que maneje GZIP automáticamente
+        final response = await http.get(Uri.parse(url), headers: headers);
+        
+        if (response.statusCode != 200) {
+          print('❌ [PROXY] Error Upstream: ${response.statusCode}');
+          request.response.statusCode = response.statusCode;
+          await request.response.close();
+          return;
+        }
+
+        print('📥 [PROXY] Upstream respondió: 200 (${response.headers['content-type']})');
+        
         final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
-        final body = await response.stream.bytesToString();
+        final body = response.body;
+        
+        // Debug: Diagnóstico de contenido crudo
+        final sample = body.length > 100 ? body.substring(0, 100).replaceAll('\n', ' ') : body;
+        print('🔍 [DEBUG] M3U8 Recibido: $sample');
+
         final rewrittenBody = _rewriteM3u8(body, url, headers, requestHost);
         
-        // Debug: Inspección de integridad (inicio y fin)
+        // Debug: Inspección de integridad
         final allLines = LineSplitter.split(rewrittenBody).toList();
         final firstLines = allLines.take(5).join('\n');
         final lastLines = allLines.length > 5 ? allLines.skip(allLines.length - 5).join('\n') : '';
         print('🔍 [DEBUG] M3U8 reescrito - Inicio:\n$firstLines');
         print('🔍 [DEBUG] M3U8 reescrito - Fin:\n$lastLines');
 
-        // Importante: Enviar el nuevo Content-Length y MIME Type correcto
         final bytes = utf8.encode(rewrittenBody);
         request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
         request.response.headers.contentLength = bytes.length;
+        request.response.headers.set('Access-Control-Allow-Origin', '*');
         request.response.add(bytes);
         await request.response.close();
-        print('♻️ [PROXY] Lista M3U8 reescrita (${bytes.length} bytes) para host: $requestHost');
+        print('♻️ [PROXY] Lista M3U8 reescrita (${bytes.length} bytes)');
       } else {
-        // Streaming directo para segmentos (.ts) o archivos MP4
-        if (response.contentLength != null && response.contentLength! > 0) {
-           request.response.headers.contentLength = response.contentLength!;
-        }
+        // Streaming directo para segmentos (.ts)
+        final client = http.Client();
+        final proxyRequest = http.Request('GET', Uri.parse(url))
+          ..headers.addAll(headers)
+          ..followRedirects = true;
+
+        final response = await client.send(proxyRequest);
+        
+        request.response.statusCode = response.statusCode;
+        response.headers.forEach((key, value) {
+          final k = key.toLowerCase();
+          if (k != 'transfer-encoding' && k != 'content-encoding') {
+            request.response.headers.set(key, value);
+          }
+        });
+        request.response.headers.set('Access-Control-Allow-Origin', '*');
+        
         await request.response.addStream(response.stream);
         await request.response.close();
+        client.close();
       }
     } catch (e) {
       print('❌ [PROXY] Error en upstream: $e');
