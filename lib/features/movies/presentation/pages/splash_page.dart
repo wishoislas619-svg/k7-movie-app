@@ -35,12 +35,10 @@ class _SplashPageState extends State<SplashPage> {
             _progress = 1.0;
             timer.cancel();
             
-            // Check for updates before finishing
-            UpdateService.checkVersion(context).then((_) {
-              if (mounted) {
-                Future.delayed(const Duration(milliseconds: 800), widget.onFinished);
-              }
-            });
+            // Finish splash and navigate to main flow
+            if (mounted) {
+              Future.delayed(const Duration(milliseconds: 800), widget.onFinished);
+            }
           }
         });
       }

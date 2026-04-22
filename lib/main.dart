@@ -11,6 +11,7 @@ import 'features/auth/presentation/providers/auth_provider.dart';
 import 'features/auth/presentation/pages/admin_dashboard.dart';
 import 'features/movies/presentation/pages/movie_grid_page.dart';
 import 'features/movies/presentation/pages/splash_page.dart';
+import 'core/services/update_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/foreground_service.dart';
@@ -117,8 +118,19 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
     // Auto-login: intenta restaurar la sesión del usuario anterior al abrir la app
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await ref.read(authStateProvider.notifier).checkStatus();
-      if (mounted) setState(() => _initialized = true);
+      if (mounted) {
+        setState(() => _initialized = true);
+        // Verificar actualizaciones en GitHub de forma asíncrona
+        _checkUpdates();
+      }
     });
+  }
+
+  Future<void> _checkUpdates() async {
+    final info = await UpdateService.checkForUpdates();
+    if (info != null && info.hasUpdate && mounted) {
+      UpdateService.showUpdateDialog(context, info);
+    }
   }
 
   @override
