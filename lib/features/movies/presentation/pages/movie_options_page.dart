@@ -4,6 +4,7 @@ import 'package:movie_app/providers.dart';
 import 'package:movie_app/features/movies/domain/entities/movie.dart';
 import 'package:movie_app/features/player/data/datasources/video_service.dart';
 import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
+import 'package:movie_app/features/auth/presentation/providers/auth_provider.dart';
 import 'package:movie_app/features/movies/presentation/providers/movie_provider.dart';
 import 'package:movie_app/features/movies/data/repositories/download_repository_impl.dart';
 import 'package:movie_app/features/movies/domain/entities/download_task.dart';
@@ -79,11 +80,11 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
   }
 
   void _handleDownload(VideoOption option) async {
-    // 1. Check Ad Requirement
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user == null) return;
+    // 1. Check Ad Requirement using updated Riverpod state
+    final appUser = ref.read(authStateProvider);
+    if (appUser == null) return;
 
-    final role = user.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
+    final role = appUser.role.toLowerCase();
     final isAdminOrVip = role == 'admin' || role == 'uservip';
 
     if (!isAdminOrVip) {
@@ -96,7 +97,7 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
         final ticketId = const Uuid().v4();
         await Supabase.instance.client.from('ad_tickets').insert({
           'id': ticketId,
-          'user_id': user.id,
+          'user_id': appUser.id,
           'media_type': 'movie',
           'media_id': widget.movie.id,
         });

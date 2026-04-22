@@ -4,12 +4,14 @@ import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 import '../../../../core/services/ad_service.dart';
+import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../../cast/presentation/widgets/cast_button.dart';
 import '../../../cast/services/media_proxy_service.dart';
 
-class TvPlayerPage extends StatefulWidget {
+class TvPlayerPage extends ConsumerStatefulWidget {
   final List<Map<String, dynamic>> channels;
   final int initialIndex;
 
@@ -20,10 +22,10 @@ class TvPlayerPage extends StatefulWidget {
   });
 
   @override
-  State<TvPlayerPage> createState() => _TvPlayerPageState();
+  ConsumerState<TvPlayerPage> createState() => _TvPlayerPageState();
 }
 
-class _TvPlayerPageState extends State<TvPlayerPage> {
+class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
   VideoPlayerController? _controller;
   final ScrollController _scrollController = ScrollController();
   late int _currentIndex;
@@ -56,6 +58,11 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
   }
 
   void _startAdTimer() {
+    // Si es VIP o Admin, no activamos el temporizador de anuncios periódicos
+    final user = ref.read(authStateProvider);
+    final role = user?.role.toLowerCase() ?? 'user';
+    if (role == 'admin' || role == 'uservip') return;
+
     _adTimer?.cancel();
     _adTimer = Timer.periodic(const Duration(minutes: adIntervalMinutes), (timer) {
       _triggerPeriodicAd();
@@ -131,7 +138,20 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
   void _changeChannel(int index) {
     if (index == _currentIndex) return;
     
-    // Show rewarded ad when changing channel in-player
+    final user = ref.read(authStateProvider);
+    final role = user?.role.toLowerCase() ?? 'user';
+
+    // Si es VIP o Admin, cambiamos de canal de inmediato
+    if (role == 'admin' || role == 'uservip') {
+      setState(() {
+        _currentIndex = index;
+      });
+      _initializePlayer(widget.channels[index]['stream_url']);
+      _scrollToCurrentChannel();
+      return;
+    }
+
+    // Show rewarded ad when changing channel in-player for regular users
     AdService.showRewardedAd(
       ticketId: "tv_change_channel",
       onAdWatched: (_) {

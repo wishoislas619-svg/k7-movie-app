@@ -5,10 +5,13 @@ import '../../services/cast_device_info.dart';
 import 'package:movie_app/core/services/ad_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../shared/widgets/marquee_text.dart';
+import '../../../auth/presentation/providers/auth_provider.dart';
 import '../pages/cast_remote_page.dart';
 
 /// Bottom sheet que muestra los dispositivos disponibles en la red y permite conectarse.
-class CastDeviceListSheet extends StatefulWidget {
+class CastDeviceListSheet extends ConsumerStatefulWidget {
   final String videoUrl;
   final String? localFilePath;
   final String title;
@@ -32,10 +35,10 @@ class CastDeviceListSheet extends StatefulWidget {
   });
 
   @override
-  State<CastDeviceListSheet> createState() => _CastDeviceListSheetState();
+  ConsumerState<CastDeviceListSheet> createState() => _CastDeviceListSheetState();
 }
 
-class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
+class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
   final _castService = CastService();
   Timer? _scanTimer;
   bool _casting = false;
@@ -85,9 +88,9 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
     }
     debugPrint('✅ [SHEET] Conectado a ${device.name}');
 
-    // 2. Verificar Anuncio (Solo si no es VIP/Admin)
-    final user = Supabase.instance.client.auth.currentUser;
-    final role = user?.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
+    // 2. Verificar Anuncio (Solo si no es VIP/Admin) usando estado de Riverpod
+    final appUser = ref.read(authStateProvider);
+    final role = appUser?.role.toLowerCase() ?? 'user';
     final isAdminOrVip = role == 'admin' || role == 'uservip';
     debugPrint('🎬 [SHEET] role=$role isAdminOrVip=$isAdminOrVip');
 
