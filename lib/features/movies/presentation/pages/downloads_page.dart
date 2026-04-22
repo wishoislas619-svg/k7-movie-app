@@ -11,7 +11,7 @@ import 'package:movie_app/features/movies/domain/entities/movie.dart';
 import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
-import 'package:movie_app/core/services/storage_service.dart';
+import 'package:movie_app/core/constants/app_constants.dart';
 import 'package:path_provider/path_provider.dart';
 
 String _formatSize(int bytes) {
@@ -515,9 +515,8 @@ class _LocalFilesViewState extends State<_LocalFilesView> {
         fractionDigits: 1,
       );
 
-      final isSecure = await StorageService.isSecureSaveEnabled();
       Directory dir;
-      if (isSecure) {
+      if (AppConstants.secureSave) {
         final appDocDir = await getApplicationDocumentsDirectory();
         dir = Directory('${appDocDir.path}/downloads');
       } else {

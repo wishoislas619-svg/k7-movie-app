@@ -17,6 +17,7 @@ import 'package:movie_app/core/services/notification_service.dart';
 import 'package:movie_app/core/services/foreground_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:movie_app/core/services/storage_service.dart';
+import 'package:movie_app/core/constants/app_constants.dart';
 
 class DownloadRepository {
   final SqliteService _sqliteService;
@@ -519,8 +520,7 @@ class DownloadRepository {
     final finalPath = convertedPath ?? outputPath;
 
     String pPath = finalPath;
-    final isSecure = await StorageService.isSecureSaveEnabled();
-    if (!isSecure && Platform.isAndroid) {
+    if (!AppConstants.secureSave && Platform.isAndroid) {
         try {
             print("[PUBLIC DL] Copiando HLS/MP4 convertido a carpeta pública K7-MOVIE...");
             final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
@@ -709,8 +709,7 @@ class DownloadRepository {
         }
       }
 
-      final isSecure = await StorageService.isSecureSaveEnabled();
-      if (Platform.isAndroid && !isSecure) {
+      if (Platform.isAndroid && !AppConstants.secureSave) {
          final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
          if (await pubDir.exists()) {
            final pubCandidates = [

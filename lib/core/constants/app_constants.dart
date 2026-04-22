@@ -10,4 +10,7 @@ class AppConstants {
   static const String roleUser     = 'user';
   static const String roleUserVip  = 'uservip';
   static const String roleSecurity = 'security';
+
+  // Configuración de almacenamiento (Decidido por el programador)
+  static const bool secureSave = false;
 }

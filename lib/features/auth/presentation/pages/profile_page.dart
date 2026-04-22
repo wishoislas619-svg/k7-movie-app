@@ -197,39 +197,6 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                       isOutline: true,
                     ),
 
-                    const SizedBox(height: 35),
-                    
-                    _buildSectionHeader('AJUSTES'),
-                    const SizedBox(height: 10),
-                    FutureBuilder<bool>(
-                      future: StorageService.isSecureSaveEnabled(),
-                      builder: (context, snapshot) {
-                        final isSecure = snapshot.data ?? false;
-                        return SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('Guardado Seguro', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
-                          subtitle: const Text('Descarga en la carpeta interna de la app para mayor privacidad.', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                          secondary: Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(color: const Color(0xFF00A3FF).withOpacity(0.1), shape: BoxShape.circle),
-                            child: const Icon(Icons.security, color: Color(0xFF00A3FF), size: 20),
-                          ),
-                          activeColor: const Color(0xFF00A3FF),
-                          value: isSecure,
-                          onChanged: (val) async {
-                            await StorageService.setSecureSaveEnabled(val);
-                            setState(() {}); // Refresh to show new state
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(val ? 'Guardado seguro activado' : 'Guardado seguro desactivado'),
-                                duration: const Duration(seconds: 2),
-                              ),
-                            );
-                          },
-                        );
-                      },
-                    ),
-                    
                     const SizedBox(height: 40),
                     
                     if (_isEditing)
