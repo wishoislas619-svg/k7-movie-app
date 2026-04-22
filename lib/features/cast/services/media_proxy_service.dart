@@ -41,8 +41,10 @@ class MediaProxyService {
       }
 
       print('🎬 [PROXY] Servidor iniciado en http://$_localIp:$_port');
+      print('🎬 [PROXY] También escuchando en http://127.0.0.1:$_port');
 
       _server!.listen((HttpRequest request) async {
+        print('📥 [PROXY_IN] Petición detectada: ${request.method} ${request.uri.path}');
         try {
           if (request.uri.path == '/proxy') {
             await _handleProxyRequest(request);
@@ -241,9 +243,10 @@ class MediaProxyService {
     return proxyUrl;
   }
 
-  String getProxiedUrl(String url, Map<String, String>? headers) {
-    if (_localIp.isEmpty) return url; // Fallback si no hay proxy
-    return _buildProxiedUrl(url, headers, '$_localIp:$_port');
+  String getProxiedUrl(String url, Map<String, String>? headers, {bool useLocalhost = false}) {
+    if (_localIp.isEmpty && !useLocalhost) return url; // Fallback si no hay proxy ni localhost
+    final host = useLocalhost ? '127.0.0.1:$_port' : '$_localIp:$_port';
+    return _buildProxiedUrl(url, headers, host);
   }
 
   Future<void> stop() async {
