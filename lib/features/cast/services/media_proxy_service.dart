@@ -133,8 +133,8 @@ class MediaProxyService {
 
       if (isM3u8) {
         // 📝 REESCRITURA DE M3U8: Leemos la lista y proxiamos cada enlace interno
-        // Usamos el host de la petición actual (ej: localhost o la IP real) para que los enlaces internos coincidan
-        final requestHost = request.headers.host ?? '$_localIp:$_port';
+        // Usamos el host de la petición actual (ej: localhost:PUERTO o la IP:PUERTO real) para que los enlaces internos coincidan
+        final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
         final body = await response.stream.bytesToString();
         final rewrittenBody = _rewriteM3u8(body, url, headers, requestHost);
         request.response.write(rewrittenBody);
