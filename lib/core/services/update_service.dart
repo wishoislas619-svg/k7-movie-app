@@ -19,8 +19,8 @@ class UpdateInfo {
 }
 
 class UpdateService {
-  static const String _owner = 'wishoislas619-svg';
-  static const String _repo = 'k7-movie-app';
+  static const String _owner = 'blueyes55523-ai';
+  static const String _repo = 'apk-releases';
   static const String _apiUrl = 'https://api.github.com/repos/$_owner/$_repo/releases/latest';
 
   static Future<UpdateInfo?> checkForUpdates() async {
@@ -87,6 +87,20 @@ class UpdateService {
               const SizedBox(height: 5),
               Text(info.releaseNotes, style: const TextStyle(color: Colors.white38, fontSize: 12)),
             ],
+            const SizedBox(height: 15),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), borderRadius: BorderRadius.circular(10)),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Guía de descarga:', style: TextStyle(color: Color(0xFF00A3FF), fontSize: 12, fontWeight: FontWeight.bold)),
+                  SizedBox(height: 5),
+                  Text('• app-arm64-v8a: Dispositivos modernos/premium.', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                  Text('• app-armeabi-v7a: TV Boxes y dispositivos antiguos.', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                ],
+              ),
+            ),
           ],
         ),
         actions: [
