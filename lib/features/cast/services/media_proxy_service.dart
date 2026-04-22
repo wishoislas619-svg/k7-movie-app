@@ -207,10 +207,21 @@ class MediaProxyService {
         request.response.statusCode = response.statusCode;
         response.headers.forEach((key, value) {
           final k = key.toLowerCase();
-          if (k != 'transfer-encoding' && k != 'content-encoding') {
+          if (k != 'transfer-encoding' && k != 'content-encoding' && k != 'content-type') {
             request.response.headers.set(key, value);
           }
         });
+
+        // TikTok CDN disfraza los segmentos de video como 'image/png' para evitar hotlinking.
+        // Forzamos el Content-Type correcto para que VLC y otros reproductores los procesen como video.
+        final upstreamContentType = response.headers['content-type'] ?? '';
+        if (upstreamContentType.contains('image') || url.contains('tiktokcdn') || url.contains('.image')) {
+          request.response.headers.contentType = ContentType.parse('video/MP2T');
+          print('🎭 [SEG] Content-Type corregido: image → video/MP2T');
+        } else {
+          request.response.headers.set('content-type', upstreamContentType);
+        }
+
         request.response.headers.set('Access-Control-Allow-Origin', '*');
         
         await request.response.addStream(response.stream);
