@@ -115,18 +115,19 @@ class MediaProxyService {
 
       final response = await client.send(proxyRequest);
 
-      // Copiar headers de respuesta (importante para Content-Type y Rangos)
-      request.response.statusCode = response.statusCode;
+      final statusCode = response.statusCode;
       final contentType = response.headers['content-type']?.toLowerCase() ?? '';
       final isM3u8 = contentType.contains('mpegurl') || url.toLowerCase().contains('.m3u8');
 
+      print('📥 [PROXY] Upstream respondió: $statusCode ($contentType)');
+
       // Copiar headers de respuesta (importante para Content-Type y Rangos)
-      request.response.statusCode = response.statusCode;
+      request.response.statusCode = statusCode;
       response.headers.forEach((key, value) {
         final k = key.toLowerCase();
         // Omitimos headers que cambian al reescribir o que maneja el servidor automáticamente
         if (k != 'transfer-encoding' && k != 'content-encoding') {
-          if (isM3u8 && k == 'content-length') return; // El tamaño cambiará al reescribir
+          if (isM3u8 && k == 'content-length') return; 
           request.response.headers.set(key, value);
         }
       });
@@ -138,15 +139,21 @@ class MediaProxyService {
 
       if (isM3u8) {
         // 📝 REESCRITURA DE M3U8: Leemos la lista y proxiamos cada enlace interno
-        // Usamos el host de la petición actual (ej: localhost:PUERTO o la IP:PUERTO real) para que los enlaces internos coincidan
         final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
         final body = await response.stream.bytesToString();
         final rewrittenBody = _rewriteM3u8(body, url, headers, requestHost);
-        request.response.write(rewrittenBody);
+        
+        // Importante: Enviar el nuevo Content-Length para que VLC no se pierda
+        final bytes = utf8.encode(rewrittenBody);
+        request.response.headers.contentLength = bytes.length;
+        request.response.add(bytes);
         await request.response.close();
-        print('♻️ [PROXY] Lista M3U8 reescrita usando host: $requestHost');
+        print('♻️ [PROXY] Lista M3U8 reescrita (${bytes.length} bytes) para host: $requestHost');
       } else {
         // Streaming directo para segmentos (.ts) o archivos MP4
+        if (response.contentLength != null && response.contentLength! > 0) {
+           request.response.headers.contentLength = response.contentLength!;
+        }
         await request.response.addStream(response.stream);
         await request.response.close();
       }
