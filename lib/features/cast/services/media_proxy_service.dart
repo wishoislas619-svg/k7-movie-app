@@ -183,13 +183,26 @@ class MediaProxyService {
         await request.response.close();
         print('♻️ [PROXY] Lista M3U8 reescrita con algoritmo persistente');
       } else {
-        // Streaming directo para segmentos (.ts)
+        // Streaming directo para segmentos (.ts/.image/etc.)
         final client = http.Client();
         final proxyRequest = http.Request('GET', Uri.parse(url))
           ..headers.addAll(headers)
           ..followRedirects = true;
 
         final response = await client.send(proxyRequest);
+        final segType = url.split('/').last.split('?').first;
+        print('📦 [SEG] $segType → HTTP ${response.statusCode} | Content-Type: ${response.headers['content-type']} | Content-Length: ${response.headers['content-length']}');
+
+        if (response.statusCode != 200 && response.statusCode != 206) {
+          print('❌ [SEG] Error del CDN: ${response.statusCode} para ${url.split('?').first}');
+          final errBytes = await response.stream.toBytes();
+          final errPreview = errBytes.length > 200 ? errBytes.sublist(0, 200) : errBytes;
+          print('❌ [SEG] Body: ${String.fromCharCodes(errPreview)}');
+          request.response.statusCode = response.statusCode;
+          await request.response.close();
+          client.close();
+          return;
+        }
         
         request.response.statusCode = response.statusCode;
         response.headers.forEach((key, value) {
