@@ -42,12 +42,18 @@ class MediaProxyService {
 
       print('🎬 [PROXY] Servidor iniciado en http://$_localIp:$_port');
       print('🎬 [PROXY] También escuchando en http://127.0.0.1:$_port');
+      print('🚀 [ADB_TIP] Para usar VLC en Mac por USB, ejecuta: adb forward tcp:$_port tcp:$_port');
+      print('🚀 [ADB_TIP] Y usa la URL: http://127.0.0.1:$_port/proxy?url=...');
 
       _server!.listen((HttpRequest request) async {
         print('📥 [PROXY_IN] Petición detectada: ${request.method} ${request.uri.path}');
         try {
           if (request.uri.path == '/proxy') {
             await _handleProxyRequest(request);
+          } else if (request.uri.path == '/ping') {
+            request.response.statusCode = HttpStatus.ok;
+            request.response.write('📡 [PROXY] Proxy is ALIVE and reachable at ${_localIp.isEmpty ? "localhost" : _localIp}:$_port');
+            await request.response.close();
           } else {
             request.response.statusCode = HttpStatus.notFound;
             await request.response.close();
@@ -67,8 +73,12 @@ class MediaProxyService {
     final encodedUrl = request.uri.queryParameters['url'];
     final encodedHeaders = request.uri.queryParameters['h'] ?? request.uri.queryParameters['headers'];
 
+    print('🔍 [PROXY_REQ] url_param: ${encodedUrl?.substring(0, encodedUrl.length > 30 ? 30 : encodedUrl.length)}...');
+
     if (encodedUrl == null) {
+      print('❌ [PROXY] Error: Falta el parámetro "url" en la petición.');
       request.response.statusCode = HttpStatus.badRequest;
+      request.response.write('Error: Missing url parameter');
       await request.response.close();
       return;
     }
