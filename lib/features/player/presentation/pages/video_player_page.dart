@@ -182,7 +182,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   Duration? _pendingResumeDuration;
   bool _hasFoundPremiumServer = false;
   bool _isAlgo3Extracting = false; // Pantalla de carga dedicada para Algoritmo 3
-  bool _useProxy = false; // Modo proxy para burlar bloqueos
+  bool _useProxy = true; // Modo proxy activado por defecto
 
   @override
   void initState() {
