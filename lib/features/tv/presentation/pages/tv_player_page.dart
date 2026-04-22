@@ -7,6 +7,7 @@ import 'package:volume_controller/volume_controller.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 import '../../../../core/services/ad_service.dart';
 import '../../../cast/presentation/widgets/cast_button.dart';
+import '../../../cast/services/media_proxy_service.dart';
 
 class TvPlayerPage extends StatefulWidget {
   final List<Map<String, dynamic>> channels;
@@ -103,12 +104,20 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
 
   Future<void> _initializePlayer(String url) async {
     setState(() => _isLoading = true);
+    
+    String effectiveUrl = url;
+    await MediaProxyService().start();
+    
+    // Proxiamos la URL para el reproductor interno
+    effectiveUrl = MediaProxyService().getProxiedUrl(url, {}, useLocalhost: true);
+    
     if (_controller != null) {
       final oldController = _controller;
       _controller = null; 
       await oldController!.dispose();
     }
-    _controller = VideoPlayerController.networkUrl(Uri.parse(url));
+    
+    _controller = VideoPlayerController.networkUrl(Uri.parse(effectiveUrl));
     try {
       await _controller!.initialize();
       _controller!.play();
@@ -342,7 +351,11 @@ class _TvPlayerPageState extends State<TvPlayerPage> {
                               ),
                             ),
                             CastButton(
-                              videoUrl: widget.channels[_currentIndex]['stream_url'],
+                              videoUrl: MediaProxyService().getProxiedUrl(
+                                widget.channels[_currentIndex]['stream_url'], 
+                                {}, 
+                                useLocalhost: false
+                              ),
                               title: channelName,
                               imageUrl: channelLogo,
                             ),

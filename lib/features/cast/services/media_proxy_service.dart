@@ -142,6 +142,17 @@ class MediaProxyService {
     } else if (incomingHeaders.containsKey('range')) {
       headers['Range'] = incomingHeaders['range']!;
     }
+    final method = request.method;
+
+    // Manejo de peticiones OPTIONS (CORS)
+    if (method == 'OPTIONS') {
+      request.response.statusCode = HttpStatus.ok;
+      request.response.headers.set('Access-Control-Allow-Origin', '*');
+      request.response.headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      request.response.headers.set('Access-Control-Allow-Headers', '*');
+      await request.response.close();
+      return;
+    }
     
     // 📁 Soporte para archivos locales (Descargas) con soporte de Range y detección de M3U8
     if (!url.startsWith('http')) {
@@ -150,6 +161,17 @@ class MediaProxyService {
       if (await file.exists()) {
         final length = await file.length();
         
+        // Si es HEAD, solo enviamos cabeceras
+        if (method == 'HEAD') {
+          request.response.statusCode = HttpStatus.ok;
+          request.response.headers.contentLength = length;
+          request.response.headers.contentType = ContentType.parse('video/mp4');
+          request.response.headers.set('Accept-Ranges', 'bytes');
+          request.response.headers.set('Access-Control-Allow-Origin', '*');
+          await request.response.close();
+          return;
+        }
+
         // Verificamos si es un M3U8 local (HLS descargado)
         bool isLocalM3u8 = false;
         if (length < 1024 * 50) { // Solo si es pequeño (las listas M3U8 lo son)
@@ -257,7 +279,7 @@ class MediaProxyService {
       } else {
         // STREAMING DIRECTO PARA SEGMENTOS (BINARIOS) - No tocamos los bytes
         final client = http.Client();
-        final proxyRequest = http.Request('GET', Uri.parse(url))
+        final proxyRequest = http.Request(method, Uri.parse(url)) // Usamos el método original (GET o HEAD)
           ..headers.addAll(headers)
           ..followRedirects = true;
 
