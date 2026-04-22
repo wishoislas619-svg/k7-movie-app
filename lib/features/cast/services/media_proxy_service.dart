@@ -90,14 +90,14 @@ class MediaProxyService {
     final isAlgo1 = headers['X-Proxy-Algorithm'] == '1' || (url.contains('m3u8') && !url.contains('embed.su') && !url.contains('videasy'));
     final isAlgo2Or3 = headers['X-Proxy-Algorithm'] == '2' || headers['X-Proxy-Algorithm'] == '3' || url.contains('videasy') || url.contains('embed.su');
 
-    // SPOOFING: Usamos un User-Agent de alta reputación (Desktop Chrome) por defecto
-    // Esto evita que servidores como los de James Uncren detecten un móvil y manden redirecciones (ads/tiktok)
-    headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+    // SPOOFING: Usamos un User-Agent de celular por defecto para que el worker no sospeche
+    // El worker de James Uncren parece preferir clientes móviles para soltar el video real
+    headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36';
     headers['Accept'] ??= '*/*';
-    headers['Accept-Language'] ??= 'en-US,en;q=0.9,es;q=0.8';
+    headers['Accept-Language'] ??= 'es-ES,es;q=0.9,en;q=0.8';
     
     if (isAlgo1) {
-      print('📱 [PROXY] Aplicando cabeceras de compatibilidad Algo 1');
+      print('📱 [PROXY] Usando perfil móvil para compatibilidad Algo 1');
     } else if (isAlgo2Or3) {
       headers['Sec-Fetch-Dest'] ??= 'video';
       headers['Sec-Fetch-Mode'] ??= 'cors';
@@ -203,7 +203,7 @@ class MediaProxyService {
         rewrittenLines.add(proxiedUrl.trim());
       }
     }
-    return rewrittenLines.join('\n');
+    return '${rewrittenLines.join('\n')}\n';
   }
 
   String _buildProxiedUrl(String url, Map<String, String>? headers, String host) {
