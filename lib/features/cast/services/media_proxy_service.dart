@@ -133,11 +133,13 @@ class MediaProxyService {
 
       if (isM3u8) {
         // 📝 REESCRITURA DE M3U8: Leemos la lista y proxiamos cada enlace interno
+        // Usamos el host de la petición actual (ej: localhost o la IP real) para que los enlaces internos coincidan
+        final requestHost = request.headers.host ?? '$_localIp:$_port';
         final body = await response.stream.bytesToString();
-        final rewrittenBody = _rewriteM3u8(body, url, headers);
+        final rewrittenBody = _rewriteM3u8(body, url, headers, requestHost);
         request.response.write(rewrittenBody);
         await request.response.close();
-        print('♻️ [PROXY] Lista M3U8 reescrita para forzar túnel en segmentos');
+        print('♻️ [PROXY] Lista M3U8 reescrita usando host: $requestHost');
       } else {
         // Streaming directo para segmentos (.ts) o archivos MP4
         await request.response.addStream(response.stream);
@@ -150,7 +152,7 @@ class MediaProxyService {
     }
   }
 
-  String _rewriteM3u8(String content, String baseUrl, Map<String, String> originalHeaders) {
+  String _rewriteM3u8(String content, String baseUrl, Map<String, String> originalHeaders, String host) {
     final lines = LineSplitter.split(content);
     final rewrittenLines = <String>[];
     final baseUri = Uri.parse(baseUrl);
@@ -169,31 +171,34 @@ class MediaProxyService {
         if (match != null) {
           final internalUrl = match.group(1)!;
           final absoluteUri = baseUri.resolve(internalUrl);
-          final proxiedUrl = getProxiedUrl(absoluteUri.toString(), originalHeaders);
+          final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host);
           newLine = line.replaceFirst(internalUrl, proxiedUrl);
         }
         rewrittenLines.add(newLine);
       } else {
-        // Es una URL de segmento o de sub-playlist, la proxiamos
+        // Es una URL de segmento o de sub-playlist, la proxiamos usando el host actual
         final absoluteUri = baseUri.resolve(line);
-        final proxiedUrl = getProxiedUrl(absoluteUri.toString(), originalHeaders);
+        final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host);
         rewrittenLines.add(proxiedUrl);
       }
     }
     return rewrittenLines.join('\n');
   }
 
-  String getProxiedUrl(String url, Map<String, String>? headers) {
-    if (_localIp.isEmpty) return url; // Fallback si no hay proxy
-
+  String _buildProxiedUrl(String url, Map<String, String>? headers, String host) {
     final bUrl = base64Url.encode(utf8.encode(url));
     final bHeaders = headers != null ? base64Url.encode(utf8.encode(json.encode(headers))) : null;
 
-    var proxyUrl = 'http://$_localIp:$_port/proxy?url=$bUrl';
+    var proxyUrl = 'http://$host/proxy?url=$bUrl';
     if (bHeaders != null) {
       proxyUrl += '&headers=$bHeaders';
     }
     return proxyUrl;
+  }
+
+  String getProxiedUrl(String url, Map<String, String>? headers) {
+    if (_localIp.isEmpty) return url; // Fallback si no hay proxy
+    return _buildProxiedUrl(url, headers, '$_localIp:$_port');
   }
 
   Future<void> stop() async {
