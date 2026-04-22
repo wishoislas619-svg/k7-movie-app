@@ -507,6 +507,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Future<void> _saveProgress() async {
+    if (!mounted) return; // 🛡️ Evitar usar ref si el widget ya se destruyó
     if (_controller == null || !_controller!.value.isInitialized) return;
     
     final position = _controller!.value.position.inMilliseconds;
