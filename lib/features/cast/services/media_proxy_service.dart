@@ -46,7 +46,7 @@ class MediaProxyService {
       _server!.listen((HttpRequest request) async {
         print('🌐 [INCOMING] ${request.method} ${request.uri.toString()}');
         try {
-          if (request.uri.path == '/proxy') {
+          if (request.uri.path.startsWith('/proxy')) {
             await _handleProxyRequest(request);
           } else if (request.uri.path == '/ping') {
             request.response.statusCode = HttpStatus.ok;
@@ -143,17 +143,49 @@ class MediaProxyService {
       headers['Range'] = incomingHeaders['range']!;
     }
     
-    // 📁 Soporte para archivos locales (Descargas) con soporte de Range
+    // 📁 Soporte para archivos locales (Descargas) con soporte de Range y detección de M3U8
     if (!url.startsWith('http')) {
       final cleanPath = url.replaceFirst('file://', '');
       final file = File(cleanPath);
       if (await file.exists()) {
         final length = await file.length();
-        final rangeHeader = request.headers.value('range');
         
+        // Verificamos si es un M3U8 local (HLS descargado)
+        bool isLocalM3u8 = false;
+        if (length < 1024 * 50) { // Solo si es pequeño (las listas M3U8 lo son)
+          try {
+            final firstLines = await file.openRead(0, 500).transform(utf8.decoder).first;
+            if (firstLines.contains('#EXTM3U')) isLocalM3u8 = true;
+          } catch (_) {}
+        }
+
+        if (isLocalM3u8) {
+          print('📥 [LOCAL] M3U8 detectado: $cleanPath');
+          final body = await file.readAsString();
+          final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
+          final rewrittenBody = _rewriteM3u8(body, cleanPath, {}, requestHost, algorithm: algoParam != null ? int.tryParse(algoParam) : null);
+          
+          final bytes = utf8.encode(rewrittenBody);
+          request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
+          request.response.headers.set('Access-Control-Allow-Origin', '*');
+          request.response.add(bytes);
+          await request.response.close();
+          return;
+        }
+
+        final rangeHeader = request.headers.value('range');
         request.response.headers.set('Accept-Ranges', 'bytes');
         request.response.headers.set('Access-Control-Allow-Origin', '*');
-        request.response.headers.contentType = ContentType.parse('video/mp4');
+        
+        // Content-Type dinámico para descargas
+        final lowerPath = cleanPath.toLowerCase();
+        if (lowerPath.contains('(hls)') || lowerPath.contains('.ts')) {
+          request.response.headers.contentType = ContentType.parse('video/MP2T');
+        } else if (lowerPath.endsWith('.mp4')) {
+          request.response.headers.contentType = ContentType.parse('video/mp4');
+        } else {
+          request.response.headers.contentType = ContentType.parse('video/MP2T');
+        }
 
         if (rangeHeader != null && rangeHeader.startsWith('bytes=')) {
           final parts = rangeHeader.substring(6).split('-');
@@ -163,11 +195,9 @@ class MediaProxyService {
               : length - 1;
           
           print('📂 [LOCAL] Rango: $start-$end / $length | $cleanPath');
-          
           request.response.statusCode = HttpStatus.partialContent;
           request.response.headers.set('Content-Range', 'bytes $start-$end/$length');
           request.response.headers.contentLength = (end - start) + 1;
-          
           await request.response.addStream(file.openRead(start, end + 1));
         } else {
           print('📂 [LOCAL] Completo: $length bytes | $cleanPath');
@@ -311,7 +341,13 @@ class MediaProxyService {
       bHeaders = base64Url.encode(utf8.encode(jsonEncode(headers))).replaceAll('=', '');
     }
 
-    var proxyUrl = 'http://$host/proxy?url=$bUrl';
+    // Añadimos una extensión virtual al final de la ruta para que VLC/TVs identifiquen el tipo
+    String extension = '.mp4';
+    if (url.toLowerCase().contains('.m3u8') || url.toLowerCase().contains('.txt') || url.toLowerCase().contains('master')) {
+      extension = '.m3u8';
+    }
+
+    var proxyUrl = 'http://$host/proxy$extension?url=$bUrl';
     if (bHeaders != null) {
       proxyUrl += '&h=$bHeaders';
     }
