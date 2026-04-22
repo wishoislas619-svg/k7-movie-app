@@ -246,7 +246,7 @@ class MediaProxyService {
 
       if (trimmedLine.startsWith('#')) {
         String newLine = trimmedLine;
-        if (trimmedLine.startsWith('#EXT-X-KEY:')) {
+        if (trimmedLine.startsWith('#EXT-X-KEY:') || trimmedLine.startsWith('#EXT-X-MAP:')) {
            final uriMatch = RegExp(r'URI="([^"]+)"').firstMatch(trimmedLine);
            if (uriMatch != null) {
               final internalUrl = uriMatch.group(1)!;
