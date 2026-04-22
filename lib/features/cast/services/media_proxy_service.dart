@@ -117,8 +117,9 @@ class MediaProxyService {
       print('💻 [PROXY] Aplicando cabeceras extendidas Algo 2/3');
     }
     
-    // Limpiar headers internos de control antes de enviar al upstream
     headers.remove('X-Proxy-Algorithm');
+
+    final isM3u8 = url.toLowerCase().contains('.m3u8') || url.toLowerCase().contains('mpegurl');
 
     try {
       if (isM3u8) {
