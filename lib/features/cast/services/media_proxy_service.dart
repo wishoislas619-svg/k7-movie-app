@@ -143,7 +143,44 @@ class MediaProxyService {
       headers['Range'] = incomingHeaders['range']!;
     }
     
-    headers.remove('X-Proxy-Algorithm');
+    // 📁 Soporte para archivos locales (Descargas) con soporte de Range
+    if (!url.startsWith('http')) {
+      final cleanPath = url.replaceFirst('file://', '');
+      final file = File(cleanPath);
+      if (await file.exists()) {
+        final length = await file.length();
+        final rangeHeader = request.headers.value('range');
+        
+        request.response.headers.set('Accept-Ranges', 'bytes');
+        request.response.headers.set('Access-Control-Allow-Origin', '*');
+        request.response.headers.contentType = ContentType.parse('video/mp4');
+
+        if (rangeHeader != null && rangeHeader.startsWith('bytes=')) {
+          final parts = rangeHeader.substring(6).split('-');
+          final start = int.parse(parts[0]);
+          final end = (parts.length > 1 && parts[1].isNotEmpty) 
+              ? int.parse(parts[1]) 
+              : length - 1;
+          
+          print('📂 [LOCAL] Rango: $start-$end / $length | $cleanPath');
+          
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set('Content-Range', 'bytes $start-$end/$length');
+          request.response.headers.contentLength = (end - start) + 1;
+          
+          await request.response.addStream(file.openRead(start, end + 1));
+        } else {
+          print('📂 [LOCAL] Completo: $length bytes | $cleanPath');
+          request.response.statusCode = HttpStatus.ok;
+          request.response.headers.contentLength = length;
+          await request.response.addStream(file.openRead());
+        }
+        await request.response.close();
+        return;
+      } else {
+        print('⚠️ [LOCAL] Archivo no encontrado en: $cleanPath');
+      }
+    }
 
     final isM3u8Candidate = url.contains('.m3u8') || 
                             url.contains('.txt') || 

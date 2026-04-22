@@ -1280,7 +1280,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     String effectiveUrl = videoUrl;
     
     // Si el modo proxy está activo, envolvemos la URL en nuestro proxy local
-    if (_useProxy && !videoUrl.startsWith('http://127.0.0.1') && !videoUrl.startsWith('http://localhost') && !widget.isLocal) {
+    if (_useProxy && !videoUrl.startsWith('http://127.0.0.1') && !videoUrl.startsWith('http://localhost')) {
       await MediaProxyService().start();
       final headers = _getHeadersForCast();
       
