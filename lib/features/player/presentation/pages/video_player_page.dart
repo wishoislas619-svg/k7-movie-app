@@ -1285,10 +1285,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       final headers = _getHeadersForCast();
       
       // La URL para el reproductor INTERNO usa localhost (127.0.0.1)
-      effectiveUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: true);
+      effectiveUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: true, algorithm: _effectiveAlgorithm);
       
       // La URL para CAST/VLC usa la IP de la red (172.16.x.x)
-      _extractedVideoUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: false);
+      _extractedVideoUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: false, algorithm: _effectiveAlgorithm);
       
       print("🛡️ [PROXY_MODE] Player URL (Local): $effectiveUrl");
       print("🛡️ [PROXY_MODE] Cast URL (Network): $_extractedVideoUrl");

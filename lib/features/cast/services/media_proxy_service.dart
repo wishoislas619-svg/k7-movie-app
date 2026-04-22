@@ -72,8 +72,9 @@ class MediaProxyService {
   Future<void> _handleProxyRequest(HttpRequest request) async {
     final encodedUrl = request.uri.queryParameters['url'];
     final encodedHeaders = request.uri.queryParameters['h'] ?? request.uri.queryParameters['headers'];
+    final algoParam = request.uri.queryParameters['a'];
 
-    print('🔍 [PROXY_REQ] url_param: ${encodedUrl?.substring(0, encodedUrl.length > 30 ? 30 : encodedUrl.length)}...');
+    print('🔍 [PROXY_REQ] url_param: ${encodedUrl?.substring(0, encodedUrl.length > 30 ? 30 : encodedUrl.length)}... (Algo: $algoParam)');
 
     if (encodedUrl == null) {
       print('❌ [PROXY] Error: Falta el parámetro "url" en la petición.');
@@ -105,18 +106,17 @@ class MediaProxyService {
     print('🚀 [PROXY] Redirigiendo a: $url');
 
     // Aplicar cabeceras por defecto solo si no vienen en la petición original
-    if (url.contains('videasy') || url.contains('embed.su') || url.contains('mdisk')) {
+    if (url.contains('videasy') || url.contains('embed.su') || url.contains('mdisk') || algoParam == '3') {
        headers['Referer'] ??= 'https://embed.su/';
        headers['Origin'] ??= 'https://embed.su';
     }
     
-    // SPOOFING: Si es Algoritmo 1, nos hacemos pasar por un celular (Android)
-    // Muchos servidores de Algoritmo 1 bloquean si el User-Agent parece una TV o Desktop
-    final isAlgo1 = headers['X-Proxy-Algorithm'] == '1' || (url.contains('m3u8') && !url.contains('embed.su') && !url.contains('videasy'));
-    final isAlgo2Or3 = headers['X-Proxy-Algorithm'] == '2' || headers['X-Proxy-Algorithm'] == '3' || url.contains('videasy') || url.contains('embed.su');
+    // SPOOFING: Prioridad al parámetro 'a' de la URL
+    final isAlgo1 = algoParam == '1' || (algoParam == null && url.contains('m3u8') && !url.contains('embed.su') && !url.contains('videasy'));
+    final isAlgo2Or3 = algoParam == '2' || algoParam == '3' || url.contains('videasy') || url.contains('embed.su');
 
     // 🎭 SUPER SPOOFING: Solo forzamos Dalvik si es Algo 1. Para Algo 2/3 usamos el UA original del player.
-    if (isAlgo1 || headers['User-Agent'] == null) {
+    if (isAlgo1 || (headers['User-Agent'] == null && algoParam == '1')) {
       headers['User-Agent'] = 'Dalvik/2.1.0 (Linux; U; Android 13; SM-S918B Build/TP1A.220624.014)';
     }
     headers['Connection'] ??= 'Keep-Alive';
@@ -242,9 +242,8 @@ class MediaProxyService {
     return '${rewrittenLines.join('\n')}\n';
   }
 
-  String _buildProxiedUrl(String url, Map<String, String>? headers, String host) {
+  String _buildProxiedUrl(String url, Map<String, String>? headers, String host, {int? algorithm}) {
     // Usamos base64Url para evitar caracteres problemáticos (+ y /) y quitamos el padding (=) 
-    // que a veces rompe algunos parsers de URL de TVs o reproductores viejos.
     final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
     String? bHeaders;
     if (headers != null && headers.isNotEmpty) {
@@ -255,19 +254,16 @@ class MediaProxyService {
     if (bHeaders != null) {
       proxyUrl += '&h=$bHeaders';
     }
+    if (algorithm != null) {
+      proxyUrl += '&a=$algorithm';
+    }
     return proxyUrl;
   }
 
-  String getProxiedUrl(String url, Map<String, String>? headers, {bool useLocalhost = false}) {
-    // Si la IP está vacía pero necesitamos una URL de red, intentamos buscarla de nuevo
-    if (_localIp.isEmpty && !useLocalhost) {
-      print('⚠️ [PROXY] IP local vacía, re-intentando detección rápida...');
-      // Intentamos una detección mínima si start() ya corrió pero no encontró nada
-    }
-    
+  String getProxiedUrl(String url, Map<String, String>? headers, {bool useLocalhost = false, int? algorithm}) {
     final host = (useLocalhost || _localIp.isEmpty) ? '127.0.0.1:$_port' : '$_localIp:$_port';
-    final proxied = _buildProxiedUrl(url, headers, host);
-    print('🔗 [PROXY_GEN] URL Generada: $proxied');
+    final proxied = _buildProxiedUrl(url, headers, host, algorithm: algorithm);
+    print('🔗 [PROXY_GEN] URL Generada (Algo ${algorithm ?? "auto"}): $proxied');
     return proxied;
   }
 
