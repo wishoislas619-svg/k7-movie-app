@@ -1344,7 +1344,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         }
 
         _controller = VideoPlayerController.networkUrl(
-          Uri.parse(videoUrl),
+          Uri.parse(effectiveUrl),
           formatHint: isHls ? VideoFormat.hls : null,
           httpHeaders: requestHeaders,
         );
