@@ -18,4 +18,5 @@ abstract class AuthRepository {
   Future<bool> sendRecoveryOtp(String email);
   Future<bool> verifyRecoveryOtp(String email, String token);
   Future<User?> signInWithGoogle();
+  Future<void> updateUserRole(String email, String role, int days);
 }

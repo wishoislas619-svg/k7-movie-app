@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'package:dart_cast/dart_cast.dart' as dc;
 import 'package:flutter/foundation.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'cast_device_info.dart';
+import 'media_proxy_service.dart';
 
 /// Estados posibles de la sesión de transmisión
 enum CastConnectionState {
@@ -36,6 +38,7 @@ class CastService extends ChangeNotifier {
   String? _currentTitle;
   String? _currentImageUrl;
   String? _currentVideoUrl;
+  int? _currentAlgorithm; // Algoritmo activo para el proxy de medios
 
   // ── Public Getters ─────────────────────────────────────────────────────────
   List<CastDeviceInfo> get devices => _devices;
@@ -55,10 +58,29 @@ class CastService extends ChangeNotifier {
 
   Future<void> startScan() async {
     if (_state == CastConnectionState.scanning) return;
+    
+    // 1. Solicitar permisos necesarios para descubrimiento en red local
+    if (!kIsWeb) {
+      final status = await [
+        Permission.location,
+        Permission.nearbyWifiDevices, // Android 13+
+      ].request();
+      
+      if (status[Permission.location]?.isDenied ?? false) {
+        _errorMessage = 'Se requiere permiso de ubicación para buscar dispositivos';
+        _state = CastConnectionState.idle;
+        notifyListeners();
+        return;
+      }
+    }
+
     _devices = [];
     _state = CastConnectionState.scanning;
     _errorMessage = null;
     notifyListeners();
+
+    // Iniciamos el proxy de medios para cuando se necesite transmitir
+    await MediaProxyService().start();
 
     try {
       _rawService?.dispose();
@@ -136,7 +158,10 @@ class CastService extends ChangeNotifier {
     _stateSubscription?.cancel();
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
-    try { await _session?.disconnect(); } catch (_) {}
+    try { 
+      await _session?.stop();
+      await _session?.disconnect(); 
+    } catch (_) {}
     _session = null;
     _connectedDevice = null;
     _state = CastConnectionState.idle;
@@ -156,12 +181,25 @@ class CastService extends ChangeNotifier {
     Map<String, String>? headers,
     Duration startPosition = Duration.zero,
     String? subtitleUrl,
+    int? algorithm, // Algoritmo de extracción para el proxy (1=m3u8 directo, 3=Videasy/embed.su)
   }) async {
     if (_session == null) return;
     
+    _currentAlgorithm = algorithm; // Guardar para que el proxy sepa qué UA usar
     _currentTitle = title;
     _currentImageUrl = imageUrl;
-    _currentVideoUrl = url;
+    
+    // Si es una URL remota y no es un canal simple, usamos el PROXY para inyectar Referer y saltar CORS
+    // Pasamos el algoritmo al proxy para que aplique el User-Agent correcto
+    final proxyHeaders = {
+      ...?headers,
+      if (_currentAlgorithm != null) 'X-Proxy-Algorithm': _currentAlgorithm!.toString(),
+    };
+    final proxiedUrl = MediaProxyService().getProxiedUrl(url, proxyHeaders);
+    _currentVideoUrl = proxiedUrl;
+
+    print('🔗 [CAST] Original: $url');
+    print('🛡️ [CAST] Proxied: $proxiedUrl');
 
     // Protocolo de compatibilidad Samsung/SmartTV
     final isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
@@ -173,7 +211,7 @@ class CastService extends ChangeNotifier {
     }
 
     final media = dc.CastMedia(
-      url: url,
+      url: proxiedUrl,
       type: _detectMediaType(url),
       title: title,
       imageUrl: imageUrl,
@@ -256,10 +294,41 @@ class CastService extends ChangeNotifier {
   }
 
   // ── Playback Controls ──────────────────────────────────────────────────────
-  Future<void> play()   => _session?.play()  ?? Future.value();
-  Future<void> pause()  => _session?.pause() ?? Future.value();
-  Future<void> stop()   => _session?.stop()  ?? Future.value();
-  Future<void> seekTo(Duration position) => _session?.seek(position) ?? Future.value();
+  
+  // Mejora para Samsung/DLNA: Los controles a veces necesitan "despertar" al dispositivo
+  Future<void> play() async {
+    if (_session == null) return;
+    await _session!.play();
+    if (_connectedDevice?.protocol == dc.CastProtocol.dlna) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _session!.play(); // Segunda ráfaga para asegurar en Samsung/LG
+    }
+  }
+
+  Future<void> pause() async {
+    if (_session == null) return;
+    await _session!.pause();
+    if (_connectedDevice?.protocol == dc.CastProtocol.dlna) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _session!.pause();
+    }
+  }
+
+  Future<void> stop() async {
+    if (_session == null) return;
+    await _session!.stop();
+  }
+
+  Future<void> seekTo(Duration position) async {
+    if (_session == null) return;
+    await _session!.seek(position);
+    if (_connectedDevice?.protocol == dc.CastProtocol.dlna) {
+      // Forzar un play después del seek en DLNA porque algunas TVs se quedan en PAUSE tras el seek
+      await Future.delayed(const Duration(milliseconds: 1000));
+      await _session!.play();
+    }
+  }
+
   Future<void> setVolume(double volume) => _session?.setVolume(volume) ?? Future.value();
 
   // ── Internal ───────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ class CastButton extends StatefulWidget {
   final String title;
   final String? imageUrl;
   final Map<String, String>? headers;
+  final int? algorithm;
   final Duration currentPosition;
 
   const CastButton({
@@ -20,6 +21,7 @@ class CastButton extends StatefulWidget {
     required this.title,
     this.imageUrl,
     this.headers,
+    this.algorithm,
     this.currentPosition = Duration.zero,
   });
 
@@ -80,6 +82,7 @@ class _CastButtonState extends State<CastButton> with SingleTickerProviderStateM
         title: widget.title,
         imageUrl: widget.imageUrl,
         headers: widget.headers,
+        algorithm: widget.algorithm,
         startPosition: widget.currentPosition,
         onCastStarted: () {
           // Navegar al control remoto una sola vez, después del pop del sheet

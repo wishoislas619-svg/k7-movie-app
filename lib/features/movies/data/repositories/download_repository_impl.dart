@@ -16,15 +16,14 @@ import 'package:movie_app/providers.dart';
 import 'package:movie_app/core/services/notification_service.dart';
 import 'package:movie_app/core/services/foreground_service.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:movie_app/core/services/storage_service.dart';
 
 class DownloadRepository {
   final SqliteService _sqliteService;
   final Map<String, _DownloadProgressInfo> _progressInfos = {};
   final Map<String, bool> _hlsCancelFlags = {};
 
-  // Cambia esto a 'true' si quieres proteger tus videos en almacenamiento interno.
-  // Déjalo en 'false' para guardarlos en la galería de Descargas públicas.
-  static const bool guardadoSeguro = false;
+  // Ya no usamos una constante, consultamos StorageService dinámicamente.
 
   DownloadRepository(this._sqliteService) {
     _initDownloader();
@@ -187,11 +186,16 @@ class DownloadRepository {
 
       // Remove any residual files matching the base filename
       final base = _buildSafeFileBase(task);
+      final pubDir = '/storage/emulated/0/Download/K7-MOVIE';
       final candidates = [
         File('${downloadsDir.path}/$base.mp4'),
         File('${downloadsDir.path}/$base.ts'),
         File('${downloadsDir.path}/$base.m3u8'),
         File('${downloadsDir.path}/$base.tmp'),
+        // Candidatos públicos
+        File('$pubDir/$base.mp4'),
+        File('$pubDir/$base.ts'),
+        File('$pubDir/$base.m3u8'),
       ];
       for (final f in candidates) {
         if (await f.exists()) {
@@ -515,7 +519,8 @@ class DownloadRepository {
     final finalPath = convertedPath ?? outputPath;
 
     String pPath = finalPath;
-    if (!guardadoSeguro && Platform.isAndroid) {
+    final isSecure = await StorageService.isSecureSaveEnabled();
+    if (!isSecure && Platform.isAndroid) {
         try {
             print("[PUBLIC DL] Copiando HLS/MP4 convertido a carpeta pública K7-MOVIE...");
             final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
@@ -704,7 +709,8 @@ class DownloadRepository {
         }
       }
 
-      if (Platform.isAndroid && !guardadoSeguro) {
+      final isSecure = await StorageService.isSecureSaveEnabled();
+      if (Platform.isAndroid && !isSecure) {
          final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
          if (await pubDir.exists()) {
            final pubCandidates = [

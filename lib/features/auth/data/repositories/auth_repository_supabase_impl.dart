@@ -426,4 +426,14 @@ class AuthRepositorySupabaseImpl implements AuthRepository {
       rethrow;
     }
   }
+
+  @override
+  Future<void> updateUserRole(String email, String role, int days) async {
+    final subscriptionEnd = DateTime.now().add(Duration(days: days)).toUtc().toIso8601String();
+    
+    await _client.from('profiles').update({
+      'role': role,
+      'subscription_end': subscriptionEnd,
+    }).eq('email', email);
+  }
 }

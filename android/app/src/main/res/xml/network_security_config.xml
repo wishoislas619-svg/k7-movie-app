@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network Security Config
+  
+  Permite que la app haga peticiones HTTP (cleartext) a:
+  1. Las IPs de red local (192.168.x.x, 10.x.x.x) — necesario para que el
+     servidor proxy local sea accesible desde Smart TVs y Chromecast.
+  2. El dominio de Supabase (solo HTTPS, ya es seguro por defecto).
+
+  Sin este archivo, Android 9+ bloquea TODO el tráfico HTTP que no sea localhost,
+  lo que haría que la TV no pudiera conectarse al proxy del teléfono.
+-->
+<network-security-config>
+
+  <!-- Configuración por defecto: solo HTTPS para todos los dominios públicos -->
+  <base-config cleartextTrafficPermitted="false">
+    <trust-anchors>
+      <certificates src="system" />
+    </trust-anchors>
+  </base-config>
+
+  <!-- Excepción: Permitir HTTP en la red local (LAN) para el proxy de medios -->
+  <!-- Estos rangos son IPs privadas donde viven las TVs y Chromecasts -->
+  <domain-config cleartextTrafficPermitted="true">
+    <!-- Rango típico de routers domésticos (192.168.x.x) -->
+    <domain includeSubdomains="false">192.168.0.0</domain>
+    <domain includeSubdomains="false">192.168.1.0</domain>
+    <domain includeSubdomains="false">192.168.2.0</domain>
+    <domain includeSubdomains="false">192.168.100.0</domain>
+  </domain-config>
+
+  <!-- Excepción más amplia: Cualquier IP local (10.x.x.x para redes corporativas/VPN) -->
+  <domain-config cleartextTrafficPermitted="true">
+    <domain includeSubdomains="false">10.0.0.0</domain>
+  </domain-config>
+
+</network-security-config>

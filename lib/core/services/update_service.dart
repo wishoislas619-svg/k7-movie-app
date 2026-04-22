@@ -86,44 +86,59 @@ class UpdateService {
 
     _showProgressDialog(context, progressNotifier, statusNotifier);
 
-    try {
-      // PASO 1: Usar HeadlessWebView SOLO para resolver la URL directa de MediaFire
-      final directUrl = await _resolveMediaFireUrl(url, statusNotifier);
+    String? apkPath;
+    int retryCount = 0;
 
-      if (directUrl == null || directUrl.isEmpty) {
-        statusNotifier.value = 'Error: No se pudo obtener el enlace. Reintenta.';
-        return;
-      }
-
-      print('✅ [UPDATE] URL directa resuelta: $directUrl');
-      statusNotifier.value = 'Iniciando descarga...';
-
-      // PASO 2: Descargar con http directamente en Dart (sin background_downloader)
-      final apkPath = await _downloadApkWithProgress(directUrl, progressNotifier, statusNotifier);
-
-      if (apkPath == null) {
-        // El error ya fue seteado en statusNotifier dentro del método
-        return;
-      }
-
-      print('✅ [UPDATE] APK descargado en: $apkPath');
-      statusNotifier.value = '¡Descarga completa! Abriendo instalador...';
-
-      // PASO 3: Instalar con el canal nativo (FileProvider)
-      await Future.delayed(const Duration(milliseconds: 500));
+    while (apkPath == null) {
       try {
-        final success = await _installChannel.invokeMethod<bool>('installApk', {
-          'filePath': apkPath,
-        });
-        print('📢 [UPDATE] Resultado nativo: $success');
-        statusNotifier.value = 'Instalador de Android abierto. Sigue las instrucciones.';
-      } on PlatformException catch (e) {
-        print('❌ [UPDATE] Error nativo: ${e.code} - ${e.message}');
-        statusNotifier.value = 'Error al abrir instalador: ${e.message}';
+        if (retryCount > 0) {
+          statusNotifier.value = 'Reintentando descarga (Intento $retryCount)...';
+          await Future.delayed(const Duration(seconds: 3));
+        }
+
+        // PASO 1: Usar HeadlessWebView SOLO para resolver la URL directa de MediaFire
+        final directUrl = await _resolveMediaFireUrl(url, statusNotifier);
+
+        if (directUrl == null || directUrl.isEmpty) {
+          statusNotifier.value = 'No se pudo obtener el enlace. Reintentando...';
+          retryCount++;
+          continue;
+        }
+
+        print('✅ [UPDATE] URL directa resuelta: $directUrl');
+        statusNotifier.value = 'Iniciando descarga...';
+
+        // PASO 2: Descargar con http directamente en Dart
+        apkPath = await _downloadApkWithProgress(directUrl, progressNotifier, statusNotifier);
+
+        if (apkPath == null) {
+          statusNotifier.value = 'Fallo en descarga. Reintentando en breve...';
+          retryCount++;
+          // Pequeño delay adicional antes de reintentar el loop
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      } catch (e) {
+        print('❌ [UPDATE] Error en bucle de reintento: $e');
+        retryCount++;
+        statusNotifier.value = 'Error de red. Reintentando...';
+        await Future.delayed(const Duration(seconds: 4));
       }
-    } catch (e) {
-      print('❌ [UPDATE] Error general: $e');
-      statusNotifier.value = 'Error inesperado: $e';
+    }
+
+    // PASO 3: Instalar con el canal nativo (FileProvider)
+    print('✅ [UPDATE] APK listo en: $apkPath. Abriendo instalador...');
+    statusNotifier.value = '¡Descarga completa! Abriendo instalador...';
+    
+    await Future.delayed(const Duration(milliseconds: 500));
+    try {
+      final success = await _installChannel.invokeMethod<bool>('installApk', {
+        'filePath': apkPath,
+      });
+      print('📢 [UPDATE] Resultado nativo: $success');
+      statusNotifier.value = 'Instalador de Android abierto. Sigue las instrucciones.';
+    } on PlatformException catch (e) {
+      print('❌ [UPDATE] Error nativo: ${e.code} - ${e.message}');
+      statusNotifier.value = 'Error al abrir instalador: ${e.message}';
     }
   }
 

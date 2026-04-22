@@ -15,6 +15,7 @@ class CastDeviceListSheet extends StatefulWidget {
   final String? imageUrl;
   final Map<String, String>? headers;
   final Duration startPosition;
+  final int? algorithm; // Algoritmo de extracción para el proxy
   /// Callback disparado UNA SOLA VEZ cuando la transmisión comienza exitosamente.
   final VoidCallback? onCastStarted;
 
@@ -26,6 +27,7 @@ class CastDeviceListSheet extends StatefulWidget {
     this.imageUrl,
     this.headers,
     this.startPosition = Duration.zero,
+    this.algorithm,
     this.onCastStarted,
   });
 
@@ -121,6 +123,7 @@ class _CastDeviceListSheetState extends State<CastDeviceListSheet> {
           imageUrl: widget.imageUrl,
           headers: widget.headers,
           startPosition: widget.startPosition,
+          algorithm: widget.algorithm,
         );
       }
 

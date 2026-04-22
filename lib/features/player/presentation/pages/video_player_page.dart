@@ -1,5 +1,6 @@
 import 'package:movie_app/core/services/ad_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:movie_app/features/auth/presentation/providers/auth_provider.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -178,6 +179,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   Set<String> _failedVideasyServers = {};
   InternalServerInfo? _currentVideasyServer;
   Duration? _pendingResumeDuration;
+  bool _hasFoundPremiumServer = false;
+  bool _isAlgo3Extracting = false; // Pantalla de carga dedicada para Algoritmo 3
 
   @override
   void initState() {
@@ -244,7 +247,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       return;
     }
     
-    final role = user.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
+    final appUser = ref.read(authStateProvider);
+    final role = appUser?.role.toLowerCase() ?? 'user';
+    
     if (role == 'admin' || role == 'uservip' || widget.isLocal) { // Si es VIP, Admin o video local descargado
       if (widget.isLocal) {
         await _ensureStoragePermissions();
@@ -393,9 +398,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Future<void> _showMidrollAd() async {
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user != null) {
-      final role = user.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
+    final appUser = ref.read(authStateProvider);
+    if (appUser != null) {
+      final role = appUser.role.toLowerCase();
       if (role == 'admin' || role == 'uservip') return;
     }
     
@@ -415,7 +420,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       final ticketId = const Uuid().v4();
       await Supabase.instance.client.from('ad_tickets').insert({
         'id': ticketId,
-        'user_id': user?.id,
+        'user_id': appUser?.id,
         'media_type': widget.mediaType,
         'media_id': widget.mediaId,
       });
@@ -477,9 +482,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       _isInitialLoading = false;
       _initializeVideoPlayer(videoUrl);
     } else {
-      // Si no es un enlace directo conocido, entramos en modo Scraping.
-      // Por defecto intentaremos extracción, pero si detectamos interacción directa, 
-      // el scraper activará el modo _useWebViewPlayer si es necesario.
+      // Si es Algoritmo 3, activar la pantalla de carga dedicada
+      if (_effectiveAlgorithm == 3) {
+        setState(() { _isAlgo3Extracting = true; });
+      }
       _initWebViewController();
     }
     
@@ -529,7 +535,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     
     if (_pendingResumeDuration != null || _hasCheckedResume) {
        // Si ya sabemos qué posición queremos reanudar, la aplicamos a este nuevo controlador
-       if (_pendingResumeDuration != null && _effectiveAlgorithm != 3) {
+       if (_pendingResumeDuration != null) {
+          print("🚀 [CHECK_RESUME] Aplicando posición persistente: ${_pendingResumeDuration}");
           await controller.seekTo(_pendingResumeDuration!);
        }
        return;
@@ -670,7 +677,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     
     _autoClickCount = 0;
     _scraperTimer?.cancel();
-    _scraperTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+    _scraperTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
         final bool shouldKeepRunning = _isWebViewExtracting || _isSwitchingStream || _effectiveAlgorithm == 3;
         if (!mounted || !shouldKeepRunning) {
           timer.cancel();
@@ -742,7 +749,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                if (serversTab) {
                   var state = serversTab.getAttribute('data-state') || serversTab.getAttribute('aria-selected');
                   if (state === 'active' || state === 'true') {
-                     // === PASO 2: Extracción de Servidores ===
+                     // === PASO 2: Extracción y Auto-Selección ===
                      var panel = document.querySelector('[role="tabpanel"][data-state="active"]') || serversTab.parentElement.parentElement;
                      var serverBtns = Array.from(panel.querySelectorAll('button, [role="radio"], [role="menuitem"]'));
                      
@@ -756,13 +763,29 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                            else if (tLow.includes('esp') || tLow.includes('cast')) lang = "Castellano";
                            else if (tLow.includes('eng') || tLow.includes('org')) lang = "English";
                            
-                           return { id: text, label: text, language: lang, flagUrl: img ? img.src : "" };
+                           return { id: text, label: text, language: lang, flagUrl: img ? img.src : "", element: btn };
                         }).filter(s => s.label.length > 0 && !s.label.toLowerCase().includes('back'));
                         
                         var unique = results.filter((v,i,a) => a.findIndex(t => t.label === v.label) === i);
                         if (unique.length > 0) {
-                           console.log('✅ Servidores mapeados: ' + unique.length);
-                           window.flutter_inappwebview.callHandler('onServersFound', unique);
+                           window.flutter_inappwebview.callHandler('onServersFound', unique.map(s => ({id: s.id, label: s.label, language: s.language, flagUrl: s.flagUrl})));
+                           
+                           // --- LÓGICA DE AUTO-CLIC INTERNA ---
+                           var target = results.find(s => s.label.toLowerCase().includes('gekko'));
+                           if (!target) {
+                              target = results.find(s => s.language === 'Latino' || s.language === 'Castellano');
+                           }
+                           
+                           if (target && target.element) {
+                              var isSelected = target.element.getAttribute('data-state') === 'active' || 
+                                               target.element.getAttribute('aria-checked') === 'true' ||
+                                               target.element.classList.contains('active');
+                                               
+                              if (!isSelected) {
+                                 console.log('🤖 AUTO-CLIC en servidor prioritario: ' + target.label);
+                                 forceClick(target.element);
+                              }
+                           }
                            return;
                         }
                      }
@@ -1322,6 +1345,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         setState(() {
           _isLoading = false;
           _isSwitchingStream = false;
+          _isAlgo3Extracting = false; // Quitar pantalla de carga del Algoritmo 3
         });
         // Determinamos qué posición final necesitamos para el seek
         Duration? targetSeekPosition;
@@ -1793,24 +1817,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               ),
             ),
 
-            // Loading / Error Overlay
-            if (_isLoading && !_isWebViewExtracting && !_isSwitchingStream)
-              Container(
-                color: Colors.black,
-                child: Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const CircularProgressIndicator(color: Color(0xFF00A3FF)),
-                      const SizedBox(height: 20),
-                      Text(_isWebViewExtracting ? "Analizando origen de video..." : "Cargando video...", 
-                          style: const TextStyle(color: Colors.white70)),
-                    ],
-                  ),
-                ),
-              )
-            else if (_errorMessage != null)
-              _buildErrorContent(),
+
 
             // Skip Forward/Backward Buttons (ONLY if not locked)
             if (!_isLocked && _errorMessage == null && !_isInitialLoading)
@@ -2041,36 +2048,44 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                     _videasyServers = newServers;
                                   });
 
-                                  // --- AUTO-SELECCIÓN PARA ESPAÑOL ---
-                                    if ((!_hasAutoSelectedServer || _errorMessage != null) && _effectiveAlgorithm == 3) {
-                                      InternalServerInfo? target;
-                                      
-                                      // Filtrar los que ya fallaron
-                                      final availableServers = newServers.where((s) => !_failedVideasyServers.contains(s.id)).toList();
-                                      
-                                      if (availableServers.isNotEmpty) {
-                                        // 1. Intentar Gekko primero si está disponible y no ha fallado
-                                        try {
-                                          target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
-                                        } catch (_) {
-                                          // 2. Intentar último que diga "Spanish Audio"
-                                          final spanishServers = availableServers.where((s) => s.label.toLowerCase().endsWith('spanish audio')).toList();
-                                          if (spanishServers.isNotEmpty) {
-                                            target = spanishServers.last;
-                                          } else {
-                                            // 3. Cualquier otro disponible como último recurso
-                                            target = availableServers.first;
-                                          }
-                                        }
-
-                                        if (target != null) {
-                                          print("🤖 [AUTO-SELECT] Seleccionando automáticamente: ${target.label}");
-                                          _hasAutoSelectedServer = true;
-                                          _errorMessage = null; // Limpiar errores previos si estamos reintentando
-                                          _selectVideasyInternalServer(target);
+                                  // --- AUTO-SELECCIÓN PARA ESPAÑOL (PERSISTENTE) ---
+                                  if (!_hasFoundPremiumServer && _effectiveAlgorithm == 3 && mounted) {
+                                    InternalServerInfo? target;
+                                    final availableServers = newServers.where((s) => !_failedVideasyServers.contains(s.id)).toList();
+                                    
+                                    if (availableServers.isNotEmpty) {
+                                      // 1. Intentar Gekko primero
+                                      try {
+                                        target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
+                                      } catch (_) {
+                                        // 2. Intentar Español/Latino
+                                        final spanishServers = availableServers.where((s) => 
+                                          s.label.toLowerCase().contains('spanish') || 
+                                          s.label.toLowerCase().contains('latino') ||
+                                          s.label.toLowerCase().contains('español') ||
+                                          s.label.toLowerCase().contains('castellano')
+                                        ).toList();
+                                        
+                                        if (spanishServers.isNotEmpty) {
+                                          target = spanishServers.last;
                                         }
                                       }
+
+                                      if (target != null) {
+                                        print("🤖 [AUTO-SELECT] Servidor PREMIUM encontrado: ${target.label}");
+                                        _hasFoundPremiumServer = true;
+                                        _hasAutoSelectedServer = true;
+                                        _errorMessage = null;
+                                        _selectVideasyInternalServer(target);
+                                      } else if (!_hasAutoSelectedServer) {
+                                        // 3. Si no hay premium, pero no hemos seleccionado NADA aún, ponemos el primero por mientras
+                                        final first = availableServers.first;
+                                        print("🤖 [AUTO-SELECT] Usando respaldo temporal: ${first.label}");
+                                        _hasAutoSelectedServer = true;
+                                        _selectVideasyInternalServer(first);
+                                      }
                                     }
+                                  }
                                 }
                               }
                             });
@@ -2219,6 +2234,28 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                   ),
                 ),
               ),
+            // Loading / Error Overlay (Moved to end to ensure it covers WebViews)
+            if (_isAlgo3Extracting && (_controller == null || !_controller!.value.isInitialized))
+              Positioned.fill(child: _buildAlgo3LoadingOverlay())
+            else if (_isLoading && !_isWebViewExtracting && !_isSwitchingStream)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.black,
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const CircularProgressIndicator(color: Color(0xFF00A3FF)),
+                        const SizedBox(height: 20),
+                        Text(_isWebViewExtracting ? "Analizando origen de video..." : "Cargando video...", 
+                            style: const TextStyle(color: Colors.white70)),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            else if (_errorMessage != null)
+              Positioned.fill(child: _buildErrorContent()),
           ],
         ),
       ),
@@ -2412,6 +2449,130 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     Navigator.pop(context);
   }
 
+  Widget _buildAlgo3LoadingOverlay() {
+    // Seleccionamos el mensaje según cuántos servidores llevamos detectados
+    final String statusMsg = _videasyServers.isEmpty
+        ? 'Buscando servidor...'
+        : _currentVideasyServer != null
+            ? 'Conectando con ${_currentVideasyServer!.label}...'
+            : 'Analizando ${_videasyServers.length} servidores...';
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 400),
+      child: Container(
+        key: const ValueKey('algo3_loading'),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFF080C14), Color(0xFF0D1421), Color(0xFF060A10)],
+          ),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // Ícono con pulso animado
+              TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0.85, end: 1.0),
+                duration: const Duration(milliseconds: 900),
+                curve: Curves.easeInOut,
+                builder: (_, scale, child) => Transform.scale(
+                  scale: scale,
+                  child: child,
+                ),
+                child: Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0xFF00A3FF).withOpacity(0.12),
+                    border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.4), width: 1.5),
+                  ),
+                  child: const Icon(Icons.movie_creation_outlined, color: Color(0xFF00A3FF), size: 36),
+                ),
+              ),
+              const SizedBox(height: 28),
+
+              // Nombre del contenido
+              Text(
+                widget.movieName,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.3,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 8),
+
+              // Mensaje de estado dinámico
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                child: Text(
+                  statusMsg,
+                  key: ValueKey(statusMsg),
+                  style: const TextStyle(color: Color(0xFF00A3FF), fontSize: 13),
+                ),
+              ),
+              const SizedBox(height: 28),
+
+              // Barra de progreso tipo "scanner"
+              SizedBox(
+                width: 200,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: const LinearProgressIndicator(
+                    backgroundColor: Color(0xFF1A2233),
+                    valueColor: AlwaysStoppedAnimation(Color(0xFF00A3FF)),
+                    minHeight: 3,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 32),
+
+              // Chips de información
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _buildInfoChip(Icons.hd_rounded, 'Alta Calidad'),
+                  const SizedBox(width: 10),
+                  _buildInfoChip(Icons.language, 'Español'),
+                  if (_videasyServers.isNotEmpty) ...[
+                    const SizedBox(width: 10),
+                    _buildInfoChip(Icons.dns_rounded, '${_videasyServers.length} servidores'),
+                  ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoChip(IconData icon, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white12, width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: Colors.white54, size: 13),
+          const SizedBox(width: 5),
+          Text(label, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSkipOverlay() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -2549,6 +2710,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                 title: widget.movieName,
                 imageUrl: widget.imagePath,
                 currentPosition: _controller?.value.position ?? Duration.zero,
+                headers: _getHeadersForCast(),
+                algorithm: _effectiveAlgorithm,
               ),
             ],
           ),
@@ -2873,6 +3036,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       _isSwitchingStream = true;
       _currentVideasyServer = server;
       _hasAutoSelectedServer = true;
+      
+      // Si el servidor seleccionado tiene "gekko" o algo en español, marcamos como Premium encontrado
+      final sLow = server.label.toLowerCase();
+      if (sLow.contains('gekko') || sLow.contains('spanish') || sLow.contains('latino') || sLow.contains('español') || sLow.contains('castellano')) {
+        _hasFoundPremiumServer = true;
+      }
+      
       _autoClickCount = 0; // Reiniciamos contador al cambiar de server
     });
     
@@ -2941,7 +3111,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       try {
         target = available.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
       } catch (_) {
-        final spanish = available.where((s) => s.label.toLowerCase().endsWith('spanish audio')).toList();
+        final spanish = available.where((s) => 
+          s.label.toLowerCase().contains('spanish') || 
+          s.label.toLowerCase().contains('latino') ||
+          s.label.toLowerCase().contains('español') ||
+          s.label.toLowerCase().contains('castellano')
+        ).toList();
         target = spanish.isNotEmpty ? spanish.last : available.first;
       }
       
@@ -3442,5 +3617,24 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         ),
       ),
     );
+  }
+
+  Map<String, String> _getHeadersForCast() {
+    final Map<String, String> h = {};
+    
+    // Si el widget original traía headers, los respetamos
+    if (widget.headers != null) {
+      h.addAll(widget.headers!);
+    }
+
+    final currentUrl = _extractedVideoUrl ?? _currentOption.videoUrl;
+    
+    // Lógica específica para Algoritmo 3 (Embed.su / Videasy)
+    if (_effectiveAlgorithm == 3 || currentUrl.contains('videasy') || currentUrl.contains('embed.su')) {
+      h['Referer'] = 'https://embed.su/';
+      h['Origin'] = 'https://embed.su';
+    }
+    
+    return h;
   }
 }

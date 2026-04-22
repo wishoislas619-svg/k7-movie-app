@@ -41,6 +41,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   int _timerCount = 0;
   bool _isDisposed = false;
   final List<VideoExtractionData> _foundMedia = [];
+  bool _isSpanishSelected = false; 
   bool _snifferInjected = false;
   static const _webviewTouchChannel = MethodChannel('com.luis.movieapp/webview_touch');
   final GlobalKey _webViewKey = GlobalKey();
@@ -305,6 +306,18 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                             });
 
                             controller.addJavaScriptHandler(
+                              handlerName: 'onServerSelected',
+                              callback: (args) {
+                                if (mounted) {
+                                  setState(() {
+                                    _isSpanishSelected = true;
+                                    _statusText = "Servidor en español detectado. Extrayendo...";
+                                  });
+                                }
+                              },
+                            );
+
+                            controller.addJavaScriptHandler(
                               handlerName: 'snifferUrl',
                               callback: (args) {
                                 if (args.isEmpty) return;
@@ -529,12 +542,37 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                                 const Text("Analizando protocolos de red...",
                                     style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.w500)),
                                 const SizedBox(height: 4),
-                                const Text("Esto puede tardar unos segundos", style: TextStyle(color: Colors.white12, fontSize: 10)),
+                                if (widget.extractionAlgorithm == 3 && !_isSpanishSelected)
+                                  const Text("Buscando servidor en español...", style: TextStyle(color: Color(0xFFD400FF), fontSize: 10, fontWeight: FontWeight.bold))
+                                else
+                                  const Text("Esto puede tardar unos segundos", style: TextStyle(color: Colors.white12, fontSize: 10)),
                               ],
                             ),
                           ),
                         )
-                      : ListView.builder(
+                      : widget.extractionAlgorithm == 3 && !_isSpanishSelected
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.language, color: Color(0xFFD400FF), size: 40),
+                                const SizedBox(height: 16),
+                                const Text("SERVIDOR NO VALIDADO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                                const SizedBox(height: 8),
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(horizontal: 40),
+                                  child: Text(
+                                    "Esperando a que el sistema seleccione el servidor en español para garantizar el idioma correcto.",
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(color: Colors.white54, fontSize: 11),
+                                  ),
+                                ),
+                                const SizedBox(height: 20),
+                                const CircularProgressIndicator(color: Color(0xFFD400FF), strokeWidth: 2),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
                                 padding: EdgeInsets.zero,
                                 itemCount: filteredMedia.length,
                                 itemBuilder: (context, index) {
@@ -1139,16 +1177,53 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
               return null;
             }
 
-            // Abrir engranaje o clickear servidores para forzar el load del video
-            var gear = findGear(document);
-            if (gear) forceClick(gear);
-            
+            // 1. Aseguramos que la pestaña de servers esté activa
             var serversTab = findByText(document, 'Servers', true) || findByText(document, 'Servidores', true);
-            if (serversTab) forceClick(serversTab);
+            if (serversTab) {
+               var state = serversTab.getAttribute('data-state') || serversTab.getAttribute('aria-selected');
+               if (state !== 'active' && state !== 'true') {
+                  console.log('🖱️ Abriendo tab de servers para selección...');
+                  forceClick(serversTab);
+                  return;
+               }
+            }
+
+            // 2. Buscamos el servidor específico (Gekko o Español)
+            var allButtons = document.querySelectorAll('button, [role="tabpanel"] button, [role="radio"], [role="menuitem"]');
+            var target = null;
             
-            // Forzar click en cualquier botón que parezca un servidor si el tab está abierto
-            var serverBtn = document.querySelector('[role="tabpanel"] button');
-            if (serverBtn) forceClick(serverBtn);
+            // Prioridad 1: Gekko
+            for (var b of allButtons) {
+              if (b.textContent.toLowerCase().includes('gekko') && isVisible(b)) {
+                target = b; break;
+              }
+            }
+            
+            // Prioridad 2: Español/Latino
+            if (!target) {
+              for (var b of allButtons) {
+                var t = b.textContent.toLowerCase();
+                if ((t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano')) && isVisible(b)) {
+                  target = b; break;
+                }
+              }
+            }
+            
+            if (target) {
+              console.log('🎯 [AUTO-SELECT] Seleccionando servidor: ' + target.textContent);
+              if (window.flutter_inappwebview) {
+                window.flutter_inappwebview.callHandler('onServerSelected', target.textContent);
+              }
+              forceClick(target);
+            } else {
+              // Fallback: Si no hay específicos, clickeamos el primero del panel si existe
+              var firstInPanel = document.querySelector('[role="tabpanel"] button');
+              if (firstInPanel) forceClick(firstInPanel);
+            }
+
+            // Abrir engranaje si nada más funcionó
+            var gear = findGear(document);
+            if (gear && !target) forceClick(gear);
           })();
       """);
 

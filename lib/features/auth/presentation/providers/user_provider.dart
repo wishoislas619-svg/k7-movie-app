@@ -43,4 +43,13 @@ class UserController extends StateNotifier<AsyncValue<List<User>>> {
       state = AsyncValue.error(e, s);
     }
   }
+
+  Future<void> updateUserRole(String email, String role, int days) async {
+    try {
+      await _repository.updateUserRole(email, role, days);
+      await loadUsers();
+    } catch (e, s) {
+      state = AsyncValue.error(e, s);
+    }
+  }
 }

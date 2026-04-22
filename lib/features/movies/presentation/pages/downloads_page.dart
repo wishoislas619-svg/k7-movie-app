@@ -9,6 +9,10 @@ import 'package:movie_app/features/movies/data/repositories/download_repository_
 import 'package:movie_app/features/movies/domain/entities/download_task.dart';
 import 'package:movie_app/features/movies/domain/entities/movie.dart';
 import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:movie_app/core/services/storage_service.dart';
+import 'package:path_provider/path_provider.dart';
 
 String _formatSize(int bytes) {
   if (bytes <= 0) return "0 B";
@@ -17,11 +21,37 @@ String _formatSize(int bytes) {
   return ((bytes / math.pow(1024, i)).toStringAsFixed(1)) + ' ' + suffixes[i];
 }
 
-class DownloadsPage extends ConsumerWidget {
+class DownloadsPage extends ConsumerStatefulWidget {
   const DownloadsPage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DownloadsPage> createState() => _DownloadsPageState();
+}
+
+class _DownloadsPageState extends ConsumerState<DownloadsPage> {
+  @override
+  void initState() {
+    super.initState();
+    _requestPermissions();
+  }
+
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      final androidInfo = await DeviceInfoPlugin().androidInfo;
+      if (androidInfo.version.sdkInt >= 33) {
+        if (await Permission.videos.isDenied) {
+          await Permission.videos.request();
+        }
+      } else {
+        if (await Permission.storage.isDenied) {
+          await Permission.storage.request();
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final downloads = ref.watch(downloadsListProvider);
     final movieDownloads = downloads.where((d) => !d.isSeries).toList();
     final seriesDownloads = downloads.where((d) => d.isSeries).toList();
@@ -451,8 +481,30 @@ class _LocalFilesViewState extends State<_LocalFilesView> {
   @override
   void initState() {
     super.initState();
-    _scanFiles();
+    _handleRefresh();
   }
+
+  Future<void> _handleRefresh() async {
+    await _requestPermissions();
+    await _scanFiles();
+  }
+
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      final androidInfo = await DeviceInfoPlugin().androidInfo;
+      if (androidInfo.version.sdkInt >= 33) {
+        if (await Permission.videos.isDenied) {
+          await Permission.videos.request();
+        }
+      } else {
+        if (await Permission.storage.isDenied) {
+          await Permission.storage.request();
+        }
+      }
+    }
+  }
+
+
 
   Future<void> _scanFiles() async {
     setState(() => _isLoading = true);
@@ -463,7 +515,15 @@ class _LocalFilesViewState extends State<_LocalFilesView> {
         fractionDigits: 1,
       );
 
-      final dir = Directory('/storage/emulated/0/Download/K7-MOVIE');
+      final isSecure = await StorageService.isSecureSaveEnabled();
+      Directory dir;
+      if (isSecure) {
+        final appDocDir = await getApplicationDocumentsDirectory();
+        dir = Directory('${appDocDir.path}/downloads');
+      } else {
+        dir = Directory('/storage/emulated/0/Download/K7-MOVIE');
+      }
+
       if (await dir.exists()) {
 // ... rest of logic stays same but ensured ...
         final entities = dir.listSync();
@@ -562,6 +622,30 @@ class _LocalFilesViewState extends State<_LocalFilesView> {
                     Text("Libre: ${_storageSpace!.freeSize}", style: const TextStyle(color: Color(0xFF00A3FF), fontSize: 11, fontWeight: FontWeight.bold)),
                   ],
                 ),
+                const SizedBox(height: 12),
+                if (Platform.isAndroid)
+                  InkWell(
+                    onTap: () async {
+                      if (await Permission.manageExternalStorage.request().isGranted) {
+                        _handleRefresh();
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00A3FF).withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.3)),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.security, color: Color(0xFF00A3FF), size: 14),
+                          SizedBox(width: 8),
+                          Text("Solicitar acceso total para borrar archivos", style: TextStyle(color: Color(0xFF00A3FF), fontSize: 10, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -570,7 +654,7 @@ class _LocalFilesViewState extends State<_LocalFilesView> {
           child: _filesData.isEmpty 
           ? _buildEmpty() 
           : RefreshIndicator(
-            onRefresh: _scanFiles,
+            onRefresh: _handleRefresh,
             child: ListView.builder(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: _filesData.length,
@@ -660,7 +744,7 @@ class _LocalFilesViewState extends State<_LocalFilesView> {
           const Text("Carpeta K7-MOVIE vacía", style: TextStyle(color: Colors.grey, fontSize: 16)),
           const SizedBox(height: 8),
           ElevatedButton.icon(
-            onPressed: _scanFiles,
+            onPressed: _handleRefresh,
             icon: const Icon(Icons.refresh),
             label: const Text("Refrescar"),
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E1E1E)),
@@ -725,10 +809,65 @@ class _LocalFilesViewState extends State<_LocalFilesView> {
 
     if (confirmed == true) {
       try {
-        await file.delete(recursive: true);
+        // Intento 1: Borrado directo (más rápido)
+        if (await file.exists()) {
+          await file.delete(recursive: true);
+        } else {
+          // Intento 2: Búsqueda manual por nombre (evita errores de codificación/acentos)
+          final parent = file.parent;
+          if (await parent.exists()) {
+            final name = file.path.split('/').last;
+            final entities = parent.listSync();
+            FileSystemEntity? target;
+            for (var e in entities) {
+              if (e.path.split('/').last == name) {
+                target = e;
+                break;
+              }
+            }
+            if (target != null) {
+              await target.delete(recursive: true);
+            } else {
+              throw PathNotFoundException(file.path, const OSError("", 2), "Archivo no localizado físicamente");
+            }
+          } else {
+            throw PathNotFoundException(file.path, const OSError("", 2), "Directorio raíz no disponible");
+          }
+        }
         _scanFiles();
       } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error al borrar: $e")));
+        print("[DELETE_LOCAL] Error: $e");
+        String errorMsg = "Error al borrar: $e";
+        
+        bool isPermissionIssue = e.toString().contains("Permission denied") || e is PathNotFoundException;
+        
+        if (isPermissionIssue && Platform.isAndroid) {
+          errorMsg = "Android bloqueó el borrado. Necesitas otorgar 'Acceso Total' para gestionar esta carpeta.";
+          
+          final status = await Permission.manageExternalStorage.status;
+          if (!status.isGranted) {
+             final request = await showDialog<bool>(
+               context: context,
+               builder: (ctx) => AlertDialog(
+                 backgroundColor: const Color(0xFF1E1E1E),
+                 title: const Text("Acceso denegado", style: TextStyle(color: Colors.white)),
+                 content: const Text("Android requiere un permiso especial para borrar archivos en carpetas públicas. ¿Deseas otorgar acceso total?"),
+                 actions: [
+                   TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("No, borraré manual")),
+                   TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Dar acceso", style: TextStyle(color: Color(0xFF00A3FF)))),
+                 ],
+               ),
+             );
+             if (request == true) {
+               await Permission.manageExternalStorage.request();
+               return _deleteFile(context, file);
+             }
+          }
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(errorMsg), backgroundColor: Colors.red),
+        );
       }
     }
   }
