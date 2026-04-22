@@ -144,12 +144,16 @@ class MediaProxyService {
         final body = await response.stream.bytesToString();
         final rewrittenBody = _rewriteM3u8(body, url, headers, requestHost);
         
-        // Debug: Inspección de las primeras 5 líneas
-        final firstLines = LineSplitter.split(rewrittenBody).take(5).join('\n');
-        print('🔍 [DEBUG] Primeras líneas reescritas:\n$firstLines');
+        // Debug: Inspección de integridad (inicio y fin)
+        final allLines = LineSplitter.split(rewrittenBody).toList();
+        final firstLines = allLines.take(5).join('\n');
+        final lastLines = allLines.length > 5 ? allLines.skip(allLines.length - 5).join('\n') : '';
+        print('🔍 [DEBUG] M3U8 reescrito - Inicio:\n$firstLines');
+        print('🔍 [DEBUG] M3U8 reescrito - Fin:\n$lastLines');
 
-        // Importante: Enviar el nuevo Content-Length para que VLC no se pierda
+        // Importante: Enviar el nuevo Content-Length y MIME Type correcto
         final bytes = utf8.encode(rewrittenBody);
+        request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
         request.response.headers.contentLength = bytes.length;
         request.response.add(bytes);
         await request.response.close();
@@ -189,14 +193,14 @@ class MediaProxyService {
           final internalUrl = match.group(1)!;
           final absoluteUri = baseUri.resolve(internalUrl);
           final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host);
-          newLine = line.replaceFirst(internalUrl, proxiedUrl);
+          newLine = line.replaceFirst(internalUrl, proxiedUrl.trim());
         }
         rewrittenLines.add(newLine);
       } else {
         // Es una URL de segmento o de sub-playlist, la proxiamos usando el host actual
-        final absoluteUri = baseUri.resolve(line);
+        final absoluteUri = baseUri.resolve(line.trim());
         final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host);
-        rewrittenLines.add(proxiedUrl);
+        rewrittenLines.add(proxiedUrl.trim());
       }
     }
     return rewrittenLines.join('\n');
