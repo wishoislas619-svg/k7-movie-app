@@ -128,14 +128,59 @@ class MediaProxyService {
       request.response.headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
       request.response.headers.set('Access-Control-Allow-Headers', '*');
 
-      // Streaming de los datos
-      await request.response.addStream(response.stream);
-      await request.response.close();
+      final contentType = response.headers['content-type']?.toLowerCase() ?? '';
+      final isM3u8 = contentType.contains('mpegurl') || url.toLowerCase().contains('.m3u8');
+
+      if (isM3u8) {
+        // 📝 REESCRITURA DE M3U8: Leemos la lista y proxiamos cada enlace interno
+        final body = await response.stream.bytesToString();
+        final rewrittenBody = _rewriteM3u8(body, url, headers);
+        request.response.write(rewrittenBody);
+        await request.response.close();
+        print('♻️ [PROXY] Lista M3U8 reescrita para forzar túnel en segmentos');
+      } else {
+        // Streaming directo para segmentos (.ts) o archivos MP4
+        await request.response.addStream(response.stream);
+        await request.response.close();
+      }
     } catch (e) {
       print('❌ [PROXY] Error en upstream: $e');
       request.response.statusCode = HttpStatus.serviceUnavailable;
       await request.response.close();
     }
+  }
+
+  String _rewriteM3u8(String content, String baseUrl, Map<String, String> originalHeaders) {
+    final lines = LineSplitter.split(content);
+    final rewrittenLines = <String>[];
+    final baseUri = Uri.parse(baseUrl);
+
+    for (var line in lines) {
+      if (line.isEmpty) {
+        rewrittenLines.add(line);
+        continue;
+      }
+
+      if (line.startsWith('#')) {
+        // Buscar URIs dentro de tags (ej: #EXT-X-KEY:METHOD=AES-128,URI="...")
+        var newLine = line;
+        final uriRegex = RegExp(r'URI="([^"]+)"');
+        final match = uriRegex.firstMatch(line);
+        if (match != null) {
+          final internalUrl = match.group(1)!;
+          final absoluteUri = baseUri.resolve(internalUrl);
+          final proxiedUrl = getProxiedUrl(absoluteUri.toString(), originalHeaders);
+          newLine = line.replaceFirst(internalUrl, proxiedUrl);
+        }
+        rewrittenLines.add(newLine);
+      } else {
+        // Es una URL de segmento o de sub-playlist, la proxiamos
+        final absoluteUri = baseUri.resolve(line);
+        final proxiedUrl = getProxiedUrl(absoluteUri.toString(), originalHeaders);
+        rewrittenLines.add(proxiedUrl);
+      }
+    }
+    return rewrittenLines.join('\n');
   }
 
   String getProxiedUrl(String url, Map<String, String>? headers) {
