@@ -117,8 +117,16 @@ class MediaProxyService {
 
       // Copiar headers de respuesta (importante para Content-Type y Rangos)
       request.response.statusCode = response.statusCode;
+      final contentType = response.headers['content-type']?.toLowerCase() ?? '';
+      final isM3u8 = contentType.contains('mpegurl') || url.toLowerCase().contains('.m3u8');
+
+      // Copiar headers de respuesta (importante para Content-Type y Rangos)
+      request.response.statusCode = response.statusCode;
       response.headers.forEach((key, value) {
-        if (key.toLowerCase() != 'transfer-encoding' && key.toLowerCase() != 'content-encoding') {
+        final k = key.toLowerCase();
+        // Omitimos headers que cambian al reescribir o que maneja el servidor automáticamente
+        if (k != 'transfer-encoding' && k != 'content-encoding') {
+          if (isM3u8 && k == 'content-length') return; // El tamaño cambiará al reescribir
           request.response.headers.set(key, value);
         }
       });
@@ -127,9 +135,6 @@ class MediaProxyService {
       request.response.headers.set('Access-Control-Allow-Origin', '*');
       request.response.headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
       request.response.headers.set('Access-Control-Allow-Headers', '*');
-
-      final contentType = response.headers['content-type']?.toLowerCase() ?? '';
-      final isM3u8 = contentType.contains('mpegurl') || url.toLowerCase().contains('.m3u8');
 
       if (isM3u8) {
         // 📝 REESCRITURA DE M3U8: Leemos la lista y proxiamos cada enlace interno
