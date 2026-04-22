@@ -77,6 +77,11 @@ class MediaProxyService {
       headers = Map<String, String>.from(json.decode(utf8.decode(base64Url.decode(encodedHeaders))));
     }
 
+    // Log de diagnóstico: ¿Qué nos está pidiendo el reproductor?
+    final incomingHeaders = <String, String>{};
+    request.headers.forEach((key, value) => incomingHeaders[key] = value.join(', '));
+    print('📥 [PROXY_REQ] Cabeceras entrantes: $incomingHeaders');
+
     print('🚀 [PROXY] Redirigiendo a: $url');
 
     // Aplicar cabeceras por defecto solo si no vienen en la petición original
@@ -179,26 +184,36 @@ class MediaProxyService {
     final baseUri = Uri.parse(baseUrl);
 
     for (var line in lines) {
-      if (line.isEmpty) {
+      final trimmedLine = line.trim();
+      if (trimmedLine.isEmpty) {
         rewrittenLines.add(line);
         continue;
       }
 
-      if (line.startsWith('#')) {
+      // 🛡️ FILTRO DE PUBLICIDAD: Si la línea parece un anuncio de TikTok, la saltamos
+      if (trimmedLine.contains('tiktok') || trimmedLine.contains('.image')) {
+        // Si la línea anterior era un #EXTINF, tenemos que quitarla también
+        if (rewrittenLines.isNotEmpty && rewrittenLines.last.startsWith('#EXTINF')) {
+          rewrittenLines.removeLast();
+        }
+        continue;
+      }
+
+      if (trimmedLine.startsWith('#')) {
         // Buscar URIs dentro de tags (ej: #EXT-X-KEY:METHOD=AES-128,URI="...")
-        var newLine = line;
+        var newLine = trimmedLine;
         final uriRegex = RegExp(r'URI="([^"]+)"');
-        final match = uriRegex.firstMatch(line);
+        final match = uriRegex.firstMatch(trimmedLine);
         if (match != null) {
           final internalUrl = match.group(1)!;
           final absoluteUri = baseUri.resolve(internalUrl);
           final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host);
-          newLine = line.replaceFirst(internalUrl, proxiedUrl.trim());
+          newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl.trim());
         }
         rewrittenLines.add(newLine);
       } else {
         // Es una URL de segmento o de sub-playlist, la proxiamos usando el host actual
-        final absoluteUri = baseUri.resolve(line.trim());
+        final absoluteUri = baseUri.resolve(trimmedLine);
         final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host);
         rewrittenLines.add(proxiedUrl.trim());
       }
