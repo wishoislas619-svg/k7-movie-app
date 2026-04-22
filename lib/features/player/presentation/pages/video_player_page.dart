@@ -32,6 +32,7 @@ import 'package:movie_app/features/series/presentation/pages/series_details_page
 import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
 import 'package:movie_app/features/cast/services/cast_service.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:movie_app/features/cast/services/media_proxy_service.dart';
 
 class SubtitleInfo {
   final String language;
@@ -181,6 +182,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   Duration? _pendingResumeDuration;
   bool _hasFoundPremiumServer = false;
   bool _isAlgo3Extracting = false; // Pantalla de carga dedicada para Algoritmo 3
+  bool _useProxy = false; // Modo proxy para burlar bloqueos
 
   @override
   void initState() {
@@ -1274,7 +1276,16 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Future<void> _initializeVideoPlayer(String videoUrl) async {
-    _extractedVideoUrl = videoUrl;
+    String effectiveUrl = videoUrl;
+    
+    // Si el modo proxy está activo, envolvemos la URL en nuestro proxy local
+    if (_useProxy && !videoUrl.startsWith('http://127.0.0.1') && !videoUrl.startsWith('http://localhost') && !widget.isLocal) {
+      final headers = _getHeadersForCast();
+      effectiveUrl = MediaProxyService().getProxiedUrl(videoUrl, headers);
+      print("🛡️ [PROXY_MODE] Usando URL proxiada para el player y cast: $effectiveUrl");
+    }
+
+    _extractedVideoUrl = effectiveUrl;
     Duration? lastPosition;
     if (_controller != null) {
       if (_controller!.value.position.inSeconds > 2) {
@@ -2705,6 +2716,14 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              IconButton(
+                icon: Icon(
+                  _useProxy ? Icons.security : Icons.security_outlined,
+                  color: _useProxy ? const Color(0xFF00FF87) : Colors.white70,
+                ),
+                onPressed: _toggleProxy,
+                tooltip: 'Modo Proxy (Burlar bloqueos)',
+              ),
               CastButton(
                 videoUrl: _extractedVideoUrl ?? _currentOption.videoUrl,
                 localFilePath: widget.isLocal ? _currentOption.videoUrl : null,
@@ -3648,5 +3667,40 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     }
     
     return h;
+  }
+
+  void _toggleProxy() async {
+    if (!mounted) return;
+    
+    // Si ya tenemos una URL extraída, la usamos. Si no, la de la opción actual.
+    // Pero quitamos el envoltorio de proxy previo si existe para no encadenar proxies.
+    String baseVideoUrl = _extractedVideoUrl ?? _currentOption.videoUrl;
+    if (baseVideoUrl.contains('/proxy?url=')) {
+       final uri = Uri.parse(baseVideoUrl);
+       final encodedUrl = uri.queryParameters['url'];
+       if (encodedUrl != null) {
+          baseVideoUrl = utf8.decode(base64Url.decode(encodedUrl));
+       }
+    }
+
+    if (baseVideoUrl.isEmpty) return;
+
+    setState(() {
+      _useProxy = !_useProxy;
+    });
+
+    if (_useProxy) {
+      await MediaProxyService().start();
+    }
+
+    _initializeVideoPlayer(baseVideoUrl);
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_useProxy ? '🛡️ Modo Proxy Activado (Burlado de seguridad)' : '🔓 Modo Directo Activado'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: _useProxy ? const Color(0xFF00FF87) : Colors.grey[800],
+      ),
+    );
   }
 }
