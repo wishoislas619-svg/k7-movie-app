@@ -119,13 +119,22 @@ class VideoService {
   }
 
   /// Parses an .m3u8 master playlist to find available resolutions.
-  static Future<List<VideoQuality>> getHlsQualities(String masterUrl, {Map<String, String>? headers}) async {
+  static Future<List<VideoQuality>> getHlsQualities(String masterUrl, {Map<String, String>? headers, String? masterText}) async {
     List<VideoQuality> qualities = [];
     try {
-      final response = await http.get(Uri.parse(masterUrl), headers: headers).timeout(const Duration(seconds: 5));
-      if (response.statusCode != 200) return qualities;
+      String body = masterText ?? "";
+      if (body.isEmpty) {
+        final response = await http.get(Uri.parse(masterUrl), headers: headers).timeout(const Duration(seconds: 5));
+        if (response.statusCode != 200) {
+           print('DEBUG: getHlsQualities HTTP ERROR ${response.statusCode}');
+           return qualities;
+        }
+        body = response.body;
+      }
 
-      final lines = response.body.split('\n');
+      print('DEBUG: getHlsQualities BODY START: ${body.substring(0, body.length > 200 ? 200 : body.length)}');
+
+      final lines = body.split('\n');
       String? currentRes;
       
       for (var i = 0; i < lines.length; i++) {
@@ -136,13 +145,15 @@ class VideoService {
             currentRes = resMatch.group(1);
           }
         } else if (line.isNotEmpty && !line.startsWith('#') && currentRes != null) {
-          String qualityUrl = line;
+          String qualityUrl = line.trim();
           if (!qualityUrl.startsWith('http')) {
-            final uri = Uri.parse(masterUrl);
-            final pathSegments = List<String>.from(uri.pathSegments);
-            pathSegments.removeLast();
-            qualityUrl = '${uri.scheme}://${uri.host}/${pathSegments.join('/')}/$line';
+            // Use proper URI resolution to avoid double-slash bugs
+            final baseUri = Uri.parse(masterUrl);
+            final parentPath = baseUri.path.substring(0, baseUri.path.lastIndexOf('/') + 1);
+            final resolved = baseUri.replace(path: '$parentPath$qualityUrl', query: null, fragment: null);
+            qualityUrl = resolved.toString();
           }
+          print('DEBUG: getHlsQualities qualityUrl resolved: $qualityUrl');
           
           qualities.add(VideoQuality(
             resolution: _formatResolution(currentRes),

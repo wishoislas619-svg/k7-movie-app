@@ -18,6 +18,7 @@ import 'package:movie_app/core/services/foreground_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:movie_app/core/services/storage_service.dart';
 import 'package:movie_app/core/constants/app_constants.dart';
+import 'package:movie_app/features/cast/services/media_proxy_service.dart';
 
 class DownloadRepository {
   final SqliteService _sqliteService;
@@ -214,41 +215,67 @@ class DownloadRepository {
       {required Function(double, String) onProgress,
       required Function(my.DownloadStatus) onStatusChange}) async {
     
-    final isHls = task.videoUrl.contains('.m3u8');
+    // Detect HLS: classic .m3u8 OR .txt manifests from known CDN domains
+    final isHls = task.videoUrl.contains('.m3u8') ||
+        (task.videoUrl.contains('.txt') && 
+         (task.videoUrl.contains('goldenfieldproductionworks') ||
+          task.videoUrl.contains('cf-master') ||
+          task.videoUrl.contains('index-f') ||
+          task.videoUrl.contains('/v4/db/')));
     print('[DL] enqueue id=${task.id} isHls=$isHls url=${task.videoUrl}');
     
-    // Prefer headers already in task (with cookies)
-    final headers = task.headers != null ? Map<String, String>.from(task.headers!) : {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      'Referer': task.videoUrl.split('/').take(3).join('/'),
-    };
-    headers.remove('range');
-    headers.remove('Range');
-
+    // 🛡️ BYPASS PROXY PARA DESCARGAS
     var finalUrl = task.videoUrl;
-    var finalExt = finalUrl.split('?').first.split('.').last;
+    var finalHeaders = task.headers != null ? Map<String, String>.from(task.headers!) : <String, String>{};
 
-    if (isHls) {
-      final mp4Url = await _tryConvertToMp4(task.videoUrl, headers: headers);
+    // Si la URL viene del proxy local, extraemos la original y sus headers.
+    final unproxied = MediaProxyService.tryUnproxy(finalUrl);
+    if (unproxied != null) {
+      finalUrl = unproxied['url'] as String;
+      if (unproxied['headers'] != null) {
+        // Combinamos los headers del proxy con los que ya teníamos (priorizando los del proxy)
+        finalHeaders.addAll(unproxied['headers'] as Map<String, String>);
+      }
+      print('🛡️ [DL_BYPASS] URL des-proxeada para descarga directa: $finalUrl');
+    }
+
+    // Default headers if none provided
+    if (finalHeaders.isEmpty) {
+      finalHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+      finalHeaders['Referer'] = finalUrl.split('/').take(3).join('/');
+    }
+    
+    // Cleanup headers for background downloader
+    finalHeaders.remove('range');
+    finalHeaders.remove('Range');
+
+    var finalExt = finalUrl.split('?').first.split('.').last;
+    // Normalize .txt manifests to be treated as m3u8 for downstream logic
+    if (isHls && finalExt == 'txt') finalExt = 'm3u8';
+    print('[DL] finalUrl=$finalUrl ext=$finalExt');
+
+    // If HLS, skip the m3u8→mp4 direct-link conversion (txt manifests can't be converted that way)
+    if (isHls && !finalUrl.contains('.txt')) {
+      final mp4Url = await _tryConvertToMp4(finalUrl, headers: finalHeaders);
       if (mp4Url != null) {
         finalUrl = mp4Url;
         finalExt = 'mp4';
         print("Smart Conversion Success: Swapped HLS for MP4: $finalUrl");
       }
     }
-    print('[DL] finalUrl=$finalUrl ext=$finalExt');
+    print('[DL] finalUrl=$finalUrl ext=$finalExt (after conversion attempt)');
 
     final fileName = '${task.movieName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}_${task.resolution}.$finalExt';
 
     await updateDownloadTask(task.copyWith(status: my.DownloadStatus.downloading, videoUrl: finalUrl));
 
     // If still HLS after conversion attempt, download and merge segments.
-    if (finalUrl.contains('.m3u8')) {
+    if (isHls || finalUrl.contains('.m3u8') || finalUrl.contains('.txt')) {
       print('[DL] HLS path selected');
       _downloadHlsAsTs(
         task: task.copyWith(videoUrl: finalUrl),
-        fileName: fileName.replaceAll('.m3u8', '.ts'),
-        headers: headers,
+        fileName: fileName.replaceAll('.m3u8', '.ts').replaceAll('.txt', '.ts'),
+        headers: finalHeaders,
         onProgress: onProgress,
         onStatusChange: onStatusChange,
       );
@@ -259,7 +286,7 @@ class DownloadRepository {
       taskId: task.id,
       url: finalUrl,
       filename: fileName,
-      headers: headers,
+      headers: finalHeaders,
       directory: 'downloads',
       updates: Updates.statusAndProgress,
       allowPause: true,

@@ -41,8 +41,10 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   int _timerCount = 0;
   bool _isDisposed = false;
   final List<VideoExtractionData> _foundMedia = [];
-  bool _isSpanishSelected = false; 
+  bool _isSpanishSelected = false;
+  bool _serverSwitchDone = false; // true once algo 3 has confirmed server switch
   bool _snifferInjected = false;
+  Timer? _algo3Timer; // Keeps reference to prevent duplicate timers on page reload
   static const _webviewTouchChannel = MethodChannel('com.luis.movieapp/webview_touch');
   final GlobalKey _webViewKey = GlobalKey();
   Map<String, String>? _lastCapturedHeaders;
@@ -74,6 +76,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   @override
   void dispose() {
     _isDisposed = true;
+    _algo3Timer?.cancel();
     _borderController.dispose();
     super.dispose();
   }
@@ -95,19 +98,28 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
     final filteredMedia = _foundMedia.where((m) {
       final url = m.videoUrl.toLowerCase();
       
-      // BLOCK problematic direct extensions as explicitly requested for downloads
-      bool isProblematic = url.contains('.mp4') || url.contains('.mkv');
+      // We allow direct extensions now as requested for better download support
+      bool isProblematic = false;
       
       // If we're using Algorithm 2, we should be EXTRA strict about hiding direct links
       // as they are likely ads or non-HLS streams that won't work in the background.
-      if (widget.extractionAlgorithm == 2 && !url.contains('.m3u8')) {
+      // BUT allow .txt manifests from known HLS CDN domains
+      final isTxtManifest = url.contains('.txt') && 
+          (url.contains('goldenfieldproductionworks') || 
+           url.contains('/v4/db/') ||
+           url.contains('index-f') ||
+           url.contains('cf-master'));
+      if (widget.extractionAlgorithm == 2 && !url.contains('.m3u8') && !isTxtManifest) {
         isProblematic = true;
       }
 
       // Filtro de extensiones avanzado para evadir bloqueos
       final isVideo = url.contains('.m3u8') || 
                       url.contains('.mp4') || 
+                      url.contains('.mkv') ||
+                      url.contains('.webm') ||
                       url.contains('ecotechproducts.shop') ||
+                      isTxtManifest ||
                       (url.contains('.txt') && (url.contains('master') || url.contains('playlist')));
       
       if (!isVideo) return false;
@@ -305,13 +317,19 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                                print("[SNIFFER_DEBUG_JS] ${args.first}");
                             });
 
-                            controller.addJavaScriptHandler(
+            controller.addJavaScriptHandler(
                               handlerName: 'onServerSelected',
                               callback: (args) {
                                 if (mounted) {
+                                  final serverName = args.isNotEmpty ? args.first.toString() : 'desconocido';
+                                  print('[SNIFFER] ✅ Servidor seleccionado: $serverName — limpiando streams del servidor anterior...');
                                   setState(() {
                                     _isSpanishSelected = true;
-                                    _statusText = "Servidor en español detectado. Extrayendo...";
+                                    _serverSwitchDone = true;
+                                    // *** Clave: limpiar el stream del servidor default ***
+                                    // para que el sniffer capture el stream del nuevo servidor
+                                    _foundMedia.clear();
+                                    _statusText = "Servidor '$serverName' seleccionado. Extrayendo...";
                                   });
                                 }
                               },
@@ -374,10 +392,11 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                             if (widget.extractionAlgorithm == 3) {
                               await Future.delayed(const Duration(milliseconds: 1500));
                               if (!_isDisposed) {
+                                _algo3Timer?.cancel(); // Cancel any previous timer on page reload
                                 _runAlgorithm3();
-                                // Bucle de re-clics cada 3 segs para forzar el inicio en Alg 3
-                                Timer.periodic(const Duration(seconds: 4), (timer) {
-                                  if (_isDisposed || _foundMedia.isNotEmpty) {
+                                // Bucle de re-clics: continuar hasta confirmar cambio de servidor Y tener media
+                                _algo3Timer = Timer.periodic(const Duration(seconds: 4), (timer) {
+                                  if (_isDisposed || (_serverSwitchDone && _foundMedia.isNotEmpty)) {
                                     timer.cancel();
                                     return;
                                   }
@@ -768,32 +787,43 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
 
     // 2. Identify qualities & Explode (Like 1DM)
     try {
-      if (url.contains(".m3u8")) {
-        print("[SNIFFER] Desglosando lista HLS para encontrar todas las calidades...");
+      if (url.contains(".m3u8") || url.contains(".txt") || url.contains(".mpd")) {
+        print("[SNIFFER] Desglosando lista HLS/TXT para encontrar todas las calidades...");
         
-        // Add the main HLS as a separate entry first (Auto/Fallback)
-        final mainSize = await _probeFileSize(url, headersForProbe);
+        // Add the main HLS entry immediately WITHOUT probing size (manifests are always tiny)
         _addFoundMedia(
           url: url,
           resolution: "Resolución Auto (HLS)",
-          size: mainSize,
+          size: "Streaming (HLS)",
           headers: headersForProbe,
           cookies: cookieString,
         );
 
+        // Fetch qualities in background so dialog populates fast
         final masterUrl = await _resolveHlsMasterUrl(url, headersForProbe);
         final targetUrl = masterUrl ?? url;
-        final explodedQualities = await VideoService.getHlsQualities(targetUrl, headers: headersForProbe);
+        List<VideoQuality> explodedQualities = await VideoService.getHlsQualities(targetUrl, headers: headersForProbe);
         
+        if (explodedQualities.isEmpty) {
+          print('[SNIFFER] HTTP falló para obtener calidades, usando WebView fetch...');
+          final webViewText = await _fetchWithWebView(targetUrl);
+          if (webViewText != null && webViewText.isNotEmpty) {
+            explodedQualities = await VideoService.getHlsQualities(targetUrl, headers: headersForProbe, masterText: webViewText);
+          }
+        }
+        
+        print('[SNIFFER] Calidades encontradas: ${explodedQualities.length}');
         for (var q in explodedQualities) {
-           final size = await _probeFileSize(q.url, headersForProbe);
+           print('[SNIFFER] Calidad -> res:${q.resolution} url:${q.url}');
+           // Manifest sub-tracks (.txt/.m3u8) don't need size probing — add immediately
            _addFoundMedia(
              url: q.url,
              resolution: "Streaming ${q.resolution}",
-             size: size,
+             size: "Streaming (HLS)",
              headers: headersForProbe,
              cookies: cookieString,
            );
+           print('[SNIFFER] Calidad agregada: ${q.url.split('/').last}');
         }
       } else if (url.contains(".ts") || url.contains(".m4s")) {
         print("[BYPASS] Sesión refrescada mediante fragmento de video.");
@@ -879,8 +909,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   }) {
     if (_isDisposed || !mounted) return;
     
-    // Skip tiny files (likely error pages or empty HLS manifests)
-    if (size != null && size.contains('KB') && !size.contains('Streaming')) {
+    // Skip tiny files (likely error pages) EXCEPT for manifests (.m3u8, .mpd) which are just text files
+    final isManifest = url.contains('.m3u8') || url.contains('.mpd') || url.contains('.txt');
+    if (!isManifest && size != null && size.contains('KB') && !size.contains('Streaming')) {
        final kb = double.tryParse(size.split(' ').first) ?? 0;
        if (kb < 100) return; // Discard anything < 100KB
     }
@@ -898,9 +929,30 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
     });
   }
 
+  Future<String?> _fetchWithWebView(String url) async {
+    if (_webViewController == null) return null;
+    try {
+      final js = '''
+        (async function() {
+          try {
+            const resp = await fetch("$url");
+            if (!resp.ok) return null;
+            return await resp.text();
+          } catch(e) {
+            return null;
+          }
+        })();
+      ''';
+      final result = await _webViewController!.evaluateJavascript(source: js);
+      return result?.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<String?> _resolveHlsMasterUrl(String mediaUrl, Map<String, String> headers) async {
     try {
-      final mediaText = await _fetchText(mediaUrl, headers);
+      final mediaText = await _fetchText(mediaUrl, headers) ?? await _fetchWithWebView(mediaUrl);
       if (mediaText != null && mediaText.contains('#EXT-X-STREAM-INF')) {
         return mediaUrl;
       }
@@ -1177,53 +1229,73 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
               return null;
             }
 
-            // 1. Aseguramos que la pestaña de servers esté activa
-            var serversTab = findByText(document, 'Servers', true) || findByText(document, 'Servidores', true);
-            if (serversTab) {
-               var state = serversTab.getAttribute('data-state') || serversTab.getAttribute('aria-selected');
-               if (state !== 'active' && state !== 'true') {
-                  console.log('🖱️ Abriendo tab de servers para selección...');
-                  forceClick(serversTab);
-                  return;
+            // === PASO 1: ¿Menú de pestañas visible? ===
+            var tabList = document.querySelector('[role="tablist"]') || document.querySelector('.vds-menu-items') || findByText(document, 'Quality');
+            if (tabList) {
+               console.log('🔍 Menú de ajustes detectado en Extractor');
+               var serversTab = findByText(document, 'Servers', true) || findByText(document, 'Servidores', true);
+               
+               if (serversTab) {
+                  var state = serversTab.getAttribute('data-state') || serversTab.getAttribute('aria-selected');
+                  if (state === 'active' || state === 'true') {
+                     // === PASO 2: Extracción y Auto-Selección ===
+                     var panel = document.querySelector('[role="tabpanel"][data-state="active"]') || serversTab.parentElement.parentElement;
+                     var serverBtns = Array.from(panel.querySelectorAll('button, [role="radio"], [role="menuitem"]'));
+                     
+                     var target = serverBtns.find(b => b.textContent.toLowerCase().includes('gekko'));
+                     if (!target) {
+                        target = serverBtns.find(b => {
+                           var t = b.textContent.toLowerCase();
+                           return t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano');
+                        });
+                     }
+                     if (target) {
+                        console.log('🎯 [AUTO-SELECT] Seleccionando servidor prioritario: ' + target.textContent);
+                        if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServerSelected', target.textContent);
+                        forceClick(target);
+                     } else {
+                        var firstInPanel = document.querySelector('[role="tabpanel"] button');
+                        if (firstInPanel) {
+                           if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServerSelected', firstInPanel.textContent);
+                           forceClick(firstInPanel);
+                        }
+                     }
+                  } else {
+                     console.log('🖱️ Pestaña Servers inactiva, clickeando...');
+                     forceClick(serversTab);
+                     return;
+                  }
+               }
+            } else {
+               // === PASO 0: Abrir el engranaje ===
+               var gear = findGear(document);
+               if (gear) {
+                  console.log('⚙️ Engranaje encontrado, abriendo menú...');
+                  forceClick(gear);
+               } else {
+                  // Fallback: Si no hay engranaje pero hay botones de servers directamente
+                  var allButtons = document.querySelectorAll('button, [role="radio"], [role="menuitem"]');
+                  var fallbackTarget = null;
+                  for (var b of allButtons) {
+                     if (b.textContent.toLowerCase().includes('gekko') && isVisible(b)) {
+                        fallbackTarget = b; break;
+                     }
+                  }
+                  if (!fallbackTarget) {
+                     for (var b of allButtons) {
+                        var t = b.textContent.toLowerCase();
+                        if ((t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano')) && isVisible(b)) {
+                           fallbackTarget = b; break;
+                        }
+                     }
+                  }
+                  if (fallbackTarget) {
+                     console.log('🎯 [AUTO-SELECT] Fallback clic: ' + fallbackTarget.textContent);
+                     if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServerSelected', fallbackTarget.textContent);
+                     forceClick(fallbackTarget);
+                  }
                }
             }
-
-            // 2. Buscamos el servidor específico (Gekko o Español)
-            var allButtons = document.querySelectorAll('button, [role="tabpanel"] button, [role="radio"], [role="menuitem"]');
-            var target = null;
-            
-            // Prioridad 1: Gekko
-            for (var b of allButtons) {
-              if (b.textContent.toLowerCase().includes('gekko') && isVisible(b)) {
-                target = b; break;
-              }
-            }
-            
-            // Prioridad 2: Español/Latino
-            if (!target) {
-              for (var b of allButtons) {
-                var t = b.textContent.toLowerCase();
-                if ((t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano')) && isVisible(b)) {
-                  target = b; break;
-                }
-              }
-            }
-            
-            if (target) {
-              console.log('🎯 [AUTO-SELECT] Seleccionando servidor: ' + target.textContent);
-              if (window.flutter_inappwebview) {
-                window.flutter_inappwebview.callHandler('onServerSelected', target.textContent);
-              }
-              forceClick(target);
-            } else {
-              // Fallback: Si no hay específicos, clickeamos el primero del panel si existe
-              var firstInPanel = document.querySelector('[role="tabpanel"] button');
-              if (firstInPanel) forceClick(firstInPanel);
-            }
-
-            // Abrir engranaje si nada más funcionó
-            var gear = findGear(document);
-            if (gear && !target) forceClick(gear);
           })();
       """);
 
@@ -1243,7 +1315,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
         ];
 
         for (var p in points) {
-          if (_isDisposed || _foundMedia.isNotEmpty) break;
+          if (_isDisposed) break; // Solo parar si el widget fue destruido
           await _webviewTouchChannel.invokeMethod('tapAt', {
             'x': (offset.dx + p.dx) * dpr,
             'y': (offset.dy + p.dy) * dpr
