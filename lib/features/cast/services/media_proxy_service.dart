@@ -7,6 +7,41 @@ class MediaProxyService {
   factory MediaProxyService() => _instance;
   MediaProxyService._internal();
 
+  /// Intenta revertir una URL proxeada a su URL original y headers.
+  /// Retorna un mapa con 'url' y 'headers' (opcional) si es una URL del proxy, o null si no lo es.
+  static Map<String, dynamic>? tryUnproxy(String proxiedUrl) {
+    try {
+      if (!proxiedUrl.contains('/proxy')) return null;
+      final uri = Uri.parse(proxiedUrl);
+      
+      final encodedUrl = uri.queryParameters['url'];
+      if (encodedUrl == null) return null;
+
+      String normalizeBase64(String s) {
+        int pad = 4 - (s.length % 4);
+        if (pad < 4) s += '=' * pad;
+        return s;
+      }
+
+      final url = utf8.decode(base64Url.decode(normalizeBase64(encodedUrl)));
+      
+      Map<String, String>? headers;
+      final encodedHeaders = uri.queryParameters['h'] ?? uri.queryParameters['headers'];
+      if (encodedHeaders != null) {
+        final decoded = utf8.decode(base64Url.decode(normalizeBase64(encodedHeaders)));
+        headers = Map<String, String>.from(json.decode(decoded));
+      }
+      
+      return {
+        'url': url,
+        'headers': headers,
+      };
+    } catch (e) {
+      print('⚠️ [PROXY] Error al intentar des-proxear: $e');
+      return null;
+    }
+  }
+
   HttpServer? _server;
   int _port = 0;
   String _localIp = '';

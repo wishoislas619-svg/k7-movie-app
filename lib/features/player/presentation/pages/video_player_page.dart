@@ -515,17 +515,21 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     
     if (position <= 0) return;
 
-    ref.read(historyProvider.notifier).saveProgress(
-      mediaId: widget.mediaId,
-      episodeId: widget.episodeId,
-      mediaType: widget.mediaType,
-      position: position,
-      duration: duration,
-      title: widget.movieName.split(' - ').first, // Get base title
-      subtitle: widget.subtitleLabel,
-      imagePath: widget.imagePath,
-      videoOptionId: _currentOption.id,
-    );
+    try {
+      ref.read(historyProvider.notifier).saveProgress(
+        mediaId: widget.mediaId,
+        episodeId: widget.episodeId,
+        mediaType: widget.mediaType,
+        position: position,
+        duration: duration,
+        title: widget.movieName.split(' - ').first, // Get base title
+        subtitle: widget.subtitleLabel,
+        imagePath: widget.imagePath,
+        videoOptionId: _currentOption.id,
+      );
+    } catch (e) {
+      print("⚠️ [SAVE_PROGRESS] Error saving progress: $e");
+    }
   }
 
   Future<void> _checkResume(VideoPlayerController controller) async {

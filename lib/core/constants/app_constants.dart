@@ -12,5 +12,5 @@ class AppConstants {
   static const String roleSecurity = 'security';
 
   // Configuración de almacenamiento (Decidido por el programador)
-  static const bool secureSave = true;
+  static const bool secureSave = false;
 }
