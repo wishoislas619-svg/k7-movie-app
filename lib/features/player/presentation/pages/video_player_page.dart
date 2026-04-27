@@ -3669,9 +3669,17 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         : 'https://$initialHost';
 
     // Lógica específica para Algoritmo 3 (Embed.su / Videasy)
-    if (_effectiveAlgorithm == 3 || currentUrl.contains('videasy') || currentUrl.contains('embed.su')) {
-      h['Referer'] = 'https://embed.su/';
-      h['Origin'] = 'https://embed.su';
+    if (_effectiveAlgorithm == 3 || currentUrl.contains('videasy') || currentUrl.contains('embed.su') || currentUrl.contains('vidplus') || currentUrl.contains('workers.dev')) {
+      // Identidad Android para evitar bloqueos
+      h['User-Agent'] = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
+      
+      if (currentUrl.contains('videasy') || currentUrl.contains('vidplus') || currentUrl.contains('workers.dev')) {
+        h['Referer'] = 'https://player.videasy.net/';
+        h['Origin'] = 'https://player.videasy.net';
+      } else {
+        h['Referer'] = 'https://embed.su/';
+        h['Origin'] = 'https://embed.su';
+      }
     } 
     // Lógica para Algoritmo 2 (Cuevana / Vidsrc)
     else if (_effectiveAlgorithm == 2) {

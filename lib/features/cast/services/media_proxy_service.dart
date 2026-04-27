@@ -126,6 +126,8 @@ class MediaProxyService {
     }
 
     final url = utf8.decode(base64Url.decode(normalizeBase64(encodedUrl)));
+    final requestId = DateTime.now().millisecondsSinceEpoch.toString().substring(7);
+
     Map<String, String> headers = {};
     if (encodedHeaders != null) {
       final decoded = utf8.decode(base64Url.decode(normalizeBase64(encodedHeaders)));
@@ -143,14 +145,27 @@ class MediaProxyService {
       // Usamos los headers originales sin añadir nada nuestro
     } else {
       // Algoritmo 3: Videasy / Embed.su
-      if (algoParam == '3' || url.contains('videasy') || url.contains('embed.su')) {
-        headers['Referer'] ??= 'https://embed.su/';
-        headers['Origin'] ??= 'https://embed.su';
+      if (algoParam == '3' || url.contains('videasy') || url.contains('embed.su') || url.contains('vidplus') || url.contains('workers.dev')) {
+        print('🛡️ [PROXY_ALGO][$requestId] Aplicando Algoritmo 3 (Android Identity)');
+        
+        // Identidad Android para evitar bloqueos de Videasy
+        headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
+        headers['Sec-CH-UA-Mobile'] = '?1';
+        headers['Sec-CH-UA-Platform'] = '"Android"';
+
+        if (url.contains('videasy') || url.contains('vidplus') || url.contains('workers.dev')) {
+          headers['Referer'] = 'https://player.videasy.net/';
+          headers['Origin'] = 'https://player.videasy.net';
+        } else {
+          headers['Referer'] ??= 'https://embed.su/';
+          headers['Origin'] ??= 'https://embed.su';
+        }
       }
 
       // Algoritmo 2: Cuevana / Otros
       if (algoParam == '2') {
-        headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36';
+        print('🛡️ [PROXY_ALGO][$requestId] Aplicando Algoritmo 2 (Desktop UA)');
+        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
         headers['Sec-Fetch-Dest'] = 'video';
         headers['Sec-Fetch-Mode'] = 'cors';
         headers['Sec-Fetch-Site'] = 'cross-site';
