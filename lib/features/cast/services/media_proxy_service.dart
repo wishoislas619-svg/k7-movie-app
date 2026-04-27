@@ -259,7 +259,7 @@ class MediaProxyService {
         request.response.headers.set('Accept-Ranges', 'bytes');
         request.response.headers.set('Access-Control-Allow-Origin', '*');
         request.response.headers.set('transferMode.dlna.org', 'Streaming');
-        request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
+        request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
         
         // Content-Type dinámico para descargas
         final lowerPath = cleanPath.toLowerCase();
@@ -378,6 +378,7 @@ class MediaProxyService {
 
         request.response.headers.set('Access-Control-Allow-Origin', '*');
         request.response.headers.set('transferMode.dlna.org', 'Streaming');
+        request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
         await request.response.addStream(response.stream);
         await request.response.close();
         client.close();

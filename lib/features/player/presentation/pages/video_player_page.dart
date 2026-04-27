@@ -1611,6 +1611,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   void _skip(int seconds) {
+    if (CastService().isConnected) {
+       final currentPosition = CastService().position;
+       final newPosition = currentPosition + Duration(seconds: seconds);
+       CastService().seekTo(newPosition);
+       _startHideTimer();
+       return;
+    }
     if (_controller == null || !_controller!.value.isInitialized) return;
     final currentPosition = _controller!.value.position;
     final newPosition = currentPosition + Duration(seconds: seconds);
@@ -1898,12 +1905,22 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                     ignoring: !_showControls,
                     child: IconButton(
                   iconSize: 80,
-                  icon: Icon(
-                    _controller?.value.isPlaying ?? false ? Icons.pause : Icons.play_arrow,
-                    color: Colors.white.withOpacity(0.8),
+                  icon: AnimatedBuilder(
+                    animation: Listenable.merge([if (_controller != null) _controller!, CastService()]),
+                    builder: (context, _) {
+                      final bool isPlaying = CastService().isConnected
+                          ? CastService().isPlaying
+                          : (_controller?.value.isPlaying ?? false);
+                      return Icon(
+                        isPlaying ? Icons.pause : Icons.play_arrow,
+                        color: Colors.white.withOpacity(0.8),
+                      );
+                    },
                   ),
                   onPressed: () {
-                    if (_controller != null && _controller!.value.isInitialized) {
+                    if (CastService().isConnected) {
+                      CastService().isPlaying ? CastService().pause() : CastService().play();
+                    } else if (_controller != null && _controller!.value.isInitialized) {
                       setState(() {
                         _controller!.value.isPlaying ? _controller!.pause() : _controller!.play();
                       });
@@ -2773,54 +2790,70 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-             if (!_isLocked && _controller != null)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  ValueListenableBuilder(
-                    valueListenable: _controller!,
-                    builder: (context, VideoPlayerValue value, child) {
-                      return Text(
-                        _formatDuration(value.position),
+             if (!_isLocked && (_controller != null || CastService().isConnected))
+              AnimatedBuilder(
+                animation: Listenable.merge([if (_controller != null) _controller!, CastService()]),
+                builder: (context, child) {
+                  final isCast = CastService().isConnected;
+                  final duration = isCast ? CastService().duration : (_controller?.value.duration ?? Duration.zero);
+                  final position = isCast ? CastService().position : (_controller?.value.position ?? Duration.zero);
+                  
+                  return Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        _formatDuration(position),
                         style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-                      );
-                    },
-                  ),
-                  const SizedBox(width: 15),
-                  Expanded(
-                    child: Stack(
-                      alignment: Alignment.centerLeft,
-                      children: [
-                        // Background Bar (Thick gray part)
-                        Container(
-                          height: 7.0,
-                          width: double.infinity,
-                          decoration: BoxDecoration(
-                            color: Colors.white24,
-                            borderRadius: BorderRadius.circular(5),
-                          ),
-                        ),
-                        // Invisible indicator for scrubbing logic
-                        VideoProgressIndicator(
-                          _controller!,
-                          allowScrubbing: true,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          colors: const VideoProgressColors(
-                            playedColor: Colors.transparent,
-                            bufferedColor: Colors.white24,
-                            backgroundColor: Colors.transparent,
-                          ),
-                        ),
-                        // Iridescent Progress Bar
-                        ValueListenableBuilder(
-                          valueListenable: _controller!,
-                          builder: (context, VideoPlayerValue value, child) {
-                            final duration = value.duration.inMilliseconds;
-                            final position = value.position.inMilliseconds;
-                            if (duration == 0) return const SizedBox.shrink();
-                            
-                            return FractionallySizedBox(
-                              widthFactor: (position / duration).clamp(0.0, 1.0),
+                      ),
+                      const SizedBox(width: 15),
+                      Expanded(
+                        child: Stack(
+                          alignment: Alignment.centerLeft,
+                          children: [
+                            // Background Bar (Thick gray part)
+                            Container(
+                              height: 7.0,
+                              width: double.infinity,
+                              decoration: BoxDecoration(
+                                color: Colors.white24,
+                                borderRadius: BorderRadius.circular(5),
+                              ),
+                            ),
+                            // Invisible indicator for scrubbing logic
+                            if (isCast)
+                              SliderTheme(
+                                data: const SliderThemeData(
+                                  trackHeight: 24, 
+                                  activeTrackColor: Colors.transparent,
+                                  inactiveTrackColor: Colors.transparent,
+                                  thumbColor: Colors.transparent,
+                                  overlayColor: Colors.transparent,
+                                  thumbShape: RoundSliderThumbShape(enabledThumbRadius: 12.0),
+                                  overlayShape: RoundSliderOverlayShape(overlayRadius: 0.0),
+                                ),
+                                child: Slider(
+                                  value: position.inMilliseconds.toDouble().clamp(0.0, duration.inMilliseconds.toDouble() > 0 ? duration.inMilliseconds.toDouble() : 1.0),
+                                  max: duration.inMilliseconds.toDouble() > 0 ? duration.inMilliseconds.toDouble() : 1.0,
+                                  onChanged: (val) {
+                                     CastService().seekTo(Duration(milliseconds: val.toInt()));
+                                     _startHideTimer();
+                                  },
+                                ),
+                              )
+                            else if (_controller != null)
+                              VideoProgressIndicator(
+                                _controller!,
+                                allowScrubbing: true,
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                colors: const VideoProgressColors(
+                                  playedColor: Colors.transparent,
+                                  bufferedColor: Colors.white24,
+                                  backgroundColor: Colors.transparent,
+                                ),
+                              ),
+                            // Iridescent Progress Bar
+                            FractionallySizedBox(
+                              widthFactor: duration.inMilliseconds > 0 ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0) : 0.0,
                               child: Container(
                                 height: 7.0,
                                 decoration: BoxDecoration(
@@ -2837,23 +2870,18 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                   ],
                                 ),
                               ),
-                            );
-                          },
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 15),
-                  ValueListenableBuilder(
-                    valueListenable: _controller!,
-                    builder: (context, VideoPlayerValue value, child) {
-                      return Text(
-                        _formatDuration(value.duration),
+                      ),
+                      const SizedBox(width: 15),
+                      Text(
+                        _formatDuration(duration),
                         style: const TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold),
-                      );
-                    },
-                  ),
-                ],
+                      ),
+                    ],
+                  );
+                }
               ),
               const SizedBox(height: 5),
 
