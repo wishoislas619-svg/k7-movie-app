@@ -7,6 +7,10 @@ class MediaProxyService {
   factory MediaProxyService() => _instance;
   MediaProxyService._internal();
 
+  // 🍪 Estado compartido para inyectar en Algoritmo 3 (Videasy/Gekko)
+  static String? lastCookies;
+  static String? deviceUserAgent;
+
   /// Intenta revertir una URL proxeada a su URL original y headers.
   /// Retorna un mapa con 'url' y 'headers' (opcional) si es una URL del proxy, o null si no lo es.
   static Map<String, dynamic>? tryUnproxy(String proxiedUrl) {
@@ -149,11 +153,16 @@ class MediaProxyService {
         print('🛡️ [PROXY_ALGO][$requestId] Aplicando Algoritmo 3 (Android Identity)');
         
         // Identidad Android para evitar bloqueos de Videasy
-        headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
+        headers['User-Agent'] = deviceUserAgent ?? 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
         headers['Sec-CH-UA-Mobile'] = '?1';
         headers['Sec-CH-UA-Platform'] = '"Android"';
+        
+        // Inyectar cookies SIEMPRE si están disponibles (crítico para cast de HLS reescrito)
+        if (lastCookies != null && !headers.containsKey('Cookie')) {
+          headers['Cookie'] = lastCookies!;
+        }
 
-        if (url.contains('videasy') || url.contains('vidplus') || url.contains('workers.dev')) {
+        if (url.contains('videasy') || url.contains('vidplus') || url.contains('workers.dev') || url.contains('speedzy')) {
           headers['Referer'] = 'https://player.videasy.net/';
           headers['Origin'] = 'https://player.videasy.net';
         } else {
@@ -200,6 +209,7 @@ class MediaProxyService {
       request.response.headers.set('Access-Control-Allow-Origin', '*');
       request.response.headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
       request.response.headers.set('Access-Control-Allow-Headers', '*');
+      request.response.headers.set('Access-Control-Max-Age', '86400');
       await request.response.close();
       return;
     }
@@ -248,15 +258,17 @@ class MediaProxyService {
         final rangeHeader = request.headers.value('range');
         request.response.headers.set('Accept-Ranges', 'bytes');
         request.response.headers.set('Access-Control-Allow-Origin', '*');
+        request.response.headers.set('transferMode.dlna.org', 'Streaming');
+        request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
         
         // Content-Type dinámico para descargas
         final lowerPath = cleanPath.toLowerCase();
         if (lowerPath.contains('(hls)') || lowerPath.contains('.ts')) {
           request.response.headers.contentType = ContentType.parse('video/MP2T');
-        } else if (lowerPath.endsWith('.mp4')) {
-          request.response.headers.contentType = ContentType.parse('video/mp4');
         } else {
-          request.response.headers.contentType = ContentType.parse('video/MP2T');
+          // Senior Trick: Usar video/mp4 incluso para MKV/AVI/MOV. 
+          // La mayoría de las TVs modernas pueden decodificar el stream interno si se les "miente" con el MIME.
+          request.response.headers.contentType = ContentType.parse('video/mp4');
         }
 
         if (rangeHeader != null && rangeHeader.startsWith('bytes=')) {
@@ -315,6 +327,8 @@ class MediaProxyService {
           request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
           request.response.headers.contentLength = bytes.length;
           request.response.headers.set('Access-Control-Allow-Origin', '*');
+          // Ayuda a las TVs a identificar el stream como video continuo
+          request.response.headers.set('transferMode.dlna.org', 'Streaming');
           request.response.add(bytes);
           await request.response.close();
           return;
@@ -363,6 +377,7 @@ class MediaProxyService {
         }
 
         request.response.headers.set('Access-Control-Allow-Origin', '*');
+        request.response.headers.set('transferMode.dlna.org', 'Streaming');
         await request.response.addStream(response.stream);
         await request.response.close();
         client.close();
@@ -378,10 +393,16 @@ class MediaProxyService {
     final lines = LineSplitter.split(content);
     final rewrittenLines = <String>[];
     final baseUri = Uri.parse(baseUrl);
+    
+    bool hasVersion = content.contains('#EXT-X-VERSION');
+    if (!hasVersion) {
+      rewrittenLines.add('#EXTM3U');
+      rewrittenLines.add('#EXT-X-VERSION:3');
+    }
 
     for (var line in lines) {
       final trimmedLine = line.trim();
-      if (trimmedLine.isEmpty) continue;
+      if (trimmedLine.isEmpty || (trimmedLine == '#EXTM3U' && !hasVersion)) continue;
 
       if (trimmedLine.startsWith('#')) {
         String newLine = trimmedLine;
@@ -430,11 +451,39 @@ class MediaProxyService {
   }
 
   String getProxiedUrl(String url, Map<String, String>? headers, {bool useLocalhost = false, int? algorithm}) {
-    final host = (useLocalhost || _localIp.isEmpty) ? '127.0.0.1:$_port' : '$_localIp:$_port';
+    String host = (useLocalhost || _localIp.isEmpty) ? '127.0.0.1:$_port' : '$_localIp:$_port';
+    
+    // Si estamos en Cast pero no hay IP local, intentamos buscarla de nuevo
+    if (!useLocalhost && _localIp.isEmpty) {
+      _log('⚠️ [PROXY] IP local desconocida para Cast. Forzando re-escaneo...');
+      // Intentamos una búsqueda rápida sincrónica de interfaces para no bloquear
+      _refreshLocalIp();
+      host = _localIp.isEmpty ? '127.0.0.1:$_port' : '$_localIp:$_port';
+    }
+
     final proxied = _buildProxiedUrl(url, headers, host, algorithm: algorithm);
     print('🔗 [PROXY_GEN] URL Generada (Algo ${algorithm ?? "auto"}): $proxied');
     return proxied;
   }
+
+  /// Búsqueda rápida de IP local para casos donde el arranque inicial falló o cambió la red
+  void _refreshLocalIp() {
+     try {
+       NetworkInterface.list(type: InternetAddressType.IPv4).then((interfaces) {
+         for (var iface in interfaces) {
+           for (var addr in iface.addresses) {
+             final ip = addr.address;
+             if (ip.startsWith('192.168.') || ip.startsWith('10.') || RegExp(r'^172\.(1[6-9]|2[0-9]|3[0-1])\.').hasMatch(ip)) {
+               _localIp = ip;
+               return;
+             }
+           }
+         }
+       });
+     } catch (_) {}
+  }
+
+  void _log(String msg) => print(msg);
 
   Future<void> stop() async {
     await _server?.close(force: true);

@@ -102,7 +102,7 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
   }
 
   void _showOptionModal([SeriesOption? option]) {
-    final resController = TextEditingController(text: option?.resolution ?? '');
+    final resController = TextEditingController(text: option?.resolution ?? '720P');
     final urlController = TextEditingController(text: option?.videoUrl ?? '');
     final imgController = TextEditingController(text: option?.serverImagePath ?? '');
     String? selectedLanguage = option?.language ?? 'Latino';

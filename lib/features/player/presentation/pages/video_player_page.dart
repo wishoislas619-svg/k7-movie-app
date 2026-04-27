@@ -875,6 +875,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                })();
             ''';
             
+            // Actualizar estado del proxy para que el cast lo use
+            final currentCookies = await CookieManager.instance().getCookies(url: WebUri(widget.videoOptions.first.videoUrl));
+            MediaProxyService.lastCookies = currentCookies.map((c) => "${c.name}=${c.value}").join("; ");
+            MediaProxyService.deviceUserAgent = await _webViewController?.getSettings().then((s) => s?.userAgent) ?? 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
+
             final result = await _webViewController?.evaluateJavascript(source: script);
             if (result != null) {
                String vUrl = result.toString();

@@ -4,6 +4,7 @@ import 'package:dart_cast/dart_cast.dart' as dc;
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'cast_device_info.dart';
+import 'media_proxy_service.dart';
 
 /// Helper para emitir logs de cast visibles en logcat con prefijo [CAST]
 void _log(String msg) => debugPrint('🎬 [CAST] $msg');
@@ -181,7 +182,6 @@ class CastService extends ChangeNotifier {
       _logErr('Error durante disconnect: $e');
     }
     _session = null;
-    _localFileProxy.stop();
     _connectedDevice = null;
     _state = CastConnectionState.idle;
     _position = Duration.zero;
@@ -258,24 +258,35 @@ class CastService extends ChangeNotifier {
 
     String finalUrl = url;
     
-    // --- LÓGICA DE PROXY PARA DLNA ---
-    // En DLNA, si el video es un archivo estándar (MP4/MKV), la librería no suele proxearlo.
-    // Esto hace que la TV pida el enlace directo SIN los headers que necesitamos.
-    // Forzamos el uso de nuestro proxy local para inyectar Referer/UA/Origin.
-    final bool isAlreadyProxied = url.contains('127.0.0.1') || 
-                                  url.contains('localhost') || 
-                                  RegExp(r'http://(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|127\.)').hasMatch(url);
+    // --- LÓGICA DE PROXY UNIFICADO PARA CAST ---
+    // 1. Si ya es una URL proxeada por MediaProxyService, verificamos si usa 127.0.0.1
+    // 2. Si usa 127.0.0.1, la convertimos a IP de RED para que la TV la vea.
+    final bool isLocalhost = url.contains('127.0.0.1') || url.contains('localhost');
+    final bool isAlreadyProxied = url.contains('/proxy');
     
-    if (isDlna && mediaType != dc.CastMediaType.hls && !isAlreadyProxied) {
-      _log('  DLNA: Forzando proxy local para inyectar cabeceras en video estándar');
-      try {
-        await _localFileProxy.stop();
-        await _localFileProxy.start(targetDeviceIp: _connectedDevice?.address);
-        finalUrl = _localFileProxy.registerMedia(url, headers: combinedHeaders);
-        _log('  URL original proxied a: $finalUrl');
-      } catch (e) {
-        _logErr('  Error al registrar en proxy local: $e');
+    if (isAlreadyProxied && isLocalhost) {
+      _log('  CAST: Convirtiendo URL de localhost a IP de RED para la TV');
+      final unproxied = MediaProxyService.tryUnproxy(url);
+      if (unproxied != null) {
+        finalUrl = MediaProxyService().getProxiedUrl(
+          unproxied['url'], 
+          unproxied['headers'], 
+          useLocalhost: false, 
+          algorithm: algorithm
+        );
       }
+    } 
+    // 3. Si es Algoritmo 2 o 3 y NO está proxeada, FORZAMOS el proxy para inyectar headers
+    else if ((algorithm == 2 || algorithm == 3) && !isAlreadyProxied) {
+      _log('  CAST: Forzando Proxy de RED para Algoritmo $algorithm');
+      await MediaProxyService().start();
+      finalUrl = MediaProxyService().getProxiedUrl(url, combinedHeaders, useLocalhost: false, algorithm: algorithm);
+    }
+    // 4. Fallback para DLNA estándar (MP4/MKV) que requiere cabeceras
+    else if (isDlna && mediaType != dc.CastMediaType.hls && !isAlreadyProxied) {
+       _log('  DLNA: Proxeando video estándar para inyectar cabeceras');
+       await MediaProxyService().start();
+       finalUrl = MediaProxyService().getProxiedUrl(url, combinedHeaders, useLocalhost: false, algorithm: algorithm);
     }
 
     if (isDlna) {
@@ -349,14 +360,9 @@ class CastService extends ChangeNotifier {
     };
     _log('  ext     : .$ext → mediaType=$mediaType');
 
-    // Iniciar el servidor local de archivos (Proxy directo)
-    // Detenemos cualquier instancia previa para liberar el puerto
-    await _localFileProxy.stop();
-    await _localFileProxy.start(targetDeviceIp: _connectedDevice?.address);
-    
-    // Registrar el archivo para obtener una URL http:// accesible para la TV
-    // Esto sirve el archivo crudo vía HTTP/1.0 sin transformaciones HLS
-    final proxyUrl = _localFileProxy.registerFile(filePath);
+    // Registrar el archivo en nuestro MediaProxyService unificado
+    await MediaProxyService().start();
+    final proxyUrl = MediaProxyService().getProxiedUrl(filePath, {}, useLocalhost: false);
     _log('  Archivo local registrado en: $proxyUrl');
 
     // Transmitir usando la lógica estándar de castUrl (UA móvil, stop previo, etc.)
@@ -498,7 +504,6 @@ class CastService extends ChangeNotifier {
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     try { _session?.disconnect(); } catch (_) {}
-    _localFileProxy.stop();
     _rawService?.dispose();
     super.dispose();
   }
