@@ -123,6 +123,7 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
                   _buildTextField(controller: resController, labelText: 'Resolución (ej: 1080p, Auto)'),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
+                    isExpanded: true,
                     dropdownColor: const Color(0xFF2C2C2C),
                     value: selectedLanguage,
                     decoration: InputDecoration(
@@ -149,6 +150,7 @@ class _EditSeriesPageState extends ConsumerState<EditSeriesPage> {
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<int>(
+                    isExpanded: true,
                     dropdownColor: const Color(0xFF2C2C2C),
                     value: [1, 2, 3].contains(selectedAlgorithm) ? selectedAlgorithm : 1,
                     style: const TextStyle(color: Colors.white),

@@ -209,14 +209,13 @@ class _AdminSeasonsEpisodesPageState extends ConsumerState<AdminSeasonsEpisodesP
                           ),
                           DropdownButton<int>(
                             dropdownColor: const Color(0xFF2C2C2C),
-                            value: [1, 2, 3, 4].contains(eUrl.extractionAlgorithm) ? eUrl.extractionAlgorithm : 1,
+                            value: [1, 2, 3].contains(eUrl.extractionAlgorithm) ? eUrl.extractionAlgorithm : 1,
                             hint: const Text('Algoritmo', style: TextStyle(color: Colors.white24)),
                             isExpanded: true,
                             items: const [
                               DropdownMenuItem(value: 1, child: Text('Algoritmo 1: DOM', style: TextStyle(color: Colors.white, fontSize: 12))),
                               DropdownMenuItem(value: 2, child: Text('Algoritmo 2: Clicks', style: TextStyle(color: Colors.white, fontSize: 12))),
                               DropdownMenuItem(value: 3, child: Text('Algoritmo 3: Mágico', style: TextStyle(color: Colors.white, fontSize: 12))),
-                              DropdownMenuItem(value: 4, child: Text('Algoritmo 4: Multi-Servidor', style: TextStyle(color: Colors.white, fontSize: 12))),
                             ],
                             onChanged: (val) => setState(() => tempUrls[i] = EpisodeUrl(url: eUrl.url, optionId: eUrl.optionId, quality: eUrl.quality, extractionAlgorithm: val ?? 1)),
                           ),

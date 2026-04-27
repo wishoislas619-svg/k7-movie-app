@@ -159,6 +159,7 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                   _buildDialogTextField(urlController, 'URL Video'),
                   const SizedBox(height: 8),
                   DropdownButtonFormField<String>(
+                    isExpanded: true,
                     value: ['Latino', 'Castellano', 'Inglés', 'Japonés'].contains(selectedLanguage) ? selectedLanguage : 'Latino',
                     dropdownColor: const Color(0xFF1E1E1E),
                     style: const TextStyle(color: Colors.white),
@@ -185,7 +186,8 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<int>(
-                    value: [1, 2, 3, 4].contains(selectedAlgorithm) ? selectedAlgorithm : 1,
+                    isExpanded: true,
+                    value: [1, 2, 3].contains(selectedAlgorithm) ? selectedAlgorithm : 1,
                     dropdownColor: const Color(0xFF1E1E1E),
                     style: const TextStyle(color: Colors.white),
                     decoration: InputDecoration(
@@ -201,7 +203,6 @@ class _EditMoviePageState extends ConsumerState<EditMoviePage> {
                        DropdownMenuItem(value: 1, child: Text('Algoritmo 1: DOM + Calidades')),
                        DropdownMenuItem(value: 2, child: Text('Algoritmo 2: Clicks Nativos')),
                        DropdownMenuItem(value: 3, child: Text('Algoritmo 3: Enlace Mágico')),
-                       DropdownMenuItem(value: 4, child: Text('Algoritmo 4: Multi-Servidor (Cinecalidad)')),
                     ],
                     onChanged: (newValue) {
                       setState(() {
