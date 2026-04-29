@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:unity_ads_plugin/unity_ads_plugin.dart';
+import 'package:flutter/services.dart';
 
 class AdService {
   static String get rewardedAdUnitId {
@@ -31,6 +32,8 @@ class AdService {
           ad.fullScreenContentCallback = FullScreenContentCallback(
             onAdDismissedFullScreenContent: (RewardedAd ad) {
               ad.dispose();
+              // Restaurar modo normal después del anuncio
+              SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
               if (userEarnedReward) {
                 onAdWatched(ticketId); 
               } else {
@@ -39,11 +42,15 @@ class AdService {
             },
             onAdFailedToShowFullScreenContent: (RewardedAd ad, AdError error) {
               ad.dispose();
+              // Restaurar modo normal si falla el anuncio
+              SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
               print('AdMob FullScreen Falló (${error.message}). -> Fallback a Unity Ads');
               _showUnityFallback(ticketId, onAdWatched, onAdFailed, onAdDismissedIncomplete);
             },
           );
 
+          // Asegurar pantalla completa total durante el anuncio (ocultar botones de gestos)
+          SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
           ad.show(onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
              userEarnedReward = true; 
           });
@@ -64,20 +71,28 @@ class AdService {
     Function() onAdDismissedIncomplete,
   ) {
     print('Intentando mostrar Unity Ads...');
+    // Asegurar pantalla completa total durante el anuncio (ocultar botones de gestos)
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     UnityAds.showVideoAd(
       placementId: Platform.isAndroid ? 'Rewarded_Android' : 'Rewarded_iOS',
       onComplete: (placementId) {
         print('Unity Ads Completado ($placementId)');
+        // Restaurar modo normal después del anuncio
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
         onAdWatched(ticketId); // Recompensa otorgada
       },
       onFailed: (placementId, error, message) {
         print('Unity Ads Falló: $message ($error)');
+        // Restaurar modo normal si falla el anuncio
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
         onAdFailed('No hay anuncios de AdMob ni de Unity disponibles en este momento. Intenta más tarde.');
       },
       onStart: (placementId) => print('Unity Ads Iniciado ($placementId)'),
       onClick: (placementId) => print('Unity Ads Clic ($placementId)'),
       onSkipped: (placementId) {
         print('Unity Ads Saltado ($placementId)');
+        // Restaurar modo normal si se salta el anuncio
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
         onAdDismissedIncomplete();
       },
     );
