@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:http/http.dart' as http;
 import 'package:dart_cast/dart_cast.dart' as dc;
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -31,6 +32,11 @@ class CastService extends ChangeNotifier {
   StreamSubscription? _stateSubscription;
   StreamSubscription? _positionSubscription;
   StreamSubscription? _durationSubscription;
+  Timer? _dlnaPollTimer;
+  String? _dlnaControlUrl;
+  String? _dlnaEventUrl;
+  String? _dlnaRenderingControlUrl;
+  int? _currentAlgorithm;
   final dc.MediaProxy _localFileProxy = dc.MediaProxy();
 
   List<CastDeviceInfo> _devices = [];
@@ -44,7 +50,6 @@ class CastService extends ChangeNotifier {
   String? _currentTitle;
   String? _currentImageUrl;
   String? _currentVideoUrl;
-  int? _currentAlgorithm;
 
   // ── Public Getters ─────────────────────────────────────────────────────────
   List<CastDeviceInfo> get devices => _devices;
@@ -159,6 +164,14 @@ class CastService extends ChangeNotifier {
         notifyListeners();
       });
 
+      // Si es DLNA, extraemos URLs de control e iniciamos polling manual
+      if (device.protocol == dc.CastProtocol.dlna) {
+        // En dart_cast 0.4.3 para DLNA, la ubicación del XML se puede reconstruir o extraer
+        // desde la información de servicio. Si no está disponible directamente, usamos la IP.
+        _fetchDlnaControlUrls('http://${device.address}:${device.rawDevice.port}/');
+        _startDlnaPolling();
+      }
+
       _log('✅ Conectado a ${device.name}');
       notifyListeners();
     } catch (e, stack) {
@@ -172,9 +185,7 @@ class CastService extends ChangeNotifier {
 
   Future<void> disconnect() async {
     _log('Desconectando...');
-    _stateSubscription?.cancel();
-    _positionSubscription?.cancel();
-    _durationSubscription?.cancel();
+    _stopDlnaPolling();
     try { 
       await _session?.stop();
       await _session?.disconnect(); 
@@ -200,6 +211,7 @@ class CastService extends ChangeNotifier {
     String? imageUrl,
     Map<String, String>? headers,
     Duration startPosition = Duration.zero,
+    Duration? duration,
     String? subtitleUrl,
     int? algorithm,
   }) async {
@@ -303,6 +315,7 @@ class CastService extends ChangeNotifier {
       imageUrl: imageUrl,
       httpHeaders: combinedHeaders,
       startPosition: startPosition,
+      duration: duration,
       subtitles: (subtitleUrl != null && !isDlna)
           ? [dc.CastSubtitle(url: subtitleUrl, label: 'Subtítulos', language: 'es', format: 'vtt')]
           : [],
@@ -310,8 +323,24 @@ class CastService extends ChangeNotifier {
 
     _log('  Llamando session.loadMedia() con URL: $finalUrl');
     try {
+      if (isDlna && _dlnaControlUrl != null) {
+        _log('  DLNA Senior: Usando carga manual con DIDL-Lite...');
+        final success = await _loadMediaDlnaSenior(
+          url: finalUrl,
+          title: title,
+          imageUrl: imageUrl,
+          duration: duration,
+        );
+        if (success) {
+          _log('  ✅ Carga manual DLNA completada');
+          await play();
+          notifyListeners();
+          return;
+        }
+      }
+      
       await _session!.loadMedia(media);
-      _log('  ✅ loadMedia completado');
+      _log('  ✅ loadMedia completado (Estándar)');
     } catch (e, stack) {
       _logErr('  loadMedia falló: $e');
       _logErr('  Stack: $stack');
@@ -326,6 +355,7 @@ class CastService extends ChangeNotifier {
     required String title,
     String? imageUrl,
     Duration startPosition = Duration.zero,
+    Duration? duration,
   }) async {
     if (_session == null) throw StateError('No hay sesión activa');
 
@@ -371,13 +401,224 @@ class CastService extends ChangeNotifier {
       title: title,
       imageUrl: imageUrl,
       startPosition: startPosition,
+      duration: duration,
     );
+  }
+
+  // ── DLNA Polling ───────────────────────────────────────────────────────────
+
+  Future<void> _fetchDlnaControlUrls(String location) async {
+    try {
+      _log('Extrayendo URLs de control desde: $location');
+      final response = await http.get(Uri.parse(location)).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = response.body;
+        // Búsqueda simple por RegEx para evitar dependencias pesadas de XML
+        final avMatch = RegExp(r'<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>.*?<controlURL>(.*?)</controlURL>', dotAll: true).firstMatch(body);
+        final renderMatch = RegExp(r'<serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>.*?<controlURL>(.*?)</controlURL>', dotAll: true).firstMatch(body);
+        
+        if (avMatch != null) {
+          String url = avMatch.group(1)!;
+          _dlnaControlUrl = _buildAbsoluteUrl(location, url);
+          _log('  AVTransport Control URL: $_dlnaControlUrl');
+        }
+        if (renderMatch != null) {
+          String url = renderMatch.group(1)!;
+          _dlnaRenderingControlUrl = _buildAbsoluteUrl(location, url);
+          _log('  RenderingControl URL: $_dlnaRenderingControlUrl');
+        }
+      }
+    } catch (e) {
+      _logErr('Error extrayendo URLs DLNA: $e');
+    }
+  }
+
+  String _buildAbsoluteUrl(String base, String path) {
+    if (path.startsWith('http')) return path;
+    final uri = Uri.parse(base);
+    if (path.startsWith('/')) {
+      return '${uri.scheme}://${uri.host}:${uri.port}$path';
+    }
+    return '${uri.scheme}://${uri.host}:${uri.port}/${path}';
+  }
+
+  void _startDlnaPolling() {
+    _dlnaPollTimer?.cancel();
+    _dlnaPollTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+      if (_session == null || _state != CastConnectionState.connected || _dlnaControlUrl == null) {
+        if (_state != CastConnectionState.connected) timer.cancel();
+        return;
+      }
+
+      try {
+        // Polling de Posición y Duración (GetPositionInfo)
+        final posInfo = await _sendDlnaSoapAction(
+          controlUrl: _dlnaControlUrl!,
+          serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+          action: 'GetPositionInfo',
+          args: {'InstanceID': '0'},
+        );
+
+        if (posInfo != null) {
+          final relTime = RegExp(r'<RelTime>(.*?)</RelTime>').firstMatch(posInfo)?.group(1);
+          final duration = RegExp(r'<TrackDuration>(.*?)</TrackDuration>').firstMatch(posInfo)?.group(1);
+          
+          if (relTime != null && relTime != 'NOT_IMPLEMENTED') {
+            final newPos = _parseDlnaDuration(relTime);
+            if (newPos != _position) {
+              _position = newPos;
+              notifyListeners();
+            }
+          }
+          if (duration != null && duration != 'NOT_IMPLEMENTED' && duration != '0:00:00') {
+            final newDur = _parseDlnaDuration(duration);
+            if (newDur != _duration) {
+              _duration = newDur;
+              notifyListeners();
+            }
+          }
+        }
+
+        // Polling de Estado (GetTransportInfo)
+        final transInfo = await _sendDlnaSoapAction(
+          controlUrl: _dlnaControlUrl!,
+          serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+          action: 'GetTransportInfo',
+          args: {'InstanceID': '0'},
+        );
+
+        if (transInfo != null) {
+          final state = RegExp(r'<CurrentTransportState>(.*?)</CurrentTransportState>').firstMatch(transInfo)?.group(1);
+          if (state != null) {
+            final playing = state == 'PLAYING';
+            if (playing != _isPlaying) {
+              _isPlaying = playing;
+              notifyListeners();
+            }
+          }
+        }
+      } catch (e) {
+        _logErr('Error en polling DLNA: $e');
+      }
+    });
+  }
+
+  Future<String?> _sendDlnaSoapAction({
+    required String controlUrl,
+    required String serviceType,
+    required String action,
+    required Map<String, String> args,
+  }) async {
+    final argsXml = args.entries.map((e) => '<${e.key}>${e.value}</${e.key}>').join('');
+    final envelope = '''
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:$action xmlns:u="$serviceType">
+      $argsXml
+    </u:$action>
+  </s:Body>
+</s:Envelope>
+'''.trim();
+
+    try {
+      final response = await http.post(
+        Uri.parse(controlUrl),
+        headers: {
+          'Content-Type': 'text/xml; charset="utf-8"',
+          'SOAPAction': '"$serviceType#$action"',
+        },
+        body: envelope,
+      ).timeout(const Duration(seconds: 3));
+      
+      if (response.statusCode == 200) return response.body;
+    } catch (_) {}
+    return null;
+  }
+
+  Duration _parseDlnaDuration(String time) {
+    try {
+      final parts = time.split(':');
+      if (parts.length != 3) return Duration.zero;
+      return Duration(
+        hours: int.parse(parts[0]),
+        minutes: int.parse(parts[1]),
+        seconds: int.parse(parts[2].split('.').first),
+      );
+    } catch (_) {
+      return Duration.zero;
+    }
+  }
+
+  void _stopDlnaPolling() {
+    _dlnaPollTimer?.cancel();
+    _dlnaPollTimer = null;
+    _stateSubscription?.cancel();
+    _positionSubscription?.cancel();
+    _durationSubscription?.cancel();
   }
 
   /// Limpia el título para incluirlo de forma segura en XML SOAP DLNA.
   /// Samsung TV rechaza peticiones con títulos que contienen extensiones
   /// de archivo, indicadores de formato (HLS/TS) o caracteres no ASCII
   /// sin escapar en el DIDL-Lite.
+  Future<bool> _loadMediaDlnaSenior({
+    required String url,
+    required String title,
+    String? imageUrl,
+    Duration? duration,
+  }) async {
+    if (_dlnaControlUrl == null) return false;
+
+    final durationStr = duration != null ? _formatDurationForDlna(duration) : "0:00:00";
+    final sanitizedTitle = _sanitizeTitleForDlna(title);
+    
+    // DIDL-Lite Metadata (Clave para Samsung/LG)
+    // DLNA.ORG_OP=01 -> Habilita SEEK (Adelantar/Atrasar)
+    // DLNA.ORG_CI=0  -> No es transcodificado
+    // DLNA.ORG_FLAGS -> Compatibilidad general
+    final metadata = '''
+<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:sec="http://www.sec.co.kr/">
+  <item id="0" parentID="-1" restricted="1">
+    <dc:title>${_escapeXml(sanitizedTitle)}</dc:title>
+    <upnp:class>object.item.videoItem</upnp:class>
+    <res protocolInfo="http-get:*:video/mp4:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000" duration="$durationStr">$url</res>
+    ${imageUrl != null ? '<upnp:albumArtURI>${_escapeXml(imageUrl)}</upnp:albumArtURI>' : ''}
+  </item>
+</DIDL-Lite>
+'''.trim();
+
+    final success = await _sendDlnaSoapAction(
+      controlUrl: _dlnaControlUrl!,
+      serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+      action: 'SetAVTransportURI',
+      args: {
+        'InstanceID': '0',
+        'CurrentURI': url,
+        'CurrentURIMetaData': metadata,
+      },
+    );
+
+    return success != null;
+  }
+
+  String _formatDurationForDlna(Duration d) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final hours = twoDigits(d.inHours);
+    final minutes = twoDigits(d.inMinutes.remainder(60));
+    final seconds = twoDigits(d.inSeconds.remainder(60));
+    return "$hours:$minutes:$seconds";
+  }
+
+  String _escapeXml(String input) {
+    return input
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&apos;');
+  }
+
   String _sanitizeTitleForDlna(String title) {
     // 1. Quitar extensión de archivo
     final lastDot = title.lastIndexOf('.');
@@ -409,24 +650,63 @@ class CastService extends ChangeNotifier {
   Future<void> play() async {
     if (_session == null) return;
     _log('play()');
+    if (_connectedDevice?.protocol == dc.CastProtocol.dlna && _dlnaControlUrl != null) {
+      await _sendDlnaSoapAction(
+        controlUrl: _dlnaControlUrl!,
+        serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+        action: 'Play',
+        args: {'InstanceID': '0', 'Speed': '1'},
+      );
+    }
     await _session!.play();
   }
 
   Future<void> pause() async {
     if (_session == null) return;
     _log('pause()');
+    if (_connectedDevice?.protocol == dc.CastProtocol.dlna && _dlnaControlUrl != null) {
+      await _sendDlnaSoapAction(
+        controlUrl: _dlnaControlUrl!,
+        serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+        action: 'Pause',
+        args: {'InstanceID': '0'},
+      );
+    }
     await _session!.pause();
   }
 
   Future<void> stop() async {
     if (_session == null) return;
     _log('stop()');
+    if (_connectedDevice?.protocol == dc.CastProtocol.dlna && _dlnaControlUrl != null) {
+      await _sendDlnaSoapAction(
+        controlUrl: _dlnaControlUrl!,
+        serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+        action: 'Stop',
+        args: {'InstanceID': '0'},
+      );
+    }
     await _session!.stop();
   }
 
   Future<void> seekTo(Duration position) async {
     if (_session == null) return;
     _log('seekTo(${position.inSeconds}s)');
+    
+    if (_connectedDevice?.protocol == dc.CastProtocol.dlna && _dlnaControlUrl != null) {
+      final target = _formatDurationForDlna(position);
+      await _sendDlnaSoapAction(
+        controlUrl: _dlnaControlUrl!,
+        serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+        action: 'Seek',
+        args: {
+          'InstanceID': '0',
+          'Unit': 'REL_TIME',
+          'Target': target,
+        },
+      );
+    }
+    
     await _session!.seek(position);
   }
 

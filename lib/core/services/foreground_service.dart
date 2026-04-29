@@ -10,9 +10,9 @@ class ForegroundService {
 
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
-        channelId: 'download_foreground',
-        channelName: 'Descargas en segundo plano',
-        channelDescription: 'Mantiene las descargas activas en segundo plano',
+        channelId: 'movie_app_foreground',
+        channelName: 'Servicio en segundo plano',
+        channelDescription: 'Mantiene las tareas activas (descargas/transmisión) en segundo plano',
         channelImportance: NotificationChannelImportance.HIGH,
         priority: NotificationPriority.HIGH,
       ),

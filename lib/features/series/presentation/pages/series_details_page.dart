@@ -15,6 +15,9 @@ import '../../../movies/domain/entities/download_task.dart';
 import '../../../movies/presentation/providers/history_provider.dart';
 import '../../../movies/domain/entities/movie.dart' show VideoOption;
 import 'package:movie_app/features/movies/data/repositories/download_repository_impl.dart';
+import 'package:movie_app/features/movies/domain/entities/download_task.dart';
+import 'package:movie_app/shared/widgets/video_extractor_dialog.dart';
+import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
 import 'package:uuid/uuid.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:movie_app/core/services/ad_service.dart';
@@ -368,14 +371,21 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               IconButton(
-                                icon: const Icon(Icons.download, color: Color(0xFFD400FF)),
+                                icon: const Icon(Icons.download_rounded, color: Color(0xFFD400FF), size: 22),
                                 onPressed: () {
                                   Navigator.pop(context);
                                   _handleDownload(episode, eUrl);
                                 },
                               ),
                               IconButton(
-                                icon: const Icon(Icons.play_arrow, color: Color(0xFF00A3FF)),
+                                icon: const Icon(Icons.cast_rounded, color: Color(0xFF00FF87), size: 20),
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  _showCastSelector(context, episode, eUrl);
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.play_arrow_rounded, color: Color(0xFF00A3FF), size: 24),
                                 onPressed: () {
                                   Navigator.pop(context);
                                   _playEpisode(episode, eUrl);
@@ -393,6 +403,26 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
           ),
         );
       }
+    );
+  }
+
+  void _showCastSelector(BuildContext context, Episode episode, EpisodeUrl eUrl) {
+    // Para el selector de cast necesitamos los datos del video.
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF141414),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => CastSelectionModal(
+        videoUrl: eUrl.url,
+        title: '${widget.series.name} - S${_selectedSeason?.seasonNumber ?? 1} E${episode.episodeNumber}',
+        imageUrl: widget.series.imagePath,
+        headers: {
+          'Referer': eUrl.url,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        },
+        algorithm: eUrl.extractionAlgorithm,
+      ),
     );
   }
 
@@ -865,6 +895,36 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
     return Container(
       color: const Color(0xFF1E1E1E),
       child: const Center(child: Icon(Icons.movie, size: 80, color: Colors.white12)),
+    );
+  }
+}
+
+// Widget auxiliar para reutilizar el modal de selección en varios sitios
+class CastSelectionModal extends StatelessWidget {
+  final String videoUrl;
+  final String title;
+  final String imageUrl;
+  final Map<String, String>? headers;
+  final int? algorithm;
+
+  const CastSelectionModal({
+    super.key,
+    required this.videoUrl,
+    required this.title,
+    required this.imageUrl,
+    this.headers,
+    this.algorithm,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return CastButton(
+      videoUrl: videoUrl,
+      title: title,
+      imageUrl: imageUrl,
+      headers: headers,
+      algorithm: algorithm ?? 1,
+      showImmediately: true, 
     );
   }
 }

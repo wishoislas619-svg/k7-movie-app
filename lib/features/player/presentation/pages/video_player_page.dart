@@ -19,6 +19,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:movie_app/core/services/storage_service.dart';
 import 'package:movie_app/features/movies/presentation/providers/history_provider.dart';
 import 'package:movie_app/features/movies/domain/entities/watch_history.dart';
 import 'package:movie_app/providers.dart';
@@ -29,7 +30,6 @@ import 'package:movie_app/features/series/domain/entities/series_option.dart';
 import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
 import 'package:movie_app/features/movies/presentation/pages/movie_details_page.dart';
 import 'package:movie_app/features/series/presentation/pages/series_details_page.dart';
-import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
 import 'package:movie_app/features/cast/services/cast_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:movie_app/features/cast/services/media_proxy_service.dart';
@@ -183,10 +183,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   bool _hasFoundPremiumServer = false;
   bool _isAlgo3Extracting = false; // Pantalla de carga dedicada para Algoritmo 3
   bool _useProxy = true; // Modo proxy activado por defecto
+  Timer? _videasyTimeoutTimer;
+  bool _isAutoSelectEnabled = true; // Control manual vs automático
 
   @override
   void initState() {
     super.initState();
+    WakelockPlus.enable();
     _initialVolume = widget.initialVolume;
     _initialBrightness = widget.initialBrightness;
     if (widget.videoOptions.isNotEmpty) {
@@ -496,7 +499,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     _startProgressTimer();
     
     _checkSavedSubtitle();
-    WakelockPlus.enable();
   }
 
   void _startProgressTimer() {
@@ -778,9 +780,16 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                            window.flutter_inappwebview.callHandler('onServersFound', unique.map(s => ({id: s.id, label: s.label, language: s.language, flagUrl: s.flagUrl})));
                            
                            // --- LÓGICA DE AUTO-CLIC INTERNA ---
-                           var target = results.find(s => s.label.toLowerCase().includes('gekko'));
-                           if (!target) {
-                              target = results.find(s => s.language === 'Latino' || s.language === 'Castellano');
+                           var target = null;
+                           if (window._manualServerLabel) {
+                              // Modo Manual: Solo intentamos el servidor elegido por el usuario
+                              target = results.find(s => s.label.toLowerCase() === window._manualServerLabel.toLowerCase());
+                           } else if (!window._isManualMode) {
+                              // Modo Automático: Priorizamos Gekko -> Latino/Castellano
+                              target = results.find(s => s.label.toLowerCase().includes('gekko'));
+                              if (!target) {
+                                 target = results.find(s => s.language === 'Latino' || s.language === 'Castellano');
+                              }
                            }
                            
                            if (target && target.element) {
@@ -823,7 +832,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
          final bool isStuck = !_hasInitialUrl || _errorMessage != null || (_isLoading && _autoClickCount > threshold + 5);
          
          if (_autoClickCount > threshold && isStuck) {
-          if (_effectiveAlgorithm == 3 && _videasyServers.isNotEmpty) {
+          if (_effectiveAlgorithm == 3 && _videasyServers.isNotEmpty && _isAutoSelectEnabled) {
              print("⚠️ [FALLBACK] Reintentando por inactividad/error ($threshold seg)...");
              _tryNextVideasyServer();
           } else {
@@ -1260,8 +1269,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       // Hide system volume UI
       VolumeController.instance.showSystemUI = false;
       
-      final vol = await VolumeController.instance.getVolume();
-      final bright = await ScreenBrightness().current;
+      // Intentar cargar valores persistidos primero
+      final storedVol = await StorageService.getStoredVolume();
+      final storedBright = await StorageService.getStoredBrightness();
+      
+      // Si no hay persistidos, usar los del sistema o los pasados por widget
+      final vol = storedVol ?? widget.initialVolume ?? await VolumeController.instance.getVolume();
+      final bright = storedBright ?? widget.initialBrightness ?? await ScreenBrightness().current;
       
       if (mounted) {
         setState(() {
@@ -1270,6 +1284,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           _initialVolume ??= vol;
           _initialBrightness ??= bright;
         });
+        
+        // Aplicar los valores cargados
+        VolumeController.instance.setVolume(_volume);
+        ScreenBrightness().setScreenBrightness(_brightness);
       }
     } catch (_) {}
     
@@ -1439,7 +1457,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       }
     } catch (e) {
       if (mounted) {
-        if (_effectiveAlgorithm == 3 && _videasyServers.isNotEmpty) {
+        if (_effectiveAlgorithm == 3 && _videasyServers.isNotEmpty && _isAutoSelectEnabled) {
            print("⚠️ [ERROR_FALLBACK] Error inicializando (${e.toString()}), buscando otro servidor...");
            _tryNextVideasyServer();
         } else {
@@ -1458,13 +1476,18 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
     if (_controller!.value.hasError) {
        print("⚠️ [VIDEO_ERROR] Detectado error en reproducción: ${_controller!.value.errorDescription}");
-       if (_effectiveAlgorithm == 3 && _videasyServers.isNotEmpty) {
+       if (_effectiveAlgorithm == 3 && _videasyServers.isNotEmpty && _isAutoSelectEnabled) {
           _tryNextVideasyServer();
           return;
        }
     }
 
     if (!_controller!.value.isInitialized) return;
+    
+    // Ocultar teclado si quedó algo abierto del scraping
+    if (_controller!.value.isPlaying) {
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
 
     final posSecs = _controller!.value.position.inSeconds;
     final isPlaying = _controller!.value.isPlaying;
@@ -1650,10 +1673,14 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     
     _labelHideTimer?.cancel();
     _labelHideTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() {
-        _showVolumeLabel = false;
-        _showBrightnessLabel = false;
-      });
+      if (mounted) {
+        setState(() {
+          _showVolumeLabel = false;
+          _showBrightnessLabel = false;
+        });
+        // Guardar preferencias al dejar de arrastrar
+        StorageService.savePlayerSettings(_volume, _brightness);
+      }
     });
   }
 
@@ -1704,6 +1731,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
             _isDraggingVolume = false;
             _isDraggingBrightness = false;
           });
+          // Persistir los valores cuando el usuario suelta el control
+          StorageService.saveVolume(_volume);
+          StorageService.saveBrightness(_brightness);
         },
         behavior: HitTestBehavior.opaque,
         child: Stack(
@@ -2095,8 +2125,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                     _videasyServers = newServers;
                                   });
 
-                                  // --- AUTO-SELECCIÓN PARA ESPAÑOL (PERSISTENTE) ---
-                                  if (!_hasFoundPremiumServer && _effectiveAlgorithm == 3 && mounted) {
+                                  // --- AUTO-SELECCIÓN PRIORIZADA (GEKKO -> OMEN -> FIRST) ---
+                                  if (_isAutoSelectEnabled && !_hasFoundPremiumServer && _effectiveAlgorithm == 3 && mounted) {
                                     InternalServerInfo? target;
                                     final availableServers = newServers.where((s) => !_failedVideasyServers.contains(s.id)).toList();
                                     
@@ -2105,31 +2135,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                       try {
                                         target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
                                       } catch (_) {
-                                        // 2. Intentar Español/Latino
-                                        final spanishServers = availableServers.where((s) => 
-                                          s.label.toLowerCase().contains('spanish') || 
-                                          s.label.toLowerCase().contains('latino') ||
-                                          s.label.toLowerCase().contains('español') ||
-                                          s.label.toLowerCase().contains('castellano')
-                                        ).toList();
-                                        
-                                        if (spanishServers.isNotEmpty) {
-                                          target = spanishServers.last;
+                                        // 2. Intentar Omen segundo
+                                        try {
+                                          target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('omen'));
+                                        } catch (_) {
+                                          // 3. Si no hay nada especial, el primero disponible
+                                          target = availableServers.first;
                                         }
                                       }
 
                                       if (target != null) {
-                                        print("🤖 [AUTO-SELECT] Servidor PREMIUM encontrado: ${target.label}");
-                                        _hasFoundPremiumServer = true;
+                                        print("🤖 [AUTO-SELECT] Seleccionando servidor (${target.label})...");
                                         _hasAutoSelectedServer = true;
                                         _errorMessage = null;
                                         _selectVideasyInternalServer(target);
-                                      } else if (!_hasAutoSelectedServer) {
-                                        // 3. Si no hay premium, pero no hemos seleccionado NADA aún, ponemos el primero por mientras
-                                        final first = availableServers.first;
-                                        print("🤖 [AUTO-SELECT] Usando respaldo temporal: ${first.label}");
-                                        _hasAutoSelectedServer = true;
-                                        _selectVideasyInternalServer(first);
                                       }
                                     }
                                   }
@@ -2164,6 +2183,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                                   for(var i=0; i<v.length; i++) {
                                     if (!v[i].muted) v[i].muted = true;
                                     v[i].volume = 0;
+                                  }
+                                  // Prevent keyboard from showing by blurring any focused input
+                                  if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.isContentEditable)) {
+                                     document.activeElement.blur();
                                   }
                                 }, 500);
                                 
@@ -2224,7 +2247,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                             final url = resource.url?.toString() ?? '';
                             final lcUrl = url.toLowerCase();
                             
-                            final bool hasVideoExt = lcUrl.contains('.mp4?') || lcUrl.endsWith('.mp4') || lcUrl.contains('.m3u8?') || lcUrl.endsWith('.m3u8') || lcUrl.contains('.m3u?') || lcUrl.endsWith('.m3u') || lcUrl.contains('.webm') || lcUrl.contains('.ts') || lcUrl.contains('.mov') || lcUrl.contains('.avi') || lcUrl.contains('.mkv');
+                            final bool hasVideoExt = lcUrl.contains('.mp4') || lcUrl.contains('.m3u8') || lcUrl.contains('.m3u') || lcUrl.contains('.webm') || lcUrl.contains('.ts') || lcUrl.contains('.mov') || lcUrl.contains('.mkv');
                             final bool isVideasyStream = (lcUrl.contains('videasy') || _effectiveAlgorithm == 3) && 
                                                  (lcUrl.contains('.txt') || lcUrl.contains('/stream/') || lcUrl.contains('playlist')) && 
                                                  !lcUrl.contains('.js') && !lcUrl.contains('script.js') && !lcUrl.contains('ab.js') && !lcUrl.contains('beacon.min.js') && !lcUrl.contains('_next/static');
@@ -2410,8 +2433,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           introStartTime: _nextEpisode!.introStartTime,
           introEndTime: _nextEpisode!.introEndTime,
           creditsStartTime: _nextEpisode!.creditsStartTime,
-          initialVolume: _initialVolume,
-          initialBrightness: _initialBrightness,
+          initialVolume: _volume,
+          initialBrightness: _brightness,
           videoOptions: [
             if (_nextEpisode!.urls.isNotEmpty)
               VideoOption(
@@ -2497,6 +2520,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   }
 
   Widget _buildAlgo3LoadingOverlay() {
+    // Asegurar que el teclado esté oculto durante la carga
+    SystemChannels.textInput.invokeMethod('TextInput.hide');
+    FocusManager.instance.primaryFocus?.unfocus();
     // Seleccionamos el mensaje según cuántos servidores llevamos detectados
     final String statusMsg = _videasyServers.isEmpty
         ? 'Buscando servidor...'
@@ -2758,15 +2784,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                 ),
                 onPressed: _toggleProxy,
                 tooltip: 'Modo Proxy (Burlar bloqueos)',
-              ),
-              CastButton(
-                videoUrl: _extractedVideoUrl ?? _currentOption.videoUrl,
-                localFilePath: widget.isLocal ? _currentOption.videoUrl : null,
-                title: widget.movieName,
-                imageUrl: widget.imagePath,
-                currentPosition: _controller?.value.position ?? Duration.zero,
-                headers: _getHeadersForCast(),
-                algorithm: _effectiveAlgorithm,
               ),
             ],
           ),
@@ -3040,6 +3057,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                       trailing: const Icon(Icons.chevron_right, color: Colors.white24, size: 16),
                       onTap: () {
                         Navigator.pop(context);
+                        _isAutoSelectEnabled = false; // El usuario tomó el control manual
                         _selectVideasyInternalServer(server);
                       },
                     );
@@ -3082,8 +3100,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         isSameBase = currentBase == newBase;
       }
       
-      // Calidad superior o cambio manual (ignoramos segmentos .ts)
-      final bool isPotentialVideo = url.contains('m3u8') || url.contains('.js') || url.contains('.txt') || url.contains('/stream/') || url.contains('playlist');
+      // Calidad superior o cambio manual (incluimos .mp4 y otros formatos comunes)
+      final bool isPotentialVideo = url.contains('m3u8') || url.contains('.mp4') || url.contains('.m3u') || url.contains('.txt') || url.contains('/stream/') || url.contains('playlist');
       if ((_isSwitchingStream && !isSameBase) || (!isSameBase && !url.contains('.ts') && isPotentialVideo)) {
         print("🎯 [NET_DETECT] Nuevo stream: $url");
         if (_isSwitchingStream) {
@@ -3096,7 +3114,13 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
   void _selectVideasyInternalServer(InternalServerInfo server) {
     if (!mounted) return;
+    FocusScope.of(context).unfocus();
+    if (!mounted) return;
     print("🌍 SOLICITANDO CAMBIO A SERVIDOR: ${server.label}");
+    
+    // Inyectar bandera de modo manual y el servidor objetivo en el WebView
+    _webViewController?.evaluateJavascript(source: "window._isManualMode = true; window._manualServerLabel = '${server.label}';");
+
     setState(() {
       _isLoading = true;
       _isSwitchingStream = true;
@@ -3110,6 +3134,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       }
       
       _autoClickCount = 0; // Reiniciamos contador al cambiar de server
+    });
+
+    // --- TIMEOUT DE 3 SEGUNDOS PARA CAMBIAR SI NO RESPONDE ---
+    _videasyTimeoutTimer?.cancel();
+    _videasyTimeoutTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && _effectiveAlgorithm == 3 && _extractedVideoUrl == null && _isAutoSelectEnabled) {
+         print("⏱️ [TIMEOUT] Servidor ${server.label} tardó más de 3s, saltando al siguiente...");
+         _tryNextVideasyServer();
+      }
     });
     
     _webViewController?.evaluateJavascript(source: """
@@ -3190,10 +3223,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         _selectVideasyInternalServer(target);
       }
     } else {
-       print("🚫 [FALLBACK] No quedan servidores disponibles por probar.");
+       print("🚫 [FALLBACK] No quedan servidores disponibles. Desactivando auto-selector.");
        setState(() {
          _isLoading = false;
-         _errorMessage = "No se pudo encontrar un servidor funcional en este momento.";
+         _isAutoSelectEnabled = false; // Permitimos que el usuario elija manualmente ahora
+         _errorMessage = "Prueba seleccionando un servidor manualmente del listado de abajo.";
        });
     }
   }
@@ -3230,6 +3264,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                       trailing: const Icon(Icons.chevron_right, color: Colors.white24),
                       onTap: () {
                         Navigator.pop(context);
+                        _isAutoSelectEnabled = false; // El usuario tomó el control manual
                         _selectVideasyInternalServer(server);
                       },
                     );

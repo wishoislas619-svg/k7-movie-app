@@ -13,6 +13,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:movie_app/core/constants/app_constants.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 String _formatSize(int bytes) {
   if (bytes <= 0) return "0 B";
@@ -33,6 +34,13 @@ class _DownloadsPageState extends ConsumerState<DownloadsPage> {
   void initState() {
     super.initState();
     _requestPermissions();
+    WakelockPlus.enable();
+  }
+
+  @override
+  void dispose() {
+    WakelockPlus.disable();
+    super.dispose();
   }
 
   Future<void> _requestPermissions() async {

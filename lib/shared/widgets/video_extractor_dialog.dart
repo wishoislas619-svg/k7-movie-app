@@ -71,6 +71,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
       vsync: this,
       duration: const Duration(seconds: 4),
     )..repeat();
+
+    // Prevent keyboard from appearing on load
+    SystemChannels.textInput.invokeMethod('TextInput.hide');
   }
 
   @override
@@ -90,6 +93,17 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
       // Facilitate interaction if something is blocked
       document.body.style.overflow = 'auto';
       window.open = function() { return null; };
+      
+      // Anti-Keyboard Focus
+      if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
+        document.activeElement.blur();
+      }
+      
+      window.addEventListener('focus', function(e) {
+        if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
+          document.activeElement.blur();
+        }
+      }, true);
     })();
   ''';
 

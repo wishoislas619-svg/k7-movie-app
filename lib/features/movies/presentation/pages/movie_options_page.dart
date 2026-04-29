@@ -12,6 +12,7 @@ import 'package:movie_app/shared/widgets/video_extractor_dialog.dart';
 import 'package:uuid/uuid.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:movie_app/core/services/ad_service.dart';
+import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
 import 'dart:async';
 
 class MovieOptionsPage extends ConsumerStatefulWidget {
@@ -363,7 +364,27 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
                                         child: const Icon(
                                           Icons.download_for_offline_rounded,
                                           color: Color(0xFFD400FF),
-                                          size: 38,
+                                          size: 22,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    // Cast Icon
+                                    GestureDetector(
+                                      onTap: () {
+                                        _showCastSelector(context, option);
+                                      },
+                                      child: Container(
+                                        width: 38,
+                                        height: 38,
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF00FF87).withOpacity(0.1),
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: const Icon(
+                                          Icons.cast_rounded,
+                                          color: Color(0xFF00FF87),
+                                          size: 22,
                                         ),
                                       ),
                                     ),
@@ -442,6 +463,68 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
             ),
         ],
       ),
+    );
+  }
+
+  void _showCastSelector(BuildContext context, VideoOption option) {
+    // Para el selector de cast necesitamos los datos del video.
+    // Usamos el widget CastButton de forma invisible o simplemente disparamos su lógica
+    // pero es mejor crear un método estático o reutilizable.
+    // Por ahora, para ser rápidos y efectivos, mostraremos el diálogo de selección.
+    
+    // Mostramos un modal similar al de CastButton
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF141414),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) => CastSelectionModal(
+        videoUrl: option.videoUrl,
+        title: widget.movie.name,
+        imageUrl: widget.movie.imagePath,
+        headers: {
+          'Referer': option.videoUrl,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        },
+        algorithm: option.extractionAlgorithm,
+      ),
+    );
+  }
+}
+
+// Widget auxiliar para reutilizar el modal de selección en varios sitios
+class CastSelectionModal extends StatelessWidget {
+  final String videoUrl;
+  final String title;
+  final String imageUrl;
+  final Map<String, String>? headers;
+  final int? algorithm;
+
+  const CastSelectionModal({
+    super.key,
+    required this.videoUrl,
+    required this.title,
+    required this.imageUrl,
+    this.headers,
+    this.algorithm,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Básicamente el contenido que pusimos en CastButton._openCastSelection
+    // pero aquí lo pasamos a un widget reutilizable.
+    // Por simplicidad en este paso, voy a mover la lógica de CastButton a un sitio común si fuera necesario,
+    // pero por ahora lo duplicaré o haré referencia al CastButton si puedo.
+    
+    // Mejor: Usamos un CastButton "fantasma" que solo abre el modal
+    return CastButton(
+      videoUrl: videoUrl,
+      title: title,
+      imageUrl: imageUrl,
+      headers: headers,
+      algorithm: algorithm ?? 1,
+      // Lo envolvemos para que al montarse dispare el modal
+      showImmediately: true, 
     );
   }
 }

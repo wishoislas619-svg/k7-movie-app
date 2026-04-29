@@ -18,6 +18,7 @@ class CastDeviceListSheet extends ConsumerStatefulWidget {
   final String? imageUrl;
   final Map<String, String>? headers;
   final Duration startPosition;
+  final Duration? duration;
   final int? algorithm; // Algoritmo de extracción para el proxy
   /// Callback disparado UNA SOLA VEZ cuando la transmisión comienza exitosamente.
   final VoidCallback? onCastStarted;
@@ -30,6 +31,7 @@ class CastDeviceListSheet extends ConsumerStatefulWidget {
     this.imageUrl,
     this.headers,
     this.startPosition = Duration.zero,
+    this.duration,
     this.algorithm,
     this.onCastStarted,
   });
@@ -78,6 +80,7 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
     debugPrint('🎬 [SHEET]   algorithm     : ${widget.algorithm}');
     debugPrint('🎬 [SHEET]   headers       : ${widget.headers}');
     debugPrint('🎬 [SHEET]   startPosition : ${widget.startPosition.inSeconds}s');
+    debugPrint('🎬 [SHEET]   duration      : ${widget.duration?.inSeconds}s');
 
     // 1. Conectar al dispositivo
     await _castService.connectTo(device);
@@ -88,38 +91,11 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
     }
     debugPrint('✅ [SHEET] Conectado a ${device.name}');
 
-    // 2. Verificar Anuncio (Solo si no es VIP/Admin) usando estado de Riverpod
+    // 2. Transmisión directa (Anuncio ya verificado en CastButton)
     final appUser = ref.read(authStateProvider);
     final role = appUser?.role.toLowerCase() ?? 'user';
     final isAdminOrVip = role == 'admin' || role == 'uservip';
     debugPrint('🎬 [SHEET] role=$role isAdminOrVip=$isAdminOrVip');
-
-    if (!isAdminOrVip) {
-      final ticketId = const Uuid().v4();
-      final adCompleter = Completer<bool>();
-
-      AdService.showRewardedAd(
-        ticketId: ticketId,
-        onAdWatched: (_) => adCompleter.complete(true),
-        onAdFailed: (_) => adCompleter.complete(false),
-        onAdDismissedIncomplete: () => adCompleter.complete(false),
-      );
-
-      final result = await adCompleter.future;
-      debugPrint('🎬 [SHEET] Ad result: $result');
-      if (!result) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Debes ver el anuncio para transmitir.'),
-              backgroundColor: Colors.redAccent,
-            ),
-          );
-          setState(() => _casting = false);
-        }
-        return;
-      }
-    }
 
     // Verificar que la sesión DLNA sigue activa después del anuncio
     // (el anuncio puede durar >30s y la TV desconecta por idle)
@@ -151,6 +127,7 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
           title: widget.title,
           imageUrl: widget.imageUrl,
           startPosition: widget.startPosition,
+          duration: widget.duration,
         );
       } else {
         debugPrint('🎬 [SHEET] Transmitiendo URL remota...');
@@ -160,6 +137,7 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
           imageUrl: widget.imageUrl,
           headers: widget.headers,
           startPosition: widget.startPosition,
+          duration: widget.duration,
           algorithm: widget.algorithm,
         );
       }
@@ -212,7 +190,7 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
                     ? _buildConnectedView()
                     : _buildDeviceList(),
           ),
-          const SizedBox(height: 24),
+          SizedBox(height: 24 + MediaQuery.of(context).padding.bottom),
         ],
       ),
     );

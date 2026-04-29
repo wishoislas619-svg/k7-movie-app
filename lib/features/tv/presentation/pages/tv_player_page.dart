@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:screen_brightness/screen_brightness.dart';
@@ -9,7 +10,9 @@ import '../../../../shared/widgets/marquee_text.dart';
 import '../../../../core/services/ad_service.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../../cast/presentation/widgets/cast_button.dart';
+import '../../../../core/services/storage_service.dart';
 import '../../../cast/services/media_proxy_service.dart';
+import '../../../../core/services/storage_service.dart';
 
 class TvPlayerPage extends ConsumerStatefulWidget {
   final List<Map<String, dynamic>> channels;
@@ -46,6 +49,7 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
   void initState() {
     super.initState();
     WakelockPlus.enable();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge); // Controls are initially shown
     _initSettings();
     _currentIndex = widget.initialIndex;
     _initializePlayer(widget.channels[_currentIndex]['stream_url']);
@@ -104,9 +108,25 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
   }
 
   void _initSettings() async {
-    _volume = await VolumeController.instance.getVolume();
-    _brightness = await ScreenBrightness().current;
-    if (mounted) setState(() {});
+    try {
+      // Intentar cargar valores persistidos primero
+      final storedVol = await StorageService.getStoredVolume();
+      final storedBright = await StorageService.getStoredBrightness();
+      
+      final vol = storedVol ?? await VolumeController.instance.getVolume();
+      final bright = storedBright ?? await ScreenBrightness().current;
+      
+      if (mounted) {
+        setState(() {
+          _volume = vol;
+          _brightness = bright;
+        });
+        
+        // Aplicar los valores cargados
+        VolumeController.instance.setVolume(_volume);
+        ScreenBrightness().setScreenBrightness(_brightness);
+      }
+    } catch (_) {}
   }
 
   Future<void> _initializePlayer(String url) async {
@@ -184,7 +204,10 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
       _showControls = !_showControls;
     });
     if (_showControls) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToCurrentChannel());
+    } else {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     }
   }
 
@@ -223,6 +246,7 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
 
   @override
   void dispose() {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WakelockPlus.disable();
     _labelHideTimer?.cancel();
     _adTimer?.cancel();
@@ -252,6 +276,9 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
             _isDraggingVolume = false;
             _isDraggingBrightness = false;
           });
+          // Persistir los valores cuando el usuario suelta el control
+          StorageService.saveVolume(_volume);
+          StorageService.saveBrightness(_brightness);
         },
         behavior: HitTestBehavior.opaque,
         child: Stack(
@@ -379,6 +406,7 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
                               title: channelName,
                               imageUrl: channelLogo,
                             ),
+                            const SizedBox(width: 20),
                           ],
                         ),
                       ),
