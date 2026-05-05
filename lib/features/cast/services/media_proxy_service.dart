@@ -178,7 +178,11 @@ class MediaProxyService {
         headers['Sec-Fetch-Dest'] = 'video';
         headers['Sec-Fetch-Mode'] = 'cors';
         headers['Sec-Fetch-Site'] = 'cross-site';
-        if (incomingHeaders.containsKey('cookie')) {
+        
+        // Inyectar cookies de la sesión actual capturadas en el player
+        if (lastCookies != null && !headers.containsKey('Cookie')) {
+          headers['Cookie'] = lastCookies!;
+        } else if (incomingHeaders.containsKey('cookie')) {
           headers['Cookie'] = incomingHeaders['cookie']!;
         }
       }
@@ -366,19 +370,25 @@ class MediaProxyService {
           }
         });
 
-        // Corrección de Content-Type para TikTok (disfrazado de imagen)
-        final upstreamContentType = response.headers['content-type'] ?? '';
+        request.response.headers.set('Access-Control-Allow-Origin', '*');
+        request.response.headers.set('Accept-Ranges', 'bytes');
+        request.response.headers.set('Connection', 'keep-alive');
+        request.response.headers.set('transferMode.dlna.org', 'Streaming');
+        request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
+        
+        // Corrección de Content-Type: Senior Expert Trick
+        final upstreamContentType = response.headers['content-type']?.toLowerCase() ?? '';
         final isTikTok = url.contains('tiktokcdn') || url.contains('muscdn') || url.contains('.image');
+        final isVideoExt = url.contains('.mp4') || url.contains('.mkv') || url.contains('.avi') || url.contains('.mov');
         
         if (isTikTok && upstreamContentType.contains('image')) {
           request.response.headers.contentType = ContentType.parse('video/MP2T');
+        } else if (isVideoExt || upstreamContentType.contains('octet-stream') || upstreamContentType.isEmpty) {
+          // Si es una extensión de video conocida o un binario genérico, forzamos mp4 para que la TV lo acepte
+          request.response.headers.contentType = ContentType.parse('video/mp4');
         } else {
           request.response.headers.set('content-type', upstreamContentType);
         }
-
-        request.response.headers.set('Access-Control-Allow-Origin', '*');
-        request.response.headers.set('transferMode.dlna.org', 'Streaming');
-        request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
         await request.response.addStream(response.stream);
         await request.response.close();
         client.close();
@@ -396,9 +406,17 @@ class MediaProxyService {
     final baseUri = Uri.parse(baseUrl);
     
     bool hasVersion = content.contains('#EXT-X-VERSION');
+    bool hasEndList = content.contains('#EXT-X-ENDLIST');
+    bool hasPlaylistType = content.contains('#EXT-X-PLAYLIST-TYPE');
+
     if (!hasVersion) {
       rewrittenLines.add('#EXTM3U');
       rewrittenLines.add('#EXT-X-VERSION:3');
+    }
+    
+    // Forzar modo VOD para habilitar controles de seek en Smart TV
+    if (!hasPlaylistType && !content.contains('#EXT-X-MEDIA-SEQUENCE')) {
+       rewrittenLines.add('#EXT-X-PLAYLIST-TYPE:VOD');
     }
 
     for (var line in lines) {
@@ -407,14 +425,14 @@ class MediaProxyService {
 
       if (trimmedLine.startsWith('#')) {
         String newLine = trimmedLine;
-        if (trimmedLine.startsWith('#EXT-X-KEY:') || trimmedLine.startsWith('#EXT-X-MAP:')) {
-           final uriMatch = RegExp(r'URI="([^"]+)"').firstMatch(trimmedLine);
-           if (uriMatch != null) {
-              final internalUrl = uriMatch.group(1)!;
-              final absoluteUri = baseUri.resolve(internalUrl);
-              final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host, algorithm: algorithm);
-              newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl.trim());
-           }
+        // Soporte universal y tolerante para atributos URI="..." (pistas de audio, llaves, subtítulos)
+        final uriMatch = RegExp(r'URI\s*=\s*"([^"]+)"', caseSensitive: false).firstMatch(trimmedLine);
+        if (uriMatch != null) {
+           final internalUrl = uriMatch.group(1)!;
+           final absoluteUri = baseUri.resolve(internalUrl);
+           final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host, algorithm: algorithm);
+           // Reemplazamos la URL interna por la proxeada, manteniendo la estructura de la etiqueta
+           newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl.trim());
         }
         rewrittenLines.add(newLine);
       } else {
@@ -424,6 +442,10 @@ class MediaProxyService {
         rewrittenLines.add(proxiedUrl.trim());
       }
     }
+    if (!hasEndList && !content.contains('#EXT-X-MEDIA-SEQUENCE')) {
+      rewrittenLines.add('#EXT-X-ENDLIST');
+    }
+
     return '${rewrittenLines.join('\n')}\n';
   }
 

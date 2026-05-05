@@ -295,125 +295,105 @@ class _TvChannelsPageState extends State<TvChannelsPage> {
   Widget _buildChannelCard(Map<String, dynamic> channel) {
     final String name = channel['name'] ?? 'Canal Desconocido';
     final String logoUrl = channel['logo_url'] ?? '';
-    final String streamUrl = channel['stream_url'] ?? '';
     final String groupName = channel['group_name'] ?? 'General';
-    // Por ahora la programacion dinámica de API externa requeriría EPG. Mostraremos el estado o la categoría.
-    final String currentProgram = "Categoría: \$groupName";
-    return GestureDetector(
-      onTap: () {
-        // Show rewarded ad before playing
-        AdService.showRewardedAd(
-          ticketId: "tv_reward",
-          onAdWatched: (_) async {
-            _saveAsFavorite(channel);
-            // We await the navigator to know when the user comes back
-            await Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => TvPlayerPage(
-                  channels: _filteredChannels,
-                  initialIndex: _filteredChannels.indexOf(channel),
-                ),
-              ),
-            );
-            // When returning, scroll to this channel
-            _scrollToChannel(channel['id']);
-          },
-          onAdFailed: (error) {
-             // If ad fails, we still allow entry but notify? 
-             // Actually user said: "si no lo ve, no puede acceder al contenido"
-             // But if it FAILS (no coverage), maybe we allow or show error.
-             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
-          },
-          onAdDismissedIncomplete: () {
-             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Debes ver el anuncio para acceder al canal")));
-          }
-        );
-      },
-      child: Container(
-        height: 90,
-        decoration: BoxDecoration(
-          color: const Color(0xFF141414),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Row(
-          children: [
-            // Logo Section
-            Container(
-              width: 100,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.04),
-                borderRadius: const BorderRadius.only(topLeft: Radius.circular(16), bottomLeft: Radius.circular(16)),
-              ),
-              padding: const EdgeInsets.all(12),
-              child: Center(
-                 child: logoUrl.isNotEmpty
-                    ? Image.network(
-                       logoUrl,
-                       fit: BoxFit.contain,
-                       errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white38, size: 40),
-                     )
-                    : const Icon(Icons.tv, color: Colors.white38, size: 40),
-              )
-            ),
-            // Details Section
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      name.toUpperCase(),
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Container(
-                          width: 6,
-                          height: 6,
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.redAccent,
-                            boxShadow: [BoxShadow(color: Colors.redAccent, blurRadius: 8)]
-                          ),
+    final String currentProgram = "Categoría: $groupName";
+    
+    return Container(
+      margin: const EdgeInsets.only(bottom: 4), // Reducido ya que el SliverPadding maneja el resto
+      child: EnergyFlowBorder(
+        borderRadius: 16,
+        borderWidth: 1.2,
+        backgroundColor: const Color(0xFF0A0A0A),
+        padding: EdgeInsets.zero,
+        child: Material(
+          color: Colors.transparent,
+          child: ListTile(
+             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+             onTap: () {
+                // Show rewarded ad before playing
+                AdService.showRewardedAd(
+                  ticketId: "tv_reward",
+                  onAdWatched: (_) async {
+                    _saveAsFavorite(channel);
+                    // We await the navigator to know when the user comes back
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => TvPlayerPage(
+                          channels: _filteredChannels,
+                          initialIndex: _filteredChannels.indexOf(channel),
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: currentProgram != 'Programación no disponible' && currentProgram.length > 25
-                              ? MarqueeText(text: currentProgram, style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12), width: 180)
-                              : Text(
-                                  currentProgram,
-                                  style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            // Play Button Section
-            Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(colors: [Color(0xFF00A3FF), Color(0xFFD400FF)]),
-                  shape: BoxShape.circle,
-                  boxShadow: [BoxShadow(color: const Color(0xFF00A3FF).withOpacity(0.3), blurRadius: 10)]
-                ),
-                child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 24),
-              ),
-            )
-          ],
+                      ),
+                    );
+                    // When returning, scroll to this channel
+                    _scrollToChannel(channel['id']);
+                  },
+                  onAdFailed: (error) {
+                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+                  },
+                  onAdDismissedIncomplete: () {
+                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Debes ver el anuncio para acceder al canal")));
+                  }
+                );
+             },
+             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+             leading: Container(
+               width: 50,
+               height: 50,
+               padding: const EdgeInsets.all(8),
+               decoration: BoxDecoration(
+                 color: Colors.white.withOpacity(0.05),
+                 borderRadius: BorderRadius.circular(12),
+                 border: Border.all(color: Colors.white10),
+               ),
+               child: logoUrl.isNotEmpty
+                  ? Image.network(
+                      logoUrl,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white38, size: 24),
+                    )
+                  : const Icon(Icons.tv, color: Colors.white38, size: 24),
+             ),
+             title: Text(
+               name.toUpperCase(), 
+               style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 0.5), 
+               maxLines: 1, 
+               overflow: TextOverflow.ellipsis,
+             ),
+             subtitle: Padding(
+               padding: const EdgeInsets.only(top: 4.0),
+               child: Row(
+                 children: [
+                   Container(
+                     width: 6,
+                     height: 6,
+                     decoration: const BoxDecoration(
+                       shape: BoxShape.circle,
+                       color: Colors.redAccent,
+                       boxShadow: [BoxShadow(color: Colors.redAccent, blurRadius: 8)]
+                     ),
+                   ),
+                   const SizedBox(width: 8),
+                   Expanded(
+                     child: Text(
+                       currentProgram,
+                       style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 11),
+                       maxLines: 1,
+                       overflow: TextOverflow.ellipsis,
+                     ),
+                   ),
+                 ],
+               ),
+             ),
+             trailing: Container(
+               padding: const EdgeInsets.all(8),
+               decoration: BoxDecoration(
+                 color: Colors.white.withOpacity(0.05),
+                 shape: BoxShape.circle,
+               ),
+               child: const Icon(Icons.play_arrow_rounded, color: Color(0xFF00A3FF), size: 20),
+             ),
+          ),
         ),
       ),
     );

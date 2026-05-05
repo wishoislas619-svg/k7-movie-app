@@ -33,6 +33,7 @@ import 'package:movie_app/features/series/presentation/pages/series_details_page
 import 'package:movie_app/features/cast/services/cast_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:movie_app/features/cast/services/media_proxy_service.dart';
+import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 
 class SubtitleInfo {
   final String language;
@@ -859,13 +860,23 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               // Puntos estratégicos de Play (centro y alrededores)
               final points = [Offset(w/2, h/2), Offset(w/2+20, h/2), Offset(w/2, h/2+20), Offset(w/2-25, h/2-25)];
               
-              for (var p in points) {
+      for (var p in points) {
                  if (_hasInitialUrl) break;
                  await _webviewTouchChannel.invokeMethod('tapAt', {
                    'x': (offset.dx + p.dx) * dpr,
                    'y': (offset.dy + p.dy) * dpr
                  });
-                 await Future.delayed(const Duration(milliseconds: 400));
+                 // Un poco más de tiempo entre clics para dejar que el sitio procese el anuncio
+                 await Future.delayed(const Duration(milliseconds: 800));
+              }
+
+              // Click final en el centro para asegurar el disparo del Play
+              if (!_hasInitialUrl) {
+                await Future.delayed(const Duration(milliseconds: 800));
+                await _webviewTouchChannel.invokeMethod('tapAt', {
+                  'x': (offset.dx + w / 2) * dpr,
+                  'y': (offset.dy + h / 2) * dpr
+                });
               }
             }
           }
@@ -895,6 +906,33 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                if (vUrl.startsWith('"') && vUrl.endsWith('"')) vUrl = vUrl.substring(1, vUrl.length - 1);
                if (vUrl.startsWith('http') || vUrl.startsWith('blob:')) {
                    print("🎯 ALGORITMO 2 ÉXITO: $vUrl");
+                   
+                   // Captura de cookies agresiva (Igual que en descarga)
+                   try {
+                     final cookieManager = CookieManager.instance();
+                     final pageCookies = await cookieManager.getCookies(url: WebUri(widget.videoOptions.first.videoUrl));
+                     final mediaCookies = await cookieManager.getCookies(url: WebUri(vUrl.startsWith('blob:') ? widget.videoOptions.first.videoUrl : vUrl));
+                     
+                     final all = [...pageCookies, ...mediaCookies];
+                     final cookieMap = <String, String>{};
+                     for (var c in all) {
+                       cookieMap[c.name] = c.value;
+                     }
+                     MediaProxyService.lastCookies = cookieMap.entries.map((e) => '${e.key}=${e.value}').join('; ');
+                     
+                     // Obtención robusta de User-Agent (evita MissingPluginException)
+                     try {
+                        final String? ua = await _webViewController?.evaluateJavascript(source: "navigator.userAgent");
+                        MediaProxyService.deviceUserAgent = (ua != null && ua != "null") 
+                            ? ua.replaceAll('"', '') 
+                            : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+                     } catch (_) {
+                        MediaProxyService.deviceUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+                     }
+                   } catch (e) {
+                     print("⚠️ Error capturando cookies en Player: $e");
+                   }
+
                    _hasInitialUrl = true;
                    final String origUrl = widget.videoOptions.first.videoUrl.toLowerCase();
                    final bool isProtectedServer = origUrl.contains('vidsrc') || origUrl.contains('videasy') || origUrl.contains('embed') || origUrl.contains('tmstr');
@@ -909,11 +947,24 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                      _webViewController?.evaluateJavascript(source: "document.querySelector('video').style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999999;background:black;'; document.querySelector('video').play();");
                      return;
                    }
+                   
+                   // Si es HLS, intentamos resolver el Master antes de inicializar
+                   String finalUrl = vUrl;
+                   if (vUrl.contains('.m3u8')) {
+                     final headers = {
+                       'User-Agent': MediaProxyService.deviceUserAgent ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                       'Referer': widget.videoOptions.first.videoUrl,
+                       if (MediaProxyService.lastCookies != null) 'Cookie': MediaProxyService.lastCookies!,
+                     };
+                     final master = await _resolveHlsMasterUrl(vUrl, headers);
+                     if (master != null) finalUrl = master;
+                   }
+
                    setState(() {
                      _isInitialLoading = false;
                      _isWebViewExtracting = false;
                    });
-                   _initializeVideoPlayer(vUrl);
+                   _initializeVideoPlayer(finalUrl);
                    return;
                }
             }
@@ -1695,24 +1746,27 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     _controller?.dispose();
     _webViewController = null;
     
-    // Restore initial volume and brightness
-    if (_initialVolume != null) {
-      VolumeController.instance.setVolume(_initialVolume!);
+    // Restore initial volume and brightness only if we are truly exiting the player
+    if (!_isPushingNextEpisode) {
+      if (_initialVolume != null) {
+        VolumeController.instance.setVolume(_initialVolume!);
+      }
+      if (_initialBrightness != null) {
+        ScreenBrightness().setScreenBrightness(_initialBrightness!);
+      }
+      VolumeController.instance.showSystemUI = true;
+      VolumeController.instance.removeListener();
+      WakelockPlus.disable();
+      
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
-    if (_initialBrightness != null) {
-      ScreenBrightness().setScreenBrightness(_initialBrightness!);
-    }
-    VolumeController.instance.showSystemUI = true;
-    VolumeController.instance.removeListener();
-    WakelockPlus.disable();
     
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
@@ -1963,27 +2017,40 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               ),
 
               // Skip Intro Button
-              if (_showSkipIntroButton && widget.introEndTime != null)
+              if (_showSkipIntroButton && !_showControls && widget.introEndTime != null)
                 Positioned(
                   bottom: 40,
                   right: 50,
                   child: AnimatedOpacity(
                     opacity: _skipIntroOpacity,
                     duration: const Duration(milliseconds: 500),
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.black.withOpacity(0.65),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        elevation: 0,
-                        side: const BorderSide(color: Colors.white30, width: 1),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    child: EnergyFlowBorder(
+                      borderRadius: 12,
+                      borderWidth: 2,
+                      backgroundColor: Colors.black.withOpacity(0.7),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      child: GestureDetector(
+                        onTap: _skipIntroOpacity < 0.1 ? null : () {
+                          _controller?.seekTo(Duration(seconds: widget.introEndTime!));
+                        },
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.skip_next, size: 20, color: Colors.white),
+                            SizedBox(width: 8),
+                            Text(
+                              'SALTAR INTRO', 
+                              style: TextStyle(
+                                color: Colors.white, 
+                                fontWeight: FontWeight.bold, 
+                                fontSize: 13, 
+                                letterSpacing: 1.2,
+                                shadows: [Shadow(color: Colors.black, blurRadius: 4)]
+                              )
+                            ),
+                          ],
+                        ),
                       ),
-                      onPressed: _skipIntroOpacity < 0.1 ? null : () {
-                        _controller?.seekTo(Duration(seconds: widget.introEndTime!));
-                      },
-                      icon: const Icon(Icons.skip_next, size: 18),
-                      label: const Text('Saltar Intro', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, letterSpacing: 0.5)),
                     ),
                   ),
                 ),
@@ -1994,21 +2061,31 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                   bottom: 40,
                   right: 50,
                   child: _nextEpisode != null
-                      ? ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.black.withOpacity(0.65),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            elevation: 0,
-                            side: const BorderSide(color: Colors.white30, width: 1),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ? EnergyFlowBorder(
+                          borderRadius: 12,
+                          borderWidth: 2,
+                          backgroundColor: Colors.black.withOpacity(0.7),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          child: GestureDetector(
+                            onTap: () => _playNextEpisode(),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.fast_forward, size: 20, color: Colors.white),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'SIGUIENTE EPISODIO (${_nextEpisode!.episodeNumber})', 
+                                  style: const TextStyle(
+                                    color: Colors.white, 
+                                    fontWeight: FontWeight.bold, 
+                                    fontSize: 13, 
+                                    letterSpacing: 1.2,
+                                    shadows: [Shadow(color: Colors.black, blurRadius: 4)]
+                                  )
+                                ),
+                              ],
+                            ),
                           ),
-                          onPressed: () {
-                            // Navigator.pop and push Next Episode
-                            _playNextEpisode();
-                          },
-                          icon: const Icon(Icons.fast_forward, size: 18),
-                          label: Text('Siguiente Episodio (${_nextEpisode!.episodeNumber})', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, letterSpacing: 0.5)),
                         )
                       : _buildRecommendationsCarousel(),
                 ),
@@ -2201,6 +2278,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                          ]),
                          
                           onLoadStart: (controller, url) async {
+                             // --- GHOST_SNIFFER v5.5 (Deep Engine) ---
+                             // Inyectamos el sniffer avanzado que ya funciona bien en la descarga
+                             await controller.evaluateJavascript(source: _getGhostSnifferCode());
+                             
                              const injectNetMonitor = r"""
                                 (function() {
                                   if (window._netMonitorInjected) return;
@@ -3791,5 +3872,103 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
         backgroundColor: _useProxy ? const Color(0xFF00FF87) : Colors.grey[800],
       ),
     );
+  }
+
+  String _getGhostSnifferCode() {
+    return r'''
+      (function() {
+        if (window._ghostPowered) return;
+        window._ghostPowered = true;
+        console.log('[DEBUG_JS] GHOST_SNIFFER_v5.5_DEEP_ENGINE_ACTIVE');
+
+        function notify(url, meta) {
+          if (!url || typeof url !== 'string' || url.startsWith('blob:') || url.length < 15) return;
+          if (url.includes('.js') || url.includes('.css') || url.includes('.png') || url.includes('analytics')) return;
+          try {
+            window.flutter_inappwebview.callHandler('onUrlDetected', url, meta || {source: 'ghost_sniffer'});
+          } catch(e) {}
+        }
+
+        // 1. Hook de URL.createObjectURL para capturar Blobs
+        const _createObjectURL = URL.createObjectURL;
+        URL.createObjectURL = function(blob) {
+          const url = _createObjectURL.apply(this, arguments);
+          if (blob.type && (blob.type.includes('mpegurl') || blob.type.includes('video'))) {
+             console.log('[DEBUG_JS] Blob Video Detectado: ' + url);
+          }
+          return url;
+        };
+
+        // 2. Extraer de Motores de Streaming (HLS.js / Video.js)
+        const scanEngine = () => {
+          if (window.Hls && window.Hls.instances) {
+            window.Hls.instances.forEach(h => notify(h.url, {engine: 'hls_instance'}));
+          }
+          if (window.videojs && window.videojs.getPlayers) {
+            const players = window.videojs.getPlayers();
+            for (let p in players) notify(players[p].currentSrc(), {engine: 'videojs'});
+          }
+          if (window.jwplayer && typeof jwplayer === 'function') {
+            try { 
+              const playlist = jwplayer().getPlaylist();
+              if (playlist) playlist.forEach(p => p.sources.forEach(s => notify(s.file, {engine: 'jwplayer'})));
+            } catch(e){}
+          }
+        };
+
+        // 3. Escaneo de reproducción activa
+        const deepScan = () => {
+          const videos = document.querySelectorAll('video');
+          videos.forEach(v => {
+            if (v.readyState >= 2) { 
+               const src = v.src || v.currentSrc;
+               if (src && !src.startsWith('blob:')) notify(src, {status: 'playing', area: 'active_dom'});
+            }
+          });
+          scanEngine();
+        };
+
+        setInterval(deepScan, 1000);
+        setInterval(() => window.flutter_inappwebview.callHandler('debugLog', 'GHOST_HEARTBEAT_v5.5'), 3000);
+        
+        notify('READY_SIGNAL', {status: 'v5.5_ready'});
+      })();
+    ''';
+  }
+
+  Future<String?> _resolveHlsMasterUrl(String mediaUrl, Map<String, String> headers) async {
+    try {
+      final res = await http.get(Uri.parse(mediaUrl), headers: headers).timeout(const Duration(seconds: 4));
+      if (res.statusCode == 200 && res.body.contains('#EXT-X-STREAM-INF')) {
+        return mediaUrl;
+      }
+    } catch (_) {}
+
+    final uri = Uri.parse(mediaUrl);
+    final baseUrl = mediaUrl.split('?').first;
+    final query = uri.hasQuery ? '?${uri.query}' : '';
+
+    final candidates = <String>{
+      _replaceQualitySuffix(baseUrl) + query,
+      _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/master.m3u8') + query,
+      _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/index.m3u8') + query,
+      '${uri.scheme}://${uri.host}${uri.pathSegments.take(uri.pathSegments.length - 1).join('/')}/master.m3u8$query',
+    };
+
+    for (final c in candidates) {
+      if (c.isEmpty || !c.contains('.m3u8')) continue;
+      try {
+        final res = await http.get(Uri.parse(c), headers: headers).timeout(const Duration(seconds: 3));
+        if (res.statusCode == 200 && res.body.contains('#EXT-X-STREAM-INF')) {
+          print("💎 [HLS_MASTER] Encontrado: $c");
+          return c;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  String _replaceQualitySuffix(String url) {
+    return url.replaceAll(RegExp(r'(-microframe-(ld|sd|hd)|-(ld|sd|hd)|_(ld|sd|hd)|-\\d+p)\\.m3u8$', caseSensitive: false), '.m3u8');
   }
 }

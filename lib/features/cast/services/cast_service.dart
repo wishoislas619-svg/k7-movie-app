@@ -328,6 +328,7 @@ class CastService extends ChangeNotifier {
         final success = await _loadMediaDlnaSenior(
           url: finalUrl,
           title: title,
+          mediaType: mediaType,
           imageUrl: imageUrl,
           duration: duration,
         );
@@ -565,6 +566,7 @@ class CastService extends ChangeNotifier {
   Future<bool> _loadMediaDlnaSenior({
     required String url,
     required String title,
+    dc.CastMediaType? mediaType,
     String? imageUrl,
     Duration? duration,
   }) async {
@@ -573,16 +575,27 @@ class CastService extends ChangeNotifier {
     final durationStr = duration != null ? _formatDurationForDlna(duration) : "0:00:00";
     final sanitizedTitle = _sanitizeTitleForDlna(title);
     
-    // DIDL-Lite Metadata (Clave para Samsung/LG)
+    // MimeType dinámico según el contenido
+    String mimeType = 'video/mp4';
+    if (mediaType == dc.CastMediaType.hls) {
+      // Intentar MIME estándar de HLS, muchas TVs lo prefieren para activar controles
+      mimeType = 'application/vnd.apple.mpegurl';
+    } else if (mediaType == dc.CastMediaType.mkv) {
+      mimeType = 'video/x-matroska';
+    } else if (mediaType == dc.CastMediaType.mpegTs) {
+      mimeType = 'video/mp2t';
+    }
+
+    // DIDL-Lite Metadata (Clave para Samsung/LG/Sony)
     // DLNA.ORG_OP=01 -> Habilita SEEK (Adelantar/Atrasar)
     // DLNA.ORG_CI=0  -> No es transcodificado
-    // DLNA.ORG_FLAGS -> Compatibilidad general
+    // DLNA.ORG_FLAGS -> 01700000... indica soporte de streaming y pausa/seek
     final metadata = '''
 <DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:sec="http://www.sec.co.kr/">
   <item id="0" parentID="-1" restricted="1">
     <dc:title>${_escapeXml(sanitizedTitle)}</dc:title>
     <upnp:class>object.item.videoItem</upnp:class>
-    <res protocolInfo="http-get:*:video/mp4:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000" duration="$durationStr">$url</res>
+    <res protocolInfo="http-get:*:$mimeType:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000" duration="$durationStr">$url</res>
     ${imageUrl != null ? '<upnp:albumArtURI>${_escapeXml(imageUrl)}</upnp:albumArtURI>' : ''}
   </item>
 </DIDL-Lite>
