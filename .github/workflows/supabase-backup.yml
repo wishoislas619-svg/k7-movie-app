@@ -10,6 +10,8 @@ on:
 jobs:
   backup-and-email:
     runs-on: ubuntu-latest
+    env:
+      DATE: '' # Declarado para el linter del IDE
     steps:
       - name: Instalar cliente PostgreSQL 17
         run: |

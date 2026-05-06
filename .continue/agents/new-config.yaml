@@ -1,0 +1,19 @@
+name: "DeepSeek Config"
+version: 1.0.0
+schema: v1
+
+models:
+  - name: "DeepSeek V4 Pro"
+    provider: "deepseek"
+    model: "deepseek-chat"
+    apiKey: "sk-08b9c0b014554e56828e3c93848de85f"
+  - name: "DeepSeek Coder"
+    provider: "deepseek"
+    model: "deepseek-coder"
+    apiKey: "sk-08b9c0b014554e56828e3c93848de85f"
+
+tabAutocompleteModel:
+  name: "DeepSeek Coder"
+  provider: "deepseek"
+  model: "deepseek-coder"
+  apiKey: "sk-08b9c0b014554e56828e3c93848de85f"

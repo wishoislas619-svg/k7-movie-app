@@ -968,18 +968,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                    return;
                }
             }
+          } else {
+            // Algoritmo 3: Ya los clicks se hicieron arriba, dejamos que el MONITOR DE RED haga el resto
+            return; 
           }
         } catch(e) { print("Log: Error Clicks Alg 2/3: $e"); }
-        // 🔥 CRÍTICO: Para Algoritmos 2 y 3, si no hay URL detectada,
-        // continuar al scraper principal para hacer polling. No cortar con return.
-        if (_effectiveAlgorithm == 2) {
-          // Algoritmo 2 ya verificó arriba, si llegó aquí no encontró URL directa.
-          // Dejamos que el scraper principal intente la extracción.
-        }
-        if (_effectiveAlgorithm == 3) {
-          // Algoritmo 3: Dejar que el monitor de red / onLoadResource capture la URL
-          return;
-        }
+        if (_effectiveAlgorithm == 2) return;
      }
 
     // --- ALGORITMO 1: BUSQUEDA INTELIGENTE DE CALIDADES (MODERNO) ---
@@ -1236,24 +1230,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     } catch (e) {
       if (mounted) setState(() => _isSwitchingStream = false);
     }
-  }
-
-  /// Maneja URLs de video detectadas por el monitor de red (Algoritmo 2 y 3)
-  Future<void> _handleDetectedVideoUrl(String url) async {
-    if (!mounted || _hasInitialUrl) return;
-    
-    // Filtros de analíticas y basura
-    final lcUrl = url.toLowerCase();
-    if (lcUrl.contains('analytics') || lcUrl.contains('doubleclick') || lcUrl.contains('ads')) return;
-
-    print("🎯 [NET_MONITOR] URL detectada: $url");
-    _hasInitialUrl = true; 
-    setState(() { 
-      _isInitialLoading = false; 
-      _isWebViewExtracting = false; 
-      _isAlgo3Extracting = false; 
-    });
-    _initializeVideoPlayer(url);
   }
 
   void _onSubtitleSelected(String label) async {
@@ -3176,7 +3152,46 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     );
   }
 
+  Future<void> _handleDetectedVideoUrl(String url) async {
+    if (!mounted) return;
+    
+    // Filtros de analíticas y basura
+    final lcUrl = url.toLowerCase();
+    if (lcUrl.contains('analytics') || lcUrl.contains('doubleclick') || lcUrl.contains('ads')) return;
 
+    if (!_hasInitialUrl) {
+      print("🎯 [NET_DETECT] Video inicial: $url");
+      _hasInitialUrl = true; 
+      setState(() { 
+        _isInitialLoading = false; 
+        if (_effectiveAlgorithm == 2) {
+          _isWebViewExtracting = false; 
+        }
+      });
+      _initializeVideoPlayer(url);
+
+      if (_effectiveAlgorithm == 3 && (_scraperTimer == null || !_scraperTimer!.isActive)) {
+        _runScraper();
+      }
+    } else {
+      bool isSameBase = false;
+      if (_controller != null && _controller!.dataSource.isNotEmpty) {
+        final currentBase = _controller!.dataSource.split('?').first;
+        final newBase = url.split('?').first;
+        isSameBase = currentBase == newBase;
+      }
+      
+      // Calidad superior o cambio manual (incluimos .mp4 y otros formatos comunes)
+      final bool isPotentialVideo = url.contains('m3u8') || url.contains('.mp4') || url.contains('.m3u') || url.contains('.txt') || url.contains('/stream/') || url.contains('playlist');
+      if ((_isSwitchingStream && !isSameBase) || (!isSameBase && !url.contains('.ts') && isPotentialVideo)) {
+        print("🎯 [NET_DETECT] Nuevo stream: $url");
+        if (_isSwitchingStream) {
+           setState(() => _isSwitchingStream = false);
+        }
+        _initializeVideoPlayer(url);
+      }
+    }
+  }
 
   void _selectVideasyInternalServer(InternalServerInfo server) {
     if (!mounted) return;

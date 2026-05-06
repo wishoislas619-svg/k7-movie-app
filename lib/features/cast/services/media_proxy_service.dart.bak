@@ -389,10 +389,6 @@ class MediaProxyService {
         } else {
           request.response.headers.set('content-type', upstreamContentType);
         }
-        // 🔥 Cabeceras anti-cache para que la TV no congele segmentos viejos
-        request.response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        request.response.headers.set('Pragma', 'no-cache');
-        request.response.headers.set('Expires', '0');
         await request.response.addStream(response.stream);
         await request.response.close();
         client.close();
@@ -412,16 +408,14 @@ class MediaProxyService {
     bool hasVersion = content.contains('#EXT-X-VERSION');
     bool hasEndList = content.contains('#EXT-X-ENDLIST');
     bool hasPlaylistType = content.contains('#EXT-X-PLAYLIST-TYPE');
-    final bool isLive = content.contains('#EXT-X-MEDIA-SEQUENCE');
 
     if (!hasVersion) {
       rewrittenLines.add('#EXTM3U');
       rewrittenLines.add('#EXT-X-VERSION:3');
     }
     
-    // 🔥 CRÍTICO: Forzar VOD solo si NO es LIVE.
-    // Si tiene MEDIA-SEQUENCE es LIVE y el seek depende del TV, no del playlist.
-    if (!hasPlaylistType && !isLive) {
+    // Forzar modo VOD para habilitar controles de seek en Smart TV
+    if (!hasPlaylistType && !content.contains('#EXT-X-MEDIA-SEQUENCE')) {
        rewrittenLines.add('#EXT-X-PLAYLIST-TYPE:VOD');
     }
 
@@ -448,8 +442,7 @@ class MediaProxyService {
         rewrittenLines.add(proxiedUrl.trim());
       }
     }
-    // 🔥 CRÍTICO: Solo agregar ENDLIST si NO es LIVE
-    if (!hasEndList && !isLive) {
+    if (!hasEndList && !content.contains('#EXT-X-MEDIA-SEQUENCE')) {
       rewrittenLines.add('#EXT-X-ENDLIST');
     }
 

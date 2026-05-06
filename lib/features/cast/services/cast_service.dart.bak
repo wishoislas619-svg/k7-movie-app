@@ -308,17 +308,9 @@ class CastService extends ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 600));
     }
 
-    // 🔥 CRÍTICO: Para HLS proxeado, forzar type a MP4 en el media.
-    // Los protocolos Chromecast/DIAL/AirPlay activan/desactivan controles según
-    // el media type. HLS desactiva pausa/seek. Al enviar como MP4 con la URL
-    // proxeada, el TV cree que es video normal y activa todos los controles.
-    final dc.CastMediaType finalMediaType = (mediaType == dc.CastMediaType.hls && finalUrl.contains('/proxy'))
-        ? dc.CastMediaType.mp4
-        : mediaType;
-
     final media = dc.CastMedia(
       url: finalUrl,
-      type: finalMediaType,
+      type: mediaType,
       title: _sanitizeTitleForDlna(title),
       imageUrl: imageUrl,
       httpHeaders: combinedHeaders,
@@ -586,10 +578,8 @@ class CastService extends ChangeNotifier {
     // MimeType dinámico según el contenido
     String mimeType = 'video/mp4';
     if (mediaType == dc.CastMediaType.hls) {
-      // 🔥 CRÍTICO: Usar video/mp4. Smart TVs desactivan controles (pausa/play/seek)
-      // cuando detectan HLS (lo tratan como live). Al usar 'video/mp4' la TV activa
-      // la barra de controles. El proxy local maneja el HLS transparentemente.
-      mimeType = 'video/mp4';
+      // Intentar MIME estándar de HLS, muchas TVs lo prefieren para activar controles
+      mimeType = 'application/vnd.apple.mpegurl';
     } else if (mediaType == dc.CastMediaType.mkv) {
       mimeType = 'video/x-matroska';
     } else if (mediaType == dc.CastMediaType.mpegTs) {
