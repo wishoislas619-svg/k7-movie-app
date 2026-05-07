@@ -200,9 +200,11 @@ class MediaProxyService {
     headers['Accept-Encoding'] ??= 'gzip';
     
     // 🛡️ Filtro de cabeceras para el upstream
-    if (url.contains('.m3u8') || url.contains('.txt')) {
-      headers.remove('Range'); 
+    if (url.contains('.m3u8') || url.contains('.txt') || url.contains('master') || url.contains('playlist')) {
+      // NUNCA enviar Range al playlist M3U8 — rompe la descarga de la lista
+      headers.remove('Range');
     } else if (incomingHeaders.containsKey('range')) {
+      // Para segmentos .ts, forwardear el Range si la TV lo pide (seek)
       headers['Range'] = incomingHeaders['range']!;
     }
     final method = request.method;
@@ -331,8 +333,15 @@ class MediaProxyService {
           request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
           request.response.headers.contentLength = bytes.length;
           request.response.headers.set('Access-Control-Allow-Origin', '*');
-          // Ayuda a las TVs a identificar el stream como video continuo
+          request.response.headers.set('Accept-Ranges', 'bytes');
+          request.response.headers.set('Connection', 'keep-alive');
+          // Cabeceras DLNA obligatorias para Smart TV
           request.response.headers.set('transferMode.dlna.org', 'Streaming');
+          request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
+          // Anti-cache para que la TV no congele la lista de reproducción
+          request.response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+          request.response.headers.set('Pragma', 'no-cache');
+          request.response.headers.set('Expires', '0');
           request.response.add(bytes);
           await request.response.close();
           return;
@@ -340,6 +349,10 @@ class MediaProxyService {
           // Si no es un M3U8 real, enviamos los bytes originales sin tocarlos
           request.response.statusCode = 200;
           request.response.headers.set('content-type', contentType);
+          request.response.headers.set('Access-Control-Allow-Origin', '*');
+          request.response.headers.set('Accept-Ranges', 'bytes');
+          request.response.headers.set('transferMode.dlna.org', 'Streaming');
+          request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
           request.response.add(response.bodyBytes);
           await request.response.close();
           return;
@@ -393,8 +406,15 @@ class MediaProxyService {
         request.response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         request.response.headers.set('Pragma', 'no-cache');
         request.response.headers.set('Expires', '0');
-        await request.response.addStream(response.stream);
-        await request.response.close();
+        // Para streaming directo, mantener conexión viva
+        // El TV irá pidiendo cada segmento individualmente
+        try {
+          await request.response.addStream(response.stream);
+          await request.response.close();
+        } catch (_) {
+          // Si el TV cierra la conexión, no es error nuestro
+          print('⚠️ [SEG] Cliente cerró conexión en: $segName');
+        }
         client.close();
       }
     } catch (e) {

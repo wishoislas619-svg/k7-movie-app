@@ -1,5 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:video_player/video_player.dart';
+import 'features/movies/domain/entities/movie.dart';
 
 import 'core/utils/sqlite_service.dart';
 
@@ -59,3 +61,31 @@ final seriesCategoryRepositoryProvider = Provider<SeriesCategoryRepository>((ref
 
 // ── UI State ──────────────────────────────────────────────────────────────────
 final splashDoneProvider = StateProvider<bool>((ref) => false);
+
+class FloatingPlayerState {
+  final bool isActive;
+  final VideoPlayerController? controller;
+  final String? title;
+  final String? mediaId;
+  final String? mediaType;
+  final String? imagePath;
+  final List<VideoOption>? videoOptions;
+  final String? episodeId;
+  final String? videoUrl;
+  final Duration? currentPosition;
+
+  FloatingPlayerState({
+    this.isActive = false, 
+    this.controller, 
+    this.title,
+    this.mediaId,
+    this.mediaType,
+    this.imagePath,
+    this.videoOptions,
+    this.episodeId,
+    this.videoUrl,
+    this.currentPosition,
+  });
+}
+
+final floatingPlayerProvider = StateProvider<FloatingPlayerState>((ref) => FloatingPlayerState());

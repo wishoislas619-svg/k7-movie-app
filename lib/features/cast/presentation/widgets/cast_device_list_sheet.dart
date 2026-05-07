@@ -1,5 +1,6 @@
-import 'dart:async';
+ import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import '../../services/cast_service.dart';
 import '../../services/cast_device_info.dart';
 import 'package:movie_app/core/services/ad_service.dart';

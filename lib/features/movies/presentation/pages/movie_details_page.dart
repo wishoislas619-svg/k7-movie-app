@@ -9,6 +9,7 @@ import 'movie_options_page.dart';
 import '../../../player/data/datasources/video_service.dart';
 import '../../../../providers.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
+import 'package:movie_app/features/movies/presentation/widgets/cast_button_overlay.dart';
 
 class MovieDetailsPage extends ConsumerStatefulWidget {
   final Movie movie;
@@ -291,7 +292,12 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         _buildRoundButton(Icons.arrow_back, () => Navigator.pop(context)),
-                        _buildRoundButton(Icons.add, () {}),
+                        CastButtonOverlay(
+              videoUrl: _videoOptions != null && _videoOptions!.isNotEmpty ? _videoOptions!.first.videoUrl : '',
+              title: widget.movie.name,
+              imageUrl: widget.movie.imagePath,
+              algorithm: _videoOptions != null && _videoOptions!.isNotEmpty ? _videoOptions!.first.extractionAlgorithm : 1,
+            ),
                       ],
                     ),
                   ),

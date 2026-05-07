@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:io';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:movie_app/features/movies/presentation/providers/movie_provider.dart';
 import 'package:movie_app/features/movies/presentation/providers/category_provider.dart';
 import 'package:movie_app/features/movies/domain/entities/movie.dart';
@@ -39,6 +41,13 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   bool _isSearching = false;
   String _searchQuery = "";
   final TextEditingController _searchController = TextEditingController();
+  static bool _batteryDialogShown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // No necesitamos retrasar aquí, el build se encargará cuando los datos lleguen
+  }
 
   @override
   void dispose() {
@@ -75,6 +84,14 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
 
     return moviesAsync.when(
       data: (allMovies) {
+        // Ejecutar el aviso de batería una sola vez cuando hay datos
+        if (!_batteryDialogShown) {
+          _batteryDialogShown = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _showBatteryOptimizationDialog(context);
+          });
+        }
+
         // Filtering logic
         var filteredMovies = allMovies;
         if (_selectedCategoryFilter != null) {
@@ -771,6 +788,98 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         );
       },
     );
+  }
+
+  void _showBatteryOptimizationDialog(BuildContext context) {
+    if (!Platform.isAndroid) return;
+    
+    Future.delayed(const Duration(seconds: 2), () {
+      if (!context.mounted) return;
+      Permission.ignoreBatteryOptimizations.status.then((status) {
+        if (status.isGranted || !context.mounted) return;
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF121214),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+              side: BorderSide(color: Colors.white.withOpacity(0.1), width: 0.5),
+            ),
+            title: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.battery_saver_rounded, color: Colors.amber, size: 32),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Optimización de Batería',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Para garantizar que las descargas y la transmisión a tu TV no se interrumpan, K7-MOVIE necesita ejecutarse sin restricciones de energía.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 14, height: 1.5),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.05),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline, color: Color(0xFF00A3FF), size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Selecciona "Sin restricciones" en el siguiente menú.',
+                          style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            actionsAlignment: MainAxisAlignment.spaceEvenly,
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('MÁS TARDE', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 13, fontWeight: FontWeight.bold)),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Permission.ignoreBatteryOptimizations.request();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00A3FF),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  elevation: 8,
+                  shadowColor: const Color(0xFF00A3FF).withOpacity(0.5),
+                ),
+                child: const Text('CONFIGURAR', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+      });
+    });
   }
 
   void _goToDetails(BuildContext context, WatchHistory item) {

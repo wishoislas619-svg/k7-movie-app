@@ -9,6 +9,8 @@ import 'package:movie_app/features/movies/data/repositories/download_repository_
 import 'package:movie_app/features/movies/domain/entities/download_task.dart';
 import 'package:movie_app/features/movies/domain/entities/movie.dart';
 import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
+import 'package:movie_app/features/player/data/datasources/video_service.dart';
+import 'package:movie_app/features/movies/presentation/widgets/cast_button_overlay.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:movie_app/core/constants/app_constants.dart';
@@ -401,6 +403,15 @@ class _DownloadsPageState extends ConsumerState<DownloadsPage> {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // Cast button for local files (appears before play)
+          if (task.savePath != null)
+            CastButtonOverlay(
+              videoUrl: task.savePath!,
+              localFilePath: task.savePath,
+              title: task.movieName,
+              imageUrl: task.imagePath,
+              algorithm: 1,
+            ),
           IconButton(
             icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent, size: 30),
             onPressed: () async {
@@ -694,6 +705,13 @@ class _LocalFilesViewState extends State<_LocalFilesView> {
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (!isDirectory)
+                          CastButtonOverlay(
+                            videoUrl: entity.path,
+                            localFilePath: entity.path,
+                            title: name,
+                            algorithm: 1,
+                          ),
                         IconButton(
                           icon: const Icon(Icons.play_circle_outline, color: Colors.greenAccent),
                           onPressed: () => _playFile(context, entity),

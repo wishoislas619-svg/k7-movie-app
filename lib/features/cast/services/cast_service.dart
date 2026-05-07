@@ -380,7 +380,6 @@ class CastService extends ChangeNotifier {
     _log('  path    : $filePath');
     _log('  startPos: ${startPosition.inSeconds}s');
 
-    // Verificar que el archivo existe antes de intentar transmitirlo
     final file = File(filePath);
     final exists = await file.exists();
     _log('  exists  : $exists');
@@ -388,30 +387,75 @@ class CastService extends ChangeNotifier {
       final size = await file.length();
       _log('  size    : ${(size / 1024 / 1024).toStringAsFixed(2)} MB');
     } else {
-      _logErr('  ⚠️ El archivo NO existe en: $filePath');
+      _logErr('  \u26a0\ufe0f El archivo NO existe en: $filePath');
     }
 
     final ext = filePath.toLowerCase().split('.').last;
-    final mediaType = switch (ext) {
-      'mkv' => dc.CastMediaType.mkv,
-      'ts'  => dc.CastMediaType.mpegTs,
-      _     => dc.CastMediaType.mp4,
-    };
-    _log('  ext     : .$ext → mediaType=$mediaType');
-
+    
     // Registrar el archivo en nuestro MediaProxyService unificado
     await MediaProxyService().start();
     final proxyUrl = MediaProxyService().getProxiedUrl(filePath, {}, useLocalhost: false);
     _log('  Archivo local registrado en: $proxyUrl');
 
-    // Transmitir usando la lógica estándar de castUrl (UA móvil, stop previo, etc.)
-    return castUrl(
+    _log('  ext     : .$ext');
+
+    // Forzar mediaType=mp4 para archivos locales.
+    // Aunque sea TS/MKV, el proxy sirve el contenido con MIME video/mp4.
+    // Si usamos mpegTs o mkv, la TV detecta el type y DESACTIVA los controles
+    // de pausa/play/seek (lo trata como contenido en vivo/streaming).
+    // Al enviar mp4, la TV activa TODOS los controles.
+    final dc.CastMediaType forcedMediaType = dc.CastMediaType.mp4;
+
+    // Construir media manualmente en lugar de llamar castUrl,
+    // para tener control total sobre el mediaType.
+    if (_session == null) return;
+
+    _log('  CastMedia type forzado a: mp4 (para habilitar controles DLNA)');
+
+    final isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
+    if (isDlna) {
+      _log('  DLNA: enviando Stop previo...');
+      try { await _session!.stop(); } catch (e) { _log('  DLNA Stop ignorado: $e'); }
+      await Future.delayed(const Duration(milliseconds: 600));
+    }
+
+    final media = dc.CastMedia(
       url: proxyUrl,
-      title: title,
+      type: forcedMediaType,
+      title: cleanTitle,
       imageUrl: imageUrl,
       startPosition: startPosition,
       duration: duration,
     );
+
+    _log('  Llamando session.loadMedia() con URL: $proxyUrl');
+    try {
+      if (isDlna && _dlnaControlUrl != null) {
+        _log('  DLNA Senior: Usando carga manual con DIDL-Lite...');
+        final success = await _loadMediaDlnaSenior(
+          url: proxyUrl,
+          title: title,
+          mediaType: dc.CastMediaType.mp4,
+          imageUrl: imageUrl,
+          duration: duration,
+        );
+        if (success) {
+          _log('  \u2705 Carga manual DLNA completada');
+          await play();
+          notifyListeners();
+          return;
+        }
+      }
+      
+      await _session!.loadMedia(media);
+      _log('  \u2705 loadMedia completado (Est\u00e1ndar)');
+    } catch (e, stack) {
+      _logErr('  loadMedia fall\u00f3: $e');
+      _logErr('  Stack: $stack');
+      rethrow;
+    }
+    _log('══════════════════════════════════════');
+    notifyListeners();
   }
 
   // ── DLNA Polling ───────────────────────────────────────────────────────────

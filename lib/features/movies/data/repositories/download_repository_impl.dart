@@ -150,7 +150,16 @@ class DownloadRepository {
       return converted;
     }
 
-    // Fallback: return original file to allow TS playback if supported
+    // Fallback: return original file
+    // Si es .ts, intentamos forzar conversión más agresiva
+    if (task.savePath!.toLowerCase().endsWith('.ts')) {
+      final forcedConvert = await _forceConvertToMp4(task.savePath!, onProgress: onProgress);
+      if (forcedConvert != null) {
+        await updateDownloadTask(task.copyWith(savePath: forcedConvert));
+        await _updateTaskMediaInfo(task, forcedConvert);
+        return forcedConvert;
+      }
+    }
     await _updateTaskMediaInfo(task, task.savePath!);
     return task.savePath;
   }
@@ -213,7 +222,7 @@ class DownloadRepository {
 
   Future<void> enqueueDownload(my.DownloadTask task,
       {required Function(double, String) onProgress,
-      required Function(my.DownloadStatus) onStatusChange}) async {
+      required Function(my.DownloadStatus, {String? savePath}) onStatusChange}) async {
     
     // Detect HLS: classic .m3u8 OR .txt manifests from known CDN domains
     final isHls = task.videoUrl.contains('.m3u8') ||
@@ -306,7 +315,7 @@ class DownloadRepository {
     required String fileName,
     required Map<String, String> headers,
     required Function(double, String) onProgress,
-    required Function(my.DownloadStatus) onStatusChange,
+    required Function(my.DownloadStatus, {String? savePath}) onStatusChange,
   }) async {
     try {
       final client = http.Client();
@@ -394,7 +403,7 @@ class DownloadRepository {
     required Map<String, String> headers,
     required my.DownloadTask task,
     required Function(double, String) onProgress,
-    required Function(my.DownloadStatus) onStatusChange,
+    required Function(my.DownloadStatus, {String? savePath}) onStatusChange,
   }) async {
     if (playlistText.contains('#EXT-X-KEY')) {
       // Encrypted HLS not supported in this simple downloader
@@ -585,7 +594,7 @@ class DownloadRepository {
       speed: '',
     );
     onProgress(1.0, '');
-    onStatusChange(my.DownloadStatus.completed);
+    onStatusChange(my.DownloadStatus.completed, savePath: pPath);
     await WakelockPlus.disable();
     await ForegroundService.stop();
   }
@@ -942,7 +951,7 @@ class DownloadRepository {
   Future<void> resumeDownloadTask(
     my.DownloadTask task, {
     required Function(double, String) onProgress,
-    required Function(my.DownloadStatus) onStatusChange,
+    required Function(my.DownloadStatus, {String? savePath}) onStatusChange,
   }) async {
     final isHls = task.videoUrl.contains('.m3u8') || (task.savePath?.endsWith('.ts') ?? false);
     if (isHls) {
@@ -1098,6 +1107,70 @@ class DownloadRepository {
     }
     return false;
   }
+
+  Future<String?> _forceConvertToMp4(
+    String inputPath, {
+    Function(double progress, String speed)? onProgress,
+  }) async {
+    if (!inputPath.toLowerCase().endsWith('.ts')) return null;
+    final inputFile = File(inputPath);
+    if (!await inputFile.exists()) return null;
+    
+    final outputPath = inputPath.substring(0, inputPath.length - 3) + '.mp4';
+    print('[FORCE_CONVERT] Start: $inputPath -> $outputPath');
+    
+    // Multiple conversion attempts with different ffmpeg flags
+    final attempts = [
+      // Attempt 1: Copy all streams (fastest)
+      '-y -i "$inputPath" -c copy -bsf:a aac_adtstoasc -movflags +faststart -f mp4 "$outputPath.tmp"',
+      // Attempt 2: Re-encode video & audio (slower but more compatible)
+      '-y -i "$inputPath" -c:v libx264 -preset ultrafast -crf 23 -c:a aac -b:a 128k -movflags +faststart -f mp4 "$outputPath.tmp"',
+      // Attempt 3: Just copy video, re-encode audio
+      '-y -i "$inputPath" -c:v copy -c:a aac -b:a 128k -movflags +faststart -f mp4 "$outputPath.tmp"',
+    ];
+    
+    onProgress?.call(0.0, 'Convirtiendo...');
+    
+    for (int i = 0; i < attempts.length; i++) {
+      if (await File(outputPath).exists()) {
+        try { await File(outputPath).delete(); } catch (_) {}
+      }
+      if (await File('$outputPath.tmp').exists()) {
+        try { await File('$outputPath.tmp').delete(); } catch (_) {}
+      }
+      
+      print('[FORCE_CONVERT] Attempt ${i+1}/${attempts.length}');
+      final session = await FFmpegKit.execute(attempts[i]);
+      final sessionId = session.getSessionId();
+      final rc = await Future.any([
+        session.getReturnCode(),
+        Future.delayed(const Duration(seconds: 90), () async {
+          await FFmpegKit.cancel(sessionId);
+          return null;
+        }),
+      ]);
+      
+      if (rc == null) continue; // Timeout, try next
+      if (ReturnCode.isSuccess(rc)) {
+        final tempFile = File('$outputPath.tmp');
+        if (await tempFile.exists()) {
+          await tempFile.rename(outputPath);
+        }
+        final finalFile = File(outputPath);
+        if (await finalFile.exists()) {
+          final size = await finalFile.length();
+          if (size > 5 * 1024 * 1024) { // At least 5MB
+            print('[FORCE_CONVERT] Success: $outputPath (${size} bytes)');
+            onProgress?.call(1.0, '');
+            return outputPath;
+          }
+        }
+      }
+    }
+    
+    print('[FORCE_CONVERT] All attempts failed for: $inputPath');
+    return null;
+  }
 }
 
 final downloadRepositoryProvider = Provider<DownloadRepository>((ref) {
@@ -1153,6 +1226,14 @@ class DownloadsListNotifier extends StateNotifier<List<my.DownloadTask>> {
     if (updated.status == my.DownloadStatus.completed || savePath != null) {
       _refreshTaskFromDb(id);
     }
+    // Forzar refresh completo al completar para que savePath esté disponible
+    // para el botón de Cast que depende de task.savePath
+    if (updated.status == my.DownloadStatus.completed && savePath != null) {
+      // También refrescar inmediatamente la UI con el savePath
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _refreshTaskFromDb(id);
+      });
+    }
   }
 
   Future<void> _refreshTaskFromDb(String id) async {
@@ -1176,7 +1257,7 @@ class DownloadsListNotifier extends StateNotifier<List<my.DownloadTask>> {
     await _loadDownloads();
     _repository.enqueueDownload(task, 
       onProgress: (p, s) => _updateLocalTask(task.id, p, s, my.DownloadStatus.downloading),
-      onStatusChange: (s) => _updateLocalTask(task.id, -1, "", s)
+      onStatusChange: (s, {savePath}) => _updateLocalTask(task.id, -1, "", s, savePath: savePath)
     );
   }
 
@@ -1193,7 +1274,7 @@ class DownloadsListNotifier extends StateNotifier<List<my.DownloadTask>> {
     await _repository.resumeDownloadTask(
       task!,
       onProgress: (p, s) => _updateLocalTask(task!.id, p, s, my.DownloadStatus.downloading),
-      onStatusChange: (s) => _updateLocalTask(task!.id, -1, "", s),
+      onStatusChange: (s, {savePath}) => _updateLocalTask(task!.id, -1, "", s, savePath: savePath),
     );
   }
 

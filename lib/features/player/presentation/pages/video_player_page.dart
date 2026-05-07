@@ -1,4 +1,6 @@
 import 'package:movie_app/core/services/ad_service.dart';
+import 'package:movie_app/features/movies/presentation/providers/movie_provider.dart';
+import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:movie_app/features/auth/presentation/providers/auth_provider.dart';
 import 'package:uuid/uuid.dart';
@@ -18,11 +20,14 @@ import 'package:http/http.dart' as http;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:simple_pip_mode/pip_widget.dart';
+import 'package:simple_pip_mode/simple_pip.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:movie_app/core/services/storage_service.dart';
 import 'package:movie_app/features/movies/presentation/providers/history_provider.dart';
 import 'package:movie_app/features/movies/domain/entities/watch_history.dart';
 import 'package:movie_app/providers.dart';
+import 'package:movie_app/main.dart';
 import 'package:movie_app/features/series/domain/entities/series.dart';
 import 'package:movie_app/features/series/domain/entities/season.dart';
 import 'package:movie_app/features/series/domain/entities/episode.dart';
@@ -91,17 +96,19 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.initialVolume,
     this.initialBrightness,
     this.headers,
+    this.initialController,
   });
 
   final double? initialVolume;
   final double? initialBrightness;
   final Map<String, String>? headers;
+  final VideoPlayerController? initialController;
 
   @override
   ConsumerState<VideoPlayerPage> createState() => _VideoPlayerPageState();
 }
 
-class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
+class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsBindingObserver {
   // --- Monetización ---
   bool _isAdVerified = false;
   bool _isLoadingAd = false;
@@ -130,6 +137,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   bool _isDraggingVolume = false;
   bool _isDraggingBrightness = false;
   Timer? _labelHideTimer;
+  final GlobalKey _videoPlayerKey = GlobalKey();
+  bool _isInPipMode = false;
+
+  bool _switchingToFloatingMode = false;
+
 
   // Internal HLS Qualities & Subtitles
   List<VideoQuality> _internalQualities = [];
@@ -166,6 +178,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   bool _creditsDataLoaded = false;
   Episode? _nextEpisode;
   Season? _nextSeason;
+  Episode? _previousEpisode;
+  Season? _previousSeason;
   List<Movie> _movieRecommendations = [];
   List<Series> _seriesRecommendations = [];
   bool _isPushingNextEpisode = false;
@@ -187,9 +201,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
   Timer? _videasyTimeoutTimer;
   bool _isAutoSelectEnabled = true; // Control manual vs automático
 
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     _initialVolume = widget.initialVolume;
     _initialBrightness = widget.initialBrightness;
@@ -483,7 +499,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                    videoUrl.contains('.m3u') ||
                    (videoUrl.contains('cf-master') && videoUrl.contains('.txt'));
 
-    if (widget.isLocal || isDirect) {
+    if (widget.initialController != null) {
+      _controller = widget.initialController;
+      _isLoading = false;
+      _isInitialLoading = false;
+      _isAdVerified = true;
+      _controller?.addListener(_onVideoTick);
+      _startHideTimer();
+      _startProgressTimer();
+    } else if (widget.isLocal || isDirect) {
       _isLoading = false;
       _isInitialLoading = false;
       _initializeVideoPlayer(videoUrl);
@@ -1462,6 +1486,33 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
 
       if (_controller != null) {
         await _controller!.initialize();
+        
+        // Set auto PiP mode
+        if (Platform.isAndroid) {
+          try {
+            SimplePip().setAutoPipMode(
+              aspectRatio: (16, 9),
+              autoEnter: true,
+            );
+
+          } catch (_) {}
+        }
+
+
+        if (mounted) {
+          ref.read(floatingPlayerProvider.notifier).state = FloatingPlayerState(
+            isActive: false, // Solo registro, no activo aún
+            controller: _controller,
+            title: widget.movieName,
+            mediaId: widget.mediaId,
+            mediaType: widget.mediaType,
+            imagePath: widget.imagePath,
+            videoOptions: widget.videoOptions,
+            episodeId: widget.episodeId,
+            videoUrl: _extractedVideoUrl ?? effectiveUrl, // URL de red accesible
+            currentPosition: _controller!.value.position,
+          );
+        }
       }
       
       if (mounted) {
@@ -1731,11 +1782,16 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     
     if (isLeftSide) {
       _isDraggingVolume = true;
-      _volume = (_volume + delta).clamp(0.0, 1.0);
+      // Amplificación hasta 2.0 (200%)
+      _volume = (_volume + delta).clamp(0.0, 2.0);
       _showVolumeLabel = true;
       _showBrightnessLabel = false;
       VolumeController.instance.showSystemUI = false;
-      VolumeController.instance.setVolume(_volume);
+      // Aplicar volumen al controlador (algunas plataformas soportan > 1.0 como ganancia)
+      _controller?.setVolume(_volume);
+      if (_volume <= 1.0) {
+        VolumeController.instance.setVolume(_volume);
+      }
     } else {
       _isDraggingBrightness = true;
       _brightness = (_brightness + delta).clamp(0.0, 1.0);
@@ -1759,15 +1815,29 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     });
   }
 
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+  }
+
+
   @override
   void dispose() {
+    SimplePip().setAutoPipMode(aspectRatio: (16, 9), autoEnter: false); // Desactiva PiP automático al salir
+
+    WidgetsBinding.instance.removeObserver(this);
+
+
     CastService().removeListener(_onCastStateChanged);
     _saveProgress(); // Guardar progreso final al salir
     _progressSaveTimer?.cancel();
     _hideTimer?.cancel();
     _labelHideTimer?.cancel();
     _controller?.removeListener(_onVideoTick);
-    _controller?.dispose();
+    if (!_switchingToFloatingMode) {
+      _controller?.dispose();
+    }
     _webViewController = null;
     
     // Restore initial volume and brightness only if we are truly exiting the player
@@ -1794,9 +1864,41 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     super.dispose();
   }
 
+  Widget _buildPipPlayer() {
+    if (_useWebViewPlayer || _controller == null || !_controller!.value.isInitialized) {
+      return Container(color: Colors.black, child: const Center(child: CircularProgressIndicator()));
+    }
+    return Stack(
+      children: [
+        Center(
+          child: AspectRatio(
+            aspectRatio: _controller!.value.aspectRatio,
+            child: VideoPlayer(_controller!, key: _videoPlayerKey),
+          ),
+        ),
+      ],
+    );
+  }
+
+
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PipWidget(
+      onPipEntered: () {
+        if (mounted) setState(() => _isInPipMode = true);
+      },
+      onPipExited: () {
+        if (mounted) setState(() => _isInPipMode = false);
+      },
+      pipChild: Scaffold(
+        backgroundColor: Colors.black,
+        body: _isInPipMode ? _buildPipPlayer() : const SizedBox.shrink(),
+      ),
+      child: _isInPipMode 
+          ? const Scaffold(backgroundColor: Colors.black)
+          : Scaffold(
+
       backgroundColor: Colors.black,
       body: GestureDetector(
         onTap: _useWebViewPlayer ? null : _toggleControls,
@@ -1868,7 +1970,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                   child: Stack(
                     alignment: Alignment.bottomCenter,
                     children: [
-                      VideoPlayer(_controller!),
+                      InteractiveViewer(
+                        clipBehavior: Clip.none,
+                        minScale: 1.0,
+                        maxScale: 6.0,
+                        child: _isInPipMode ? const SizedBox.shrink() : VideoPlayer(_controller!, key: _videoPlayerKey),
+                      ),
                       
                       // Subtitle Overlay (Manual Rendering)
                       if (_controller != null)
@@ -2433,6 +2540,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               Positioned.fill(child: _buildErrorContent()),
           ],
         ),
+        ),
       ),
     );
   }
@@ -2445,32 +2553,42 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
       
       String? currentSeasonId;
       bool isFinale = false;
-      for (var s in seasons) {
+      
+      for (int i = 0; i < seasons.length; i++) {
+        final s = seasons[i];
         final eps = await repo.getEpisodesForSeason(s.id);
         final idx = eps.indexWhere((e) => e.id == widget.episodeId);
+        
         if (idx != -1) {
-          if (eps[idx].isSeriesFinale) {
-            isFinale = true;
-            break;
-          }
           currentSeasonId = s.id;
+          if (eps[idx].isSeriesFinale) isFinale = true;
+
+          // --- LOGIC FOR NEXT ---
           if (idx + 1 < eps.length) {
             _nextEpisode = eps[idx + 1];
             _nextSeason = s;
-            break;
-          } else {
-            // Next season
-            final sIdx = seasons.indexWhere((se) => se.id == s.id);
-            if (sIdx != -1 && sIdx + 1 < seasons.length) {
-              final nextS = seasons[sIdx + 1];
-              final nextEps = await repo.getEpisodesForSeason(nextS.id);
-              if (nextEps.isNotEmpty) {
-                _nextEpisode = nextEps.first;
-                _nextSeason = nextS;
-              }
+          } else if (i + 1 < seasons.length) {
+            final nextS = seasons[i + 1];
+            final nextEps = await repo.getEpisodesForSeason(nextS.id);
+            if (nextEps.isNotEmpty) {
+              _nextEpisode = nextEps.first;
+              _nextSeason = nextS;
             }
-            break;
           }
+
+          // --- LOGIC FOR PREVIOUS ---
+          if (idx > 0) {
+            _previousEpisode = eps[idx - 1];
+            _previousSeason = s;
+          } else if (i > 0) {
+            final prevS = seasons[i - 1];
+            final prevEps = await repo.getEpisodesForSeason(prevS.id);
+            if (prevEps.isNotEmpty) {
+              _previousEpisode = prevEps.last;
+              _previousSeason = prevS;
+            }
+          }
+          break;
         }
       }
 
@@ -2548,6 +2666,67 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                 serverImagePath: option?.serverImagePath ?? '',
                 resolution: _nextEpisode!.urls.first.quality ?? option?.resolution ?? 'Auto',
                 videoUrl: _nextEpisode!.urls.first.url,
+              )
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _playPreviousEpisode() async {
+    if (_previousEpisode == null || _previousSeason == null) return;
+    
+    // Increment views
+    ref.read(seriesListProvider.notifier).incrementViews(widget.mediaId);
+
+    // Save history manually to be sure
+    await _saveProgress();
+
+    // Find option
+    final repo = ref.read(seriesRepositoryProvider);
+    final options = await repo.getSeriesOptions(widget.mediaId);
+    
+    SeriesOption? option;
+    if (_previousEpisode!.urls.isNotEmpty) {
+      try {
+        option = options.firstWhere((o) => o.id == _previousEpisode!.urls.first.optionId);
+      } catch (_) {
+        if (options.isNotEmpty) option = options.first;
+      }
+    }
+
+    if (option == null && options.isNotEmpty) {
+      option = options.first;
+    }
+
+    if (!mounted) return;
+
+    _isPushingNextEpisode = true; // reusing this flag to prevent dispose issues
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerPage(
+          movieName: '${widget.movieName.split(' - ').first} - S${_previousSeason!.seasonNumber} E${_previousEpisode!.episodeNumber}',
+          onVideoStarted: () {},
+          mediaId: widget.mediaId,
+          episodeId: _previousEpisode!.id,
+          mediaType: 'series',
+          imagePath: widget.imagePath,
+          subtitleLabel: 'S${_previousSeason!.seasonNumber} E${_previousEpisode!.episodeNumber}: ${_previousEpisode!.name}',
+          introStartTime: _previousEpisode!.introStartTime,
+          introEndTime: _previousEpisode!.introEndTime,
+          creditsStartTime: _previousEpisode!.creditsStartTime,
+          initialVolume: _volume,
+          initialBrightness: _brightness,
+          videoOptions: [
+            if (_previousEpisode!.urls.isNotEmpty)
+              VideoOption(
+                id: _previousEpisode!.id,
+                movieId: widget.mediaId,
+                serverImagePath: option?.serverImagePath ?? '',
+                resolution: _previousEpisode!.urls.first.quality ?? option?.resolution ?? 'Auto',
+                videoUrl: _previousEpisode!.urls.first.url,
               )
           ],
         ),
@@ -2755,15 +2934,31 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
+        if (widget.mediaType == 'series') ...[
+           IconButton(
+             icon: Icon(Icons.skip_previous, color: _previousEpisode != null ? Colors.white : Colors.white24, size: 45),
+             onPressed: _previousEpisode != null ? _playPreviousEpisode : null,
+             tooltip: "Episodio anterior",
+           ),
+           const SizedBox(width: 30),
+        ],
         IconButton(
           icon: const Icon(Icons.replay_10, color: Colors.white, size: 50),
           onPressed: () => _skip(-10),
         ),
-        const SizedBox(width: 150),
+        const SizedBox(width: 120),
         IconButton(
           icon: const Icon(Icons.forward_10, color: Colors.white, size: 50),
           onPressed: () => _skip(10),
         ),
+        if (widget.mediaType == 'series') ...[
+           const SizedBox(width: 30),
+           IconButton(
+             icon: Icon(Icons.skip_next, color: _nextEpisode != null ? Colors.white : Colors.white24, size: 45),
+             onPressed: _nextEpisode != null ? _playNextEpisode : null,
+             tooltip: "Siguiente episodio",
+           ),
+        ],
       ],
     );
   }
@@ -2778,7 +2973,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
           child: AnimatedOpacity(
             opacity: (_showVolumeLabel || (_showControls && !_isLocked)) ? 1.0 : 0.0,
             duration: const Duration(milliseconds: 300),
-            child: _buildSliderOverlay(Icons.volume_up, '${(_volume * 15).toInt()}', _volume, true),
+            child: _buildSliderOverlay(
+              _volume > 1.0 ? Icons.volume_up : Icons.volume_up, 
+              '${(_volume * 100).toInt()}%', 
+              _volume, 
+              true
+            ),
           ),
         ),
         // Brightness Slider (Right)
@@ -2817,18 +3017,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
               ),
               // Gradient fill
               Container(
-                height: 100 * value.clamp(0.0, 1.0),
+                height: 100 * (value > 1.0 ? (value - 1.0) : value).clamp(0.0, 1.0),
                 width: 5,
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                  gradient: LinearGradient(
+                    colors: value > 1.0 
+                        ? [const Color(0xFFFF0000), const Color(0xFFFF4444)] // Rojo para booster
+                        : [const Color(0xFF00A3FF), const Color(0xFFD400FF)],
                     begin: Alignment.bottomCenter,
                     end: Alignment.topCenter,
                   ),
                   borderRadius: BorderRadius.circular(10),
                   boxShadow: [
                     BoxShadow(
-                      color: const Color(0xFF00A3FF).withOpacity(0.3),
+                      color: (value > 1.0 ? const Color(0xFFFF0000) : const Color(0xFF00A3FF)).withOpacity(0.3),
                       blurRadius: 4,
                       offset: const Offset(0, 0),
                     ),
@@ -2881,6 +3083,17 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white),
+                onPressed: () async {
+                  if (_controller == null || !_controller!.value.isInitialized) return;
+                  if (Platform.isAndroid) {
+                    try {
+                      SimplePip().enterPipMode(aspectRatio: (16, 9));
+                    } catch (_) {}
+                  }
+                },
               ),
               IconButton(
                 icon: Icon(
@@ -2979,10 +3192,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> {
                               child: Container(
                                 height: 7.0,
                                 decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                                  borderRadius: BorderRadius.circular(3.5),
+                                  border: _volume > 1.0 
+                                      ? Border.all(color: const Color(0xFFFF0000), width: 1.5) // Contorno rojo en boost
+                                      : null,
+                                  gradient: LinearGradient(
+                                    colors: _volume > 1.0 
+                                        ? [const Color(0xFFFF0000), const Color(0xFFFF5555)]
+                                        : [const Color(0xFF00A3FF), const Color(0xFFD400FF)],
                                   ),
-                                  borderRadius: BorderRadius.circular(5),
                                   boxShadow: [
                                     BoxShadow(
                                       color: const Color(0xFF00A3FF).withOpacity(0.4),

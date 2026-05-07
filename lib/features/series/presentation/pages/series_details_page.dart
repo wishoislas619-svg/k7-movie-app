@@ -18,6 +18,8 @@ import 'package:movie_app/features/movies/data/repositories/download_repository_
 import 'package:movie_app/features/movies/domain/entities/download_task.dart';
 import 'package:movie_app/shared/widgets/video_extractor_dialog.dart';
 import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
+import 'package:movie_app/features/movies/presentation/widgets/cast_button_overlay.dart';
+import 'package:movie_app/features/auth/presentation/providers/auth_provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:movie_app/core/services/ad_service.dart';
@@ -216,11 +218,11 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
   }
 
   void _handleDownload(Episode episode, EpisodeUrl eUrl) async {
-    // 1. Check Ad Requirement
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user == null) return;
+    // 1. Check Ad Requirement (usando authStateProvider que actualiza el role dinámicamente)
+    final appUser = ref.read(authStateProvider);
+    if (appUser == null) return;
 
-    final role = user.userMetadata?['role']?.toString().toLowerCase() ?? 'user';
+    final role = appUser.role.toLowerCase();
     final isAdminOrVip = role == 'admin' || role == 'uservip';
 
     if (!isAdminOrVip) {
@@ -231,9 +233,11 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
 
       try {
         final ticketId = const Uuid().v4();
-        await Supabase.instance.client.from('ad_tickets').insert({
+        final supabaseUser = Supabase.instance.client.auth.currentUser;
+      if (supabaseUser == null) return;
+      await Supabase.instance.client.from('ad_tickets').insert({
           'id': ticketId,
-          'user_id': user.id,
+          'user_id': supabaseUser.id,
           'media_type': 'series',
           'media_id': widget.series.id,
         });
@@ -662,6 +666,16 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               _buildRoundButton(Icons.arrow_back, () => Navigator.pop(context)),
+                              CastButtonOverlay(
+                                videoUrl: _videoOptions != null && _videoOptions!.isNotEmpty 
+                                    ? (_videoOptions!.first.videoUrl ?? '') 
+                                    : '',
+                                title: widget.series.name,
+                                imageUrl: widget.series.imagePath,
+                                algorithm: _videoOptions != null && _videoOptions!.isNotEmpty 
+                                    ? _videoOptions!.first.extractionAlgorithm 
+                                    : 1,
+                              ),
                             ],
                           ),
                         ),

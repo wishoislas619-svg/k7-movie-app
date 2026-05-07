@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:video_player/video_player.dart';
+import 'features/movies/domain/entities/movie.dart';
 import 'core/theme/app_theme.dart';
 import 'core/constants/app_constants.dart';
 import 'core/services/supabase_service.dart';
@@ -10,6 +12,8 @@ import 'features/auth/presentation/pages/login_page.dart';
 import 'features/auth/presentation/providers/auth_provider.dart';
 import 'features/auth/presentation/pages/admin_dashboard.dart';
 import 'features/movies/presentation/pages/movie_grid_page.dart';
+import 'features/player/presentation/widgets/floating_player_overlay.dart';
+import 'features/player/presentation/pages/video_player_page.dart';
 import 'features/movies/presentation/pages/splash_page.dart';
 import 'core/services/update_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -21,6 +25,11 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:unity_ads_plugin/unity_ads_plugin.dart';
 import 'dart:io';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,6 +54,10 @@ void main() async {
   // Servicios secundarios: Se lanzan "en paralelo" sin bloquear el dibujo de la App
   unawaited(NotificationService.init().catchError((e) => debugPrint("Error Notify: $e")));
   unawaited(ForegroundService.init().catchError((e) => debugPrint("Error Foreground: $e")));
+  
+  // Solicitar permisos de batería/optimización para que el proxy y cast
+  // sigan funcionando en segundo plano o con pantalla apagada
+  unawaited(_requestBatteryOptimizationPermission());
   unawaited(MobileAds.instance.initialize().then((_) {
     MobileAds.instance.updateRequestConfiguration(
       RequestConfiguration(testDeviceIds: [
@@ -61,23 +74,123 @@ void main() async {
     onFailed: (error, message) => debugPrint('Unity Ads Init Failed: $error $message'),
   ));
 
-  runApp(
-    const ProviderScope(
-      child: MyApp(),
-    ),
-  );
+  // ✅ ESCANEAR Y SOLICITAR PERMISOS DE AHORRO DE BATERÍA
+  // Esto permite que el proxy local y el cast sigan funcionando incluso
+  // si la pantalla está apagada o la app está en segundo plano
+    // Verificación de estado de batería (el aviso se mostrará mediante el diálogo en MyApp)
+    try {
+      await Permission.ignoreBatteryOptimizations.status;
+    } catch (e) {
+      debugPrint("Error verificando estado batería: $e");
+    }
+    
+    
+    // Solicitar acceso a notificaciones (Android 13+)
+    try {
+      if (await Permission.notification.isDenied) {
+        await Permission.notification.request();
+      }
+    } catch (e) {
+      debugPrint("Error solicitando permiso notificaciones: $e");
+    }
+
+    runApp(
+      const ProviderScope(
+        child: MyApp(),
+      ),
+    );
 }
 
-class MyApp extends StatelessWidget {
+/// Solicita al usuario que desactive la optimización de batería para la app.
+/// En Android, esto requiere un intent especial y el usuario debe aprobarlo manualmente.
+Future<void> _requestBatteryOptimizationPermission() async {
+  if (!Platform.isAndroid) return;
+  try {
+    final androidInfo = await DeviceInfoPlugin().androidInfo;
+    if (androidInfo.version.sdkInt >= 23) {
+      // Solo verificamos el estado, el diálogo se encargará de la solicitud
+      await Permission.ignoreBatteryOptimizations.status;
+    }
+  } catch (e) {
+    debugPrint("Error en permiso batería: $e");
+  }
+}
+
+class MyApp extends ConsumerStatefulWidget {
   const MyApp({super.key});
+  @override
+  ConsumerState<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Native PiP mode handles backgrounding automatically
+  }
 
   @override
   Widget build(BuildContext context) {
+    final floatingState = ref.watch(floatingPlayerProvider);
+
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'K7 MOVIE',
       theme: AppTheme.darkTheme,
       debugShowCheckedModeBanner: false,
       home: const AuthWrapper(),
+      builder: (context, child) {
+        return Stack(
+          children: [
+            if (child != null) child,
+            if (floatingState.isActive && floatingState.controller != null)
+              FloatingPlayerOverlay(
+                controller: floatingState.controller!,
+                title: floatingState.title ?? '',
+                onClose: () {
+                  ref.read(floatingPlayerProvider.notifier).state = FloatingPlayerState(isActive: false);
+                },
+                onReturn: () async {
+                  final state = ref.read(floatingPlayerProvider.notifier).state;
+                  // Cerrar el overlay de sistema si está activo
+
+                  // Limpiar el estado flotante
+                  ref.read(floatingPlayerProvider.notifier).state = FloatingPlayerState(isActive: false);
+                  
+                  // Navegar de vuelta REINICIANDO la reproducción desde el timestamp
+                  // Usamos pushAndRemoveUntil para limpiar el stack de navegación
+                  navigatorKey.currentState?.pushAndRemoveUntil(
+                    MaterialPageRoute(
+                      builder: (_) => VideoPlayerPage(
+                        movieName: state.title ?? '',
+                        videoOptions: state.videoOptions ?? [],
+                        mediaId: state.mediaId ?? '',
+                        mediaType: state.mediaType ?? 'movie',
+                        imagePath: state.imagePath ?? '',
+                        episodeId: state.episodeId,
+                        startPosition: state.currentPosition,
+                        // NO pasamos initialController -> reinicia scraping limpio
+                      ),
+                    ),
+                    (route) => route.isFirst,
+                  );
+                },
+              ),
+            // Zona de eliminación (X) al fondo cuando se arrastra (lógica simplificada aquí, el overlay la maneja)
+          ],
+        );
+      },
     );
   }
 }
@@ -252,3 +365,4 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
     return _ActivityDetector(child: const MovieGridPage());
   }
 }
+

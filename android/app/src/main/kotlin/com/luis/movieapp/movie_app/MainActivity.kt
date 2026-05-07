@@ -13,8 +13,9 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import cl.puntito.simple_pip_mode.PipCallbackHelperActivityWrapper
 
-class MainActivity : FlutterActivity() {
+class MainActivity : PipCallbackHelperActivityWrapper() {
 
     private val CHANNEL = "com.luis.movieapp/webview_touch"
     private val INSTALL_CHANNEL = "com.luis.movieapp/install_apk"
@@ -100,6 +101,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun findWebView(view: View): WebView? {
+
         if (view is WebView) return view
         if (view is ViewGroup) {
             for (i in 0 until view.childCount) {
