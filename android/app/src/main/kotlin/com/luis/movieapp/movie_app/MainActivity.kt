@@ -98,6 +98,101 @@ class MainActivity : PipCallbackHelperActivityWrapper() {
                     else -> result.notImplemented()
                 }
             }
+        // Canal para control de PiP (Acciones Nativas y Expandir)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.luis.movieapp/pip_control")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "expandPip" -> {
+                        expandActivity()
+                        result.success(true)
+                    }
+                    "updatePipActions" -> {
+                        val isPlaying = call.argument<Boolean>("isPlaying") ?: true
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            updatePipActions(isPlaying)
+                        }
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    private fun expandActivity() {
+        val intent = Intent(this, MainActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        startActivity(intent)
+    }
+
+    private fun updatePipActions(isPlaying: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+
+        val actions = mutableListOf<android.app.RemoteAction>()
+
+        // Acción: Play/Pause (Centro)
+        val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+        val playPauseTitle = if (isPlaying) "Pause" else "Play"
+        actions.add(createRemoteAction(playPauseIcon, playPauseTitle, "play_pause", 102))
+
+        val aspectRatio = android.util.Rational(16, 9)
+        val params = android.app.PictureInPictureParams.Builder()
+            .setActions(actions)
+            .setAspectRatio(aspectRatio)
+            .build()
+        setPictureInPictureParams(params)
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration?) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            // Forzar actualización al entrar para asegurar que los botones estén ahí
+            updatePipActions(true) 
+        }
+    }
+
+    private fun createRemoteAction(iconResId: Int, title: String, action: String, requestCode: Int): android.app.RemoteAction {
+        val intent = Intent("com.luis.movieapp.PIP_ACTION").apply {
+            putExtra("action", action)
+            `package` = packageName
+        }
+        val pendingIntent = android.app.PendingIntent.getBroadcast(
+            this, requestCode, intent, 
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        val icon = android.graphics.drawable.Icon.createWithResource(this, iconResId)
+        return android.app.RemoteAction(icon, title, title, pendingIntent)
+    }
+
+    private val pipActionReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+            val action = intent?.getStringExtra("action") ?: return
+            // Enviar la acción de vuelta a Flutter para que el controlador responda
+            flutterEngine?.let { engine ->
+                MethodChannel(engine.dartExecutor.binaryMessenger, "com.luis.movieapp/pip_control")
+                    .invokeMethod("onPipAction", action)
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val filter = android.content.IntentFilter("com.luis.movieapp.PIP_ACTION")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(pipActionReceiver, filter, android.content.Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(pipActionReceiver, filter)
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try {
+            unregisterReceiver(pipActionReceiver)
+        } catch (e: Exception) {}
     }
 
     private fun findWebView(view: View): WebView? {

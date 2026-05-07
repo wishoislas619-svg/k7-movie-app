@@ -109,6 +109,7 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
 }
 
 class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsBindingObserver {
+  final FocusNode _keyboardFocusNode = FocusNode();
   // --- Monetización ---
   bool _isAdVerified = false;
   bool _isLoadingAd = false;
@@ -161,6 +162,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
   bool _hasAttemptedQualityOptimization = false;
   String? _extractedVideoUrl;
   static const _webviewTouchChannel = MethodChannel('com.luis.movieapp/webview_touch');
+  static const _pipControlChannel = MethodChannel('com.luis.movieapp/pip_control');
 
   bool _isSwitchingStream = false;
   bool _isScrapingSubtitles = false;
@@ -201,6 +203,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
   Timer? _videasyTimeoutTimer;
   bool _isAutoSelectEnabled = true; // Control manual vs automático
 
+  bool _showPipControls = false;
+  Timer? _pipHideTimer;
+
 
   @override
   void initState() {
@@ -239,6 +244,36 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
     _initSettings();
     _checkAdRequirement();
     CastService().addListener(_onCastStateChanged);
+    _pipControlChannel.setMethodCallHandler(_handlePipAction);
+  }
+
+  Future<void> _handlePipAction(MethodCall call) async {
+    if (call.method == "onPipAction") {
+      final action = call.arguments as String;
+      debugPrint("Acción de PiP recibida: $action");
+      
+      if (action == "play_pause") {
+        if (_controller != null) {
+          setState(() {
+            _controller!.value.isPlaying ? _controller!.pause() : _controller!.play();
+          });
+          _updateNativePipActions();
+        }
+      } else if (action == "expand") {
+        _expandPip();
+      } else if (action == "settings") {
+        // Al tocar ajustes, expandimos para que el usuario pueda configurar en pantalla completa
+        _expandPip();
+      }
+    }
+  }
+
+  void _updateNativePipActions() {
+    if (_isInPipMode) {
+      _pipControlChannel.invokeMethod('updatePipActions', {
+        'isPlaying': _controller?.value.isPlaying ?? false
+      });
+    }
   }
 
   void _onCastStateChanged() {
@@ -1774,6 +1809,17 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
     _startHideTimer();
   }
 
+  void _togglePlay() {
+    if (CastService().isConnected) {
+      CastService().isPlaying ? CastService().pause() : CastService().play();
+    } else if (_controller != null && _controller!.value.isInitialized) {
+      setState(() {
+        _controller!.value.isPlaying ? _controller!.pause() : _controller!.play();
+      });
+    }
+    _startHideTimer();
+  }
+
   void _handleVerticalDrag(DragUpdateDetails details, bool isLeftSide) {
     if (_isLocked || _useWebViewPlayer) return;
     
@@ -1834,6 +1880,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
     _progressSaveTimer?.cancel();
     _hideTimer?.cancel();
     _labelHideTimer?.cancel();
+    _pipHideTimer?.cancel();
     _controller?.removeListener(_onVideoTick);
     if (!_switchingToFloatingMode) {
       _controller?.dispose();
@@ -1861,22 +1908,45 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     
+    _keyboardFocusNode.dispose();
     super.dispose();
+  }
+
+  void _startPipHideTimer() {
+    _pipHideTimer?.cancel();
+    _pipHideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() => _showPipControls = false);
+      }
+    });
+  }
+
+  void _togglePipControls() {
+    setState(() {
+      _showPipControls = !_showPipControls;
+    });
+    if (_showPipControls) {
+      _startPipHideTimer();
+    }
+  }
+
+  Future<void> _expandPip() async {
+    try {
+      await _pipControlChannel.invokeMethod('expandPip');
+    } catch (e) {
+      debugPrint("Error al expandir PiP: $e");
+    }
   }
 
   Widget _buildPipPlayer() {
     if (_useWebViewPlayer || _controller == null || !_controller!.value.isInitialized) {
       return Container(color: Colors.black, child: const Center(child: CircularProgressIndicator()));
     }
-    return Stack(
-      children: [
-        Center(
-          child: AspectRatio(
-            aspectRatio: _controller!.value.aspectRatio,
-            child: VideoPlayer(_controller!, key: _videoPlayerKey),
-          ),
-        ),
-      ],
+    return Center(
+      child: AspectRatio(
+        aspectRatio: _controller!.value.aspectRatio,
+        child: VideoPlayer(_controller!, key: _videoPlayerKey),
+      ),
     );
   }
 
@@ -1885,12 +1955,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
   @override
   Widget build(BuildContext context) {
     return PipWidget(
-      onPipEntered: () {
-        if (mounted) setState(() => _isInPipMode = true);
-      },
-      onPipExited: () {
-        if (mounted) setState(() => _isInPipMode = false);
-      },
+      onPipEntered: _onPipEntered,
+      onPipExited: _onPipExited,
       pipChild: Scaffold(
         backgroundColor: Colors.black,
         body: _isInPipMode ? _buildPipPlayer() : const SizedBox.shrink(),
@@ -1900,8 +1966,42 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
           : Scaffold(
 
       backgroundColor: Colors.black,
-      body: GestureDetector(
-        onTap: _useWebViewPlayer ? null : _toggleControls,
+      body: KeyboardListener(
+        focusNode: _keyboardFocusNode,
+        autofocus: true,
+        onKeyEvent: (KeyEvent event) {
+          if (event is KeyDownEvent) {
+            final key = event.logicalKey;
+            
+            // Si los controles están ocultos, cualquier tecla los muestra
+            if (!_showControls) {
+              _toggleControls();
+              return;
+            }
+
+            if (key == LogicalKeyboardKey.select || 
+                key == LogicalKeyboardKey.enter || 
+                key == LogicalKeyboardKey.mediaPlayPause) {
+              _togglePlay();
+            } else if (key == LogicalKeyboardKey.arrowLeft) {
+              _skip(-10);
+            } else if (key == LogicalKeyboardKey.arrowRight) {
+              _skip(10);
+            } else if (key == LogicalKeyboardKey.mediaPlay) {
+              if (_controller?.value.isPlaying == false) _controller?.play();
+            } else if (key == LogicalKeyboardKey.mediaPause) {
+              if (_controller?.value.isPlaying == true) _controller?.pause();
+            } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+              if (_showControls) {
+                _toggleControls();
+              } else {
+                Navigator.pop(context);
+              }
+            }
+          }
+        },
+        child: GestureDetector(
+          onTap: _useWebViewPlayer ? null : _toggleControls,
         onVerticalDragUpdate: _useWebViewPlayer ? null : (details) {
           final width = MediaQuery.of(context).size.width;
           _handleVerticalDrag(details, details.localPosition.dx < width / 2);
@@ -2132,16 +2232,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
                       );
                     },
                   ),
-                  onPressed: () {
-                    if (CastService().isConnected) {
-                      CastService().isPlaying ? CastService().pause() : CastService().play();
-                    } else if (_controller != null && _controller!.value.isInitialized) {
-                      setState(() {
-                        _controller!.value.isPlaying ? _controller!.pause() : _controller!.play();
-                      });
-                    }
-                    _startHideTimer();
-                  },
+                  onPressed: _togglePlay,
                 ),
                 ),
               ),
@@ -2540,8 +2631,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
               Positioned.fill(child: _buildErrorContent()),
           ],
         ),
-        ),
       ),
+    ),
+    ),
     );
   }
 
@@ -4173,5 +4265,22 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
 
   String _replaceQualitySuffix(String url) {
     return url.replaceAll(RegExp(r'(-microframe-(ld|sd|hd)|-(ld|sd|hd)|_(ld|sd|hd)|-\\d+p)\\.m3u8$', caseSensitive: false), '.m3u8');
+  }
+
+  void _onPipEntered() {
+    if (mounted) {
+      setState(() {
+        _isInPipMode = true;
+        _showPipControls = true;
+      });
+      _updateNativePipActions();
+      _startPipHideTimer();
+    }
+  }
+
+  void _onPipExited() {
+    if (mounted) {
+      setState(() => _isInPipMode = false);
+    }
   }
 }

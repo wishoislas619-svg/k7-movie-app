@@ -8,6 +8,7 @@ import 'series_details_page.dart';
 import '../../../../shared/widgets/energy_flow_border.dart';
 import 'series_category_page.dart';
 import '../../../../shared/widgets/marquee_text.dart';
+import '../../../../shared/widgets/tv_focus_wrapper.dart';
 
 class SeriesGridPage extends ConsumerStatefulWidget {
   const SeriesGridPage({super.key});
@@ -249,15 +250,16 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
   }
 
   Widget _buildCarouselItem(Series series) {
-    return GestureDetector(
+    return TvFocusWrapper(
       onTap: () {
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
         );
       },
+      borderRadius: 25,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
         child: EnergyFlowBorder(
           borderRadius: 25,
           borderWidth: 1.5,
@@ -378,8 +380,8 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
         ),
       ),
     ),
-  );
-}
+    );
+  }
 
   Widget _buildSeriesSection(BuildContext context, String title, List<Series> seriesList, {SeriesCategory? category}) {
     return Column(
@@ -441,13 +443,14 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
   }
 
   Widget _buildSeriesCard(BuildContext context, Series series) {
-    return GestureDetector(
+    return TvFocusWrapper(
       onTap: () {
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
         );
       },
+      borderRadius: 16,
       child: Container(
         width: 120,
         margin: const EdgeInsets.only(right: 12),

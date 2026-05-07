@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
@@ -17,16 +18,32 @@ class _ExternalOverlayWidgetState extends State<ExternalOverlayWidget> {
   bool _showControls = true;
   String? _error;
   bool _initialized = false;
+  Timer? _hideTimer;
 
   @override
   void initState() {
     super.initState();
+    _startHideTimer();
     // El overlay escucha datos enviados desde la app principal
     FlutterOverlayWindow.overlayListener.listen((data) {
       if (data is Map && data['videoUrl'] != null) {
         _initPlayer(data);
       }
     });
+  }
+
+  void _startHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _showControls = false);
+    });
+  }
+
+  void _toggleControls() {
+    setState(() {
+      _showControls = !_showControls;
+    });
+    if (_showControls) _startHideTimer();
   }
 
   void _initPlayer(Map data) {
@@ -73,6 +90,7 @@ class _ExternalOverlayWidgetState extends State<ExternalOverlayWidget> {
 
   @override
   void dispose() {
+    _hideTimer?.cancel();
     _controller?.dispose();
     super.dispose();
   }
@@ -103,17 +121,17 @@ class _ExternalOverlayWidgetState extends State<ExternalOverlayWidget> {
     return Material(
       color: Colors.transparent,
       child: GestureDetector(
-        onTap: () => setState(() => _showControls = !_showControls),
+        onTap: _toggleControls,
+        behavior: HitTestBehavior.opaque,
         child: Container(
           decoration: BoxDecoration(
             color: Colors.black,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFF00A3FF), width: 2),
+            border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.5), width: 1.5),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withOpacity(0.6),
-                blurRadius: 14,
-                spreadRadius: 3,
+                blurRadius: 15,
               ),
             ],
           ),
@@ -121,142 +139,153 @@ class _ExternalOverlayWidgetState extends State<ExternalOverlayWidget> {
             borderRadius: BorderRadius.circular(14),
             child: Stack(
               children: [
-                // ── Video ──────────────────────────────────────────────────
-                if (_initialized && _controller != null)
-                  Center(
-                    child: AspectRatio(
-                      aspectRatio: _controller!.value.aspectRatio,
-                      child: VideoPlayer(_controller!),
-                    ),
-                  )
-                else if (_error != null)
-                  Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.error_outline, color: Colors.red, size: 28),
-                          const SizedBox(height: 6),
-                          Text(
-                            _error!,
-                            style: const TextStyle(color: Colors.white54, fontSize: 9),
-                            textAlign: TextAlign.center,
-                            maxLines: 3,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                else
-                  const Center(
-                    child: CircularProgressIndicator(
-                      color: Color(0xFF00A3FF),
-                      strokeWidth: 2,
-                    ),
-                  ),
+                // ── Video y Controles (Comparten AspectRatio para estabilidad) ──────
+                Center(
+                  child: AspectRatio(
+                    aspectRatio: _controller?.value.aspectRatio ?? 16 / 9,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (_initialized && _controller != null)
+                          VideoPlayer(_controller!)
+                        else if (_error != null)
+                          _buildErrorState()
+                        else
+                          _buildLoadingState(),
 
-                // ── Controles ──────────────────────────────────────────────
-                if (_showControls)
-                  Positioned.fill(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.black.withOpacity(0.75),
-                            Colors.transparent,
-                            Colors.transparent,
-                            Colors.black.withOpacity(0.75),
-                          ],
-                        ),
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          // Top bar
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.live_tv, color: Color(0xFF00A3FF), size: 13),
-                                const SizedBox(width: 5),
-                                Expanded(
-                                  child: Text(
-                                    _title ?? 'K7 Player',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
+                        // ── Controles Overlay ──────────────────────────────────────
+                        AnimatedOpacity(
+                          opacity: _showControls ? 1.0 : 0.0,
+                          duration: const Duration(milliseconds: 250),
+                          child: IgnorePointer(
+                            ignoring: !_showControls,
+                            child: Container(
+                              color: Colors.black45,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  // Header (Título y Cerrar)
+                                  Align(
+                                    alignment: Alignment.topCenter,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                      decoration: const BoxDecoration(
+                                        gradient: LinearGradient(
+                                          begin: Alignment.topCenter,
+                                          end: Alignment.bottomCenter,
+                                          colors: [Colors.black87, Colors.transparent],
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              _title ?? 'K7 Player',
+                                              style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(Icons.settings, color: Colors.white, size: 16),
+                                            onPressed: () => _startHideTimer(),
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(),
+                                          ),
+                                          const SizedBox(width: 10),
+                                          GestureDetector(
+                                            onTap: () => FlutterOverlayWindow.closeOverlay(),
+                                            child: const Icon(Icons.close, color: Colors.white, size: 18),
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                ),
-                                // Botón: volver a pantalla completa
-                                GestureDetector(
-                                  onTap: _returnToFullscreen,
-                                  child: Container(
-                                    padding: const EdgeInsets.all(5),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF00A3FF).withOpacity(0.2),
-                                      borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(color: const Color(0xFF00A3FF), width: 1),
+
+                                  // Controles Centrales
+                                  Align(
+                                    alignment: Alignment.center,
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(Icons.replay_10, color: Colors.white, size: 24),
+                                          onPressed: () {
+                                            final pos = _controller?.value.position ?? Duration.zero;
+                                            _controller?.seekTo(pos - const Duration(seconds: 10));
+                                            _startHideTimer();
+                                          },
+                                        ),
+                                        IconButton(
+                                          icon: Icon(
+                                            _controller?.value.isPlaying == true
+                                                ? Icons.pause_circle_filled
+                                                : Icons.play_circle_filled,
+                                            color: const Color(0xFF00A3FF),
+                                            size: 42,
+                                          ),
+                                          onPressed: () {
+                                            _togglePlayPause();
+                                            _startHideTimer();
+                                          },
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.forward_10, color: Colors.white, size: 24),
+                                          onPressed: () {
+                                            final pos = _controller?.value.position ?? Duration.zero;
+                                            _controller?.seekTo(pos + const Duration(seconds: 10));
+                                            _startHideTimer();
+                                          },
+                                        ),
+                                      ],
                                     ),
-                                    child: const Icon(Icons.open_in_full, color: Color(0xFF00A3FF), size: 14),
                                   ),
-                                ),
-                                const SizedBox(width: 6),
-                                // Botón: cerrar overlay
-                                GestureDetector(
-                                  onTap: () => FlutterOverlayWindow.closeOverlay(),
-                                  child: const Icon(Icons.close, color: Colors.white54, size: 18),
-                                ),
-                              ],
+
+                                  // Botón Ampliar (Esquina inferior izquierda - SOLICITADO)
+                                  Align(
+                                    alignment: Alignment.bottomLeft,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8.0),
+                                      child: IconButton(
+                                        icon: const Icon(Icons.open_in_full, color: Colors.white, size: 18),
+                                        onPressed: _returnToFullscreen,
+                                        padding: const EdgeInsets.all(6),
+                                        style: IconButton.styleFrom(
+                                          backgroundColor: Colors.black45,
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-
-                          // Controles centrales
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.replay_10, color: Colors.white, size: 24),
-                                onPressed: () {
-                                  final pos = _controller?.value.position ?? Duration.zero;
-                                  _controller?.seekTo(pos - const Duration(seconds: 10));
-                                },
-                              ),
-                              IconButton(
-                                icon: Icon(
-                                  _controller?.value.isPlaying == true
-                                      ? Icons.pause_circle_filled
-                                      : Icons.play_circle_filled,
-                                  color: const Color(0xFF00A3FF),
-                                  size: 42,
-                                ),
-                                onPressed: _togglePlayPause,
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.forward_10, color: Colors.white, size: 24),
-                                onPressed: () {
-                                  final pos = _controller?.value.position ?? Duration.zero;
-                                  _controller?.seekTo(pos + const Duration(seconds: 10));
-                                },
-                              ),
-                            ],
-                          ),
-
-                          const SizedBox(height: 6),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
+                ),
               ],
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildLoadingState() {
+    return const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF), strokeWidth: 2));
+  }
+
+  Widget _buildErrorState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline, color: Colors.red, size: 28),
+          const SizedBox(height: 4),
+          Text(_error ?? 'Error', style: const TextStyle(color: Colors.white54, fontSize: 8)),
+        ],
       ),
     );
   }
