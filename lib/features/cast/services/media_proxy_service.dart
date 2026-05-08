@@ -1,5 +1,10 @@
+import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
+import 'package:ffmpeg_kit_flutter_new_min_gpl/session_state.dart';
 import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
+import 'dart:async';
 import 'package:http/http.dart' as http;
 
 class MediaProxyService {
@@ -7,538 +12,402 @@ class MediaProxyService {
   factory MediaProxyService() => _instance;
   MediaProxyService._internal();
 
-  // 🍪 Estado compartido para inyectar en Algoritmo 3 (Videasy/Gekko)
   static String? lastCookies;
   static String? deviceUserAgent;
-
-  /// Intenta revertir una URL proxeada a su URL original y headers.
-  /// Retorna un mapa con 'url' y 'headers' (opcional) si es una URL del proxy, o null si no lo es.
-  static Map<String, dynamic>? tryUnproxy(String proxiedUrl) {
-    try {
-      if (!proxiedUrl.contains('/proxy')) return null;
-      final uri = Uri.parse(proxiedUrl);
-      
-      final encodedUrl = uri.queryParameters['url'];
-      if (encodedUrl == null) return null;
-
-      String normalizeBase64(String s) {
-        int pad = 4 - (s.length % 4);
-        if (pad < 4) s += '=' * pad;
-        return s;
-      }
-
-      final url = utf8.decode(base64Url.decode(normalizeBase64(encodedUrl)));
-      
-      Map<String, String>? headers;
-      final encodedHeaders = uri.queryParameters['h'] ?? uri.queryParameters['headers'];
-      if (encodedHeaders != null) {
-        final decoded = utf8.decode(base64Url.decode(normalizeBase64(encodedHeaders)));
-        headers = Map<String, String>.from(json.decode(decoded));
-      }
-      
-      return {
-        'url': url,
-        'headers': headers,
-      };
-    } catch (e) {
-      print('⚠️ [PROXY] Error al intentar des-proxear: $e');
-      return null;
-    }
-  }
 
   HttpServer? _server;
   int _port = 0;
   String _localIp = '';
+  final Map<String, _BridgeSession> _activeBridgeSessions = {};
 
-  int get port => _port;
-  String get localIp => _localIp;
-
-  Future<void> start() async {
-    if (_server != null) return;
-
+  /// Intenta revertir una URL proxeada a su URL original y headers.
+  static Map<String, dynamic>? tryUnproxy(String proxiedUrl) {
     try {
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
-      _port = _server!.port;
-      
-      // Encontrar la IP local (WiFi / Hotspot) — cubrimos todos los rangos privados RFC-1918
-      final interfaces = await NetworkInterface.list(
-        includeLoopback: false,
-        type: InternetAddressType.IPv4,
-      );
-      outer:
-      for (var iface in interfaces) {
-        for (var addr in iface.addresses) {
-          final ip = addr.address;
-          // Rangos RFC-1918: 192.168.x.x | 10.x.x.x | 172.16-31.x.x
-          if (ip.startsWith('192.168.') ||
-              ip.startsWith('10.') ||
-              RegExp(r'^172\.(1[6-9]|2[0-9]|3[0-1])\.').hasMatch(ip)) {
-            _localIp = ip;
-            break outer;
-          }
-        }
+      if (!proxiedUrl.contains('/proxy') && !proxiedUrl.contains('/bridge')) return null;
+      final uri = Uri.parse(proxiedUrl);
+      final bUrl = uri.queryParameters['url'];
+      if (bUrl == null) return null;
+
+      String normalize(String s) {
+        int pad = 4 - (s.length % 4);
+        if (pad < 4 && pad > 0) s += '=' * pad;
+        return s;
       }
 
-      print('🎬 [PROXY] Listo — Red: http://$_localIp:$_port  |  Local: http://127.0.0.1:$_port');
-      print('💡 [ADB] Para VLC en Mac: adb forward tcp:$_port tcp:$_port → usa http://127.0.0.1:$_port/proxy?...');
-
-      _server!.listen((HttpRequest request) async {
-        print('🌐 [INCOMING] ${request.method} ${request.uri.toString()}');
-        try {
-          if (request.uri.path.startsWith('/proxy')) {
-            await _handleProxyRequest(request);
-          } else if (request.uri.path == '/ping') {
-            request.response.statusCode = HttpStatus.ok;
-            request.response.write('📡 [PROXY] Proxy is ALIVE and reachable at ${_localIp.isEmpty ? "localhost" : _localIp}:$_port');
-            await request.response.close();
-          } else {
-            print('⚠️ [NOT_FOUND] Ruta no reconocida: ${request.uri.path}');
-            request.response.statusCode = HttpStatus.notFound;
-            await request.response.close();
-          }
-        } catch (e) {
-          print('❌ [PROXY] Error manejando petición: $e');
-          request.response.statusCode = HttpStatus.internalServerError;
-          await request.response.close();
-        }
-      });
-    } catch (e) {
-      print('❌ [PROXY] No se pudo iniciar el servidor: $e');
+      final url = utf8.decode(base64Url.decode(normalize(bUrl)));
+      final hParam = uri.queryParameters['h'];
+      Map<String, String>? headers;
+      if (hParam != null) {
+        final decoded = utf8.decode(base64Url.decode(normalize(hParam)));
+        headers = Map<String, String>.from(json.decode(decoded));
+      }
+      return {'url': url, 'headers': headers};
+    } catch (_) {
+      return null;
     }
   }
 
+  Future<void> start() async {
+    if (_server != null) return;
+    try {
+      _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+      _port = _server!.port;
+      _refreshLocalIp();
+      
+      _server!.listen((HttpRequest request) {
+        if (request.uri.path.startsWith('/bridge')) {
+          _handleBridgeRequest(request);
+        } else if (request.uri.path.startsWith('/proxy')) {
+          _handleProxyRequest(request);
+        } else {
+          request.response.statusCode = HttpStatus.notFound;
+          request.response.close();
+        }
+      });
+      
+      print('🚀 [PROXY] Running at http://$_localIp:$_port');
+    } catch (e) {
+      print('❌ [PROXY] Error starting: $e');
+    }
+  }
+
+  // --- LÓGICA DE PROXY (ALGO 1: FRAGMENTOS) ---
   Future<void> _handleProxyRequest(HttpRequest request) async {
     final encodedUrl = request.uri.queryParameters['url'];
     final encodedHeaders = request.uri.queryParameters['h'] ?? request.uri.queryParameters['headers'];
     final algoParam = request.uri.queryParameters['a'];
 
-
-
     if (encodedUrl == null) {
-      print('❌ [PROXY] Error: Falta el parámetro "url" en la petición.');
       request.response.statusCode = HttpStatus.badRequest;
-      request.response.write('Error: Missing url parameter');
       await request.response.close();
       return;
     }
 
-    // Restaurar padding de base64 si falta
-    String normalizeBase64(String s) {
+    String normalize(String s) {
       int pad = 4 - (s.length % 4);
-      if (pad < 4) s += '=' * pad;
+      if (pad < 4 && pad > 0) s += '=' * pad;
       return s;
     }
 
-    final url = utf8.decode(base64Url.decode(normalizeBase64(encodedUrl)));
+    final url = utf8.decode(base64Url.decode(normalize(encodedUrl)));
     final requestId = DateTime.now().millisecondsSinceEpoch.toString().substring(7);
+    final Map<String, String> headers = {};
+    final bool isManifestRequest = url.contains('.m3u8') || url.contains('playlist') || url.contains('master');
 
-    Map<String, String> headers = {};
+    // 1. Cabeceras de la TV
+    request.headers.forEach((name, values) {
+      final n = name.toLowerCase();
+      if (n != 'host' && n != 'connection') {
+        if (isManifestRequest && n == 'range') return; // Quitar range solo en manifiestos
+        headers[name] = values.join(', ');
+      }
+    });
+
+    // 2. Cabeceras proxiadas (Inyectadas por el extractor)
     if (encodedHeaders != null) {
-      final decoded = utf8.decode(base64Url.decode(normalizeBase64(encodedHeaders)));
-      headers = Map<String, String>.from(json.decode(decoded));
+      try {
+        final decoded = jsonDecode(utf8.decode(base64Url.decode(normalize(encodedHeaders))));
+        if (decoded is Map) {
+          decoded.forEach((k, v) => headers[k.toString()] = v.toString());
+        }
+      } catch (_) {}
     }
 
-    final incomingHeaders = <String, String>{};
-    request.headers.forEach((key, value) => incomingHeaders[key] = value.join(', '));
+    print('🔍 [PROXY][$requestId] Request: $url');
 
-    // 🛡️ LÓGICA POR ALGORITMO (Aislamiento total)
-    
-    // Algoritmo 1: TOTALMENTE INVISIBLE (No tocamos nada)
-    final isAlgo1 = algoParam == '1' || (algoParam == null && url.contains('m3u8') && !url.contains('embed.su') && !url.contains('videasy'));
-    if (isAlgo1) {
-      // Usamos los headers originales sin añadir nada nuestro
-    } else {
-      // Algoritmo 3: Videasy / Embed.su
-      if (algoParam == '3' || url.contains('videasy') || url.contains('embed.su') || url.contains('vidplus') || url.contains('workers.dev')) {
-        print('🛡️ [PROXY_ALGO][$requestId] Aplicando Algoritmo 3 (Android Identity)');
-        
-        // Identidad Android para evitar bloqueos de Videasy
-        headers['User-Agent'] = deviceUserAgent ?? 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
-        headers['Sec-CH-UA-Mobile'] = '?1';
-        headers['Sec-CH-UA-Platform'] = '"Android"';
-        
-        // Inyectar cookies SIEMPRE si están disponibles (crítico para cast de HLS reescrito)
-        if (lastCookies != null && !headers.containsKey('Cookie')) {
-          headers['Cookie'] = lastCookies!;
-        }
-
-        if (url.contains('videasy') || url.contains('vidplus') || url.contains('workers.dev') || url.contains('speedzy')) {
-          headers['Referer'] = 'https://player.videasy.net/';
-          headers['Origin'] = 'https://player.videasy.net';
-        } else {
-          headers['Referer'] ??= 'https://embed.su/';
-          headers['Origin'] ??= 'https://embed.su';
-        }
-      }
-
-      // Algoritmo 2: Cuevana / Otros
-      if (algoParam == '2') {
-        print('🛡️ [PROXY_ALGO][$requestId] Aplicando Algoritmo 2 (Desktop UA)');
-        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
-        headers['Sec-Fetch-Dest'] = 'video';
-        headers['Sec-Fetch-Mode'] = 'cors';
-        headers['Sec-Fetch-Site'] = 'cross-site';
-        
-        // Inyectar cookies de la sesión actual capturadas en el player
-        if (lastCookies != null && !headers.containsKey('Cookie')) {
-          headers['Cookie'] = lastCookies!;
-        } else if (incomingHeaders.containsKey('cookie')) {
-          headers['Cookie'] = incomingHeaders['cookie']!;
-        }
-      }
-
-      // TikTok CDN: Solo para Algo 2
-      if (url.contains('tiktokcdn.com') || url.contains('muscdn.com')) {
-        if (algoParam == '2') {
-          headers['Referer'] = 'https://player.videasy.net/';
-          headers['Origin'] = 'https://player.videasy.net';
-        }
-      }
-    }
-    
-    headers['Connection'] ??= 'Keep-Alive';
-    headers['Accept-Encoding'] ??= 'gzip';
-    
-    // 🛡️ Filtro de cabeceras para el upstream
-    if (url.contains('.m3u8') || url.contains('.txt') || url.contains('master') || url.contains('playlist')) {
-      // NUNCA enviar Range al playlist M3U8 — rompe la descarga de la lista
-      headers.remove('Range');
-    } else if (incomingHeaders.containsKey('range')) {
-      // Para segmentos .ts, forwardear el Range si la TV lo pide (seek)
-      headers['Range'] = incomingHeaders['range']!;
-    }
-    final method = request.method;
-
-    // Manejo de peticiones OPTIONS (CORS)
-    if (method == 'OPTIONS') {
-      request.response.statusCode = HttpStatus.ok;
-      request.response.headers.set('Access-Control-Allow-Origin', '*');
-      request.response.headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-      request.response.headers.set('Access-Control-Allow-Headers', '*');
-      request.response.headers.set('Access-Control-Max-Age', '86400');
-      await request.response.close();
+    // 🌉 AUTO-BRIDGE: Si es un manifiesto HLS, lo convertimos en Puente MPEG-TS automáticamente
+    if (isManifestRequest) {
+      print('🌉 [PROXY_AUTO_BRIDGE] Capturada petición HLS. Transmutando a Puente MPEG-TS...');
+      _handleBridgeRequest(request, encodedUrl, encodedHeaders);
       return;
     }
-    
-    // 📁 Soporte para archivos locales (Descargas) con soporte de Range y detección de M3U8
-    if (!url.startsWith('http')) {
-      final cleanPath = url.replaceFirst('file://', '');
-      final file = File(cleanPath);
-      if (await file.exists()) {
-        final length = await file.length();
-        
-        // Si es HEAD, solo enviamos cabeceras
-        if (method == 'HEAD') {
-          request.response.statusCode = HttpStatus.ok;
-          request.response.headers.contentLength = length;
-          request.response.headers.contentType = ContentType.parse('video/mp4');
-          request.response.headers.set('Accept-Ranges', 'bytes');
-          request.response.headers.set('Access-Control-Allow-Origin', '*');
-          await request.response.close();
-          return;
-        }
-
-        // Verificamos si es un M3U8 local (HLS descargado)
-        bool isLocalM3u8 = false;
-        if (length < 1024 * 50) { // Solo si es pequeño (las listas M3U8 lo son)
-          try {
-            final firstLines = await file.openRead(0, 500).transform(utf8.decoder).first;
-            if (firstLines.contains('#EXTM3U')) isLocalM3u8 = true;
-          } catch (_) {}
-        }
-
-        if (isLocalM3u8) {
-          print('📥 [LOCAL] M3U8 detectado: $cleanPath');
-          final body = await file.readAsString();
-          final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
-          final rewrittenBody = _rewriteM3u8(body, cleanPath, {}, requestHost, algorithm: algoParam != null ? int.tryParse(algoParam) : null);
-          
-          final bytes = utf8.encode(rewrittenBody);
-          request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
-          request.response.headers.set('Access-Control-Allow-Origin', '*');
-          request.response.add(bytes);
-          await request.response.close();
-          return;
-        }
-
-        final rangeHeader = request.headers.value('range');
-        request.response.headers.set('Accept-Ranges', 'bytes');
-        request.response.headers.set('Access-Control-Allow-Origin', '*');
-        request.response.headers.set('transferMode.dlna.org', 'Streaming');
-        request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
-        
-        // Content-Type dinámico para descargas
-        final lowerPath = cleanPath.toLowerCase();
-        if (lowerPath.contains('(hls)') || lowerPath.contains('.ts')) {
-          request.response.headers.contentType = ContentType.parse('video/MP2T');
-        } else {
-          // Senior Trick: Usar video/mp4 incluso para MKV/AVI/MOV. 
-          // La mayoría de las TVs modernas pueden decodificar el stream interno si se les "miente" con el MIME.
-          request.response.headers.contentType = ContentType.parse('video/mp4');
-        }
-
-        if (rangeHeader != null && rangeHeader.startsWith('bytes=')) {
-          final parts = rangeHeader.substring(6).split('-');
-          final start = int.parse(parts[0]);
-          final end = (parts.length > 1 && parts[1].isNotEmpty) 
-              ? int.parse(parts[1]) 
-              : length - 1;
-          
-          print('📂 [LOCAL] Rango: $start-$end / $length | $cleanPath');
-          request.response.statusCode = HttpStatus.partialContent;
-          request.response.headers.set('Content-Range', 'bytes $start-$end/$length');
-          request.response.headers.contentLength = (end - start) + 1;
-          await request.response.addStream(file.openRead(start, end + 1));
-        } else {
-          print('📂 [LOCAL] Completo: $length bytes | $cleanPath');
-          request.response.statusCode = HttpStatus.ok;
-          request.response.headers.contentLength = length;
-          await request.response.addStream(file.openRead());
-        }
-        await request.response.close();
-        return;
-      } else {
-        print('⚠️ [LOCAL] Archivo no encontrado en: $cleanPath');
-      }
-    }
-
-    final isM3u8Candidate = url.contains('.m3u8') || 
-                            url.contains('.txt') || 
-                            url.contains('master') || 
-                            url.contains('playlist') || 
-                            url.contains('mpegurl');
 
     try {
-      if (isM3u8Candidate) {
-        // Solo para candidatos a M3U8 descargamos el cuerpo para analizarlo
-        final response = await http.get(Uri.parse(url), headers: headers);
+      final client = http.Client();
+      final proxyRequest = http.Request(request.method, Uri.parse(url));
+      headers.forEach((k, v) => proxyRequest.headers[k] = v);
+      proxyRequest.followRedirects = true;
+
+      final streamedResponse = await client.send(proxyRequest);
+      final upstreamContentType = (streamedResponse.headers['content-type'] ?? '').toLowerCase();
+      
+      bool isHls = upstreamContentType.contains('mpegurl') || upstreamContentType.contains('apple.mpegurl') || url.contains('.m3u8');
+
+      if (isHls) {
+        final fullBody = await streamedResponse.stream.bytesToString();
+        final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
+        final rewrittenBody = _rewriteM3u8(fullBody, url, headers, requestHost, algorithm: algoParam);
         
-        if (response.statusCode != 200) {
-          print('❌ [PROXY] Error Upstream: ${response.statusCode} para ${url.split('?').first}');
-          request.response.statusCode = response.statusCode;
-          await request.response.close();
-          return;
-        }
-
-        final contentType = response.headers['content-type']?.toLowerCase() ?? '';
-        final body = response.body;
-
-        // Verificamos si realmente es una lista HLS por su contenido
-        if (body.contains('#EXTM3U')) {
-          print('📥 [PROXY] Lista HLS reescrita: ${url.split('/').last}');
-          final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
-          final rewrittenBody = _rewriteM3u8(body, url, headers, requestHost, algorithm: algoParam != null ? int.tryParse(algoParam) : null);
-          
-          final bytes = utf8.encode(rewrittenBody);
-          request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
-          request.response.headers.contentLength = bytes.length;
-          request.response.headers.set('Access-Control-Allow-Origin', '*');
-          request.response.headers.set('Accept-Ranges', 'bytes');
-          request.response.headers.set('Connection', 'keep-alive');
-          // Cabeceras DLNA obligatorias para Smart TV
-          request.response.headers.set('transferMode.dlna.org', 'Streaming');
-          request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
-          // Anti-cache para que la TV no congele la lista de reproducción
-          request.response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-          request.response.headers.set('Pragma', 'no-cache');
-          request.response.headers.set('Expires', '0');
-          request.response.add(bytes);
-          await request.response.close();
-          return;
-        } else {
-          // Si no es un M3U8 real, enviamos los bytes originales sin tocarlos
-          request.response.statusCode = 200;
-          request.response.headers.set('content-type', contentType);
-          request.response.headers.set('Access-Control-Allow-Origin', '*');
-          request.response.headers.set('Accept-Ranges', 'bytes');
-          request.response.headers.set('transferMode.dlna.org', 'Streaming');
-          request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
-          request.response.add(response.bodyBytes);
-          await request.response.close();
-          return;
-        }
-      } else {
-        // STREAMING DIRECTO PARA SEGMENTOS (BINARIOS) - No tocamos los bytes
-        final client = http.Client();
-        final proxyRequest = http.Request(method, Uri.parse(url)) // Usamos el método original (GET o HEAD)
-          ..headers.addAll(headers)
-          ..followRedirects = true;
-
-        final response = await client.send(proxyRequest);
-        final segName = url.split('/').last.split('?').first;
-
-        if (response.statusCode != 200 && response.statusCode != 206) {
-          print('❌ [SEG] Error ${response.statusCode} en: $segName');
-          request.response.statusCode = response.statusCode;
-          await request.response.close();
-          client.close();
-          return;
-        }
-        
-        request.response.statusCode = response.statusCode;
-        response.headers.forEach((key, value) {
-          final k = key.toLowerCase();
-          if (k != 'transfer-encoding' && k != 'content-encoding' && k != 'content-type') {
-            request.response.headers.set(key, value);
-          }
-        });
-
-        request.response.headers.set('Access-Control-Allow-Origin', '*');
-        request.response.headers.set('Accept-Ranges', 'bytes');
-        request.response.headers.set('Connection', 'keep-alive');
-        request.response.headers.set('transferMode.dlna.org', 'Streaming');
-        request.response.headers.set('contentFeatures.dlna.org', 'DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000');
-        
-        // Corrección de Content-Type: Senior Expert Trick
-        final upstreamContentType = response.headers['content-type']?.toLowerCase() ?? '';
-        final isTikTok = url.contains('tiktokcdn') || url.contains('muscdn') || url.contains('.image');
-        final isVideoExt = url.contains('.mp4') || url.contains('.mkv') || url.contains('.avi') || url.contains('.mov');
-        
-        if (isTikTok && upstreamContentType.contains('image')) {
-          request.response.headers.contentType = ContentType.parse('video/MP2T');
-        } else if (isVideoExt || upstreamContentType.contains('octet-stream') || upstreamContentType.isEmpty) {
-          // Si es una extensión de video conocida o un binario genérico, forzamos mp4 para que la TV lo acepte
-          request.response.headers.contentType = ContentType.parse('video/mp4');
-        } else {
-          request.response.headers.set('content-type', upstreamContentType);
-        }
-        // 🔥 Cabeceras anti-cache para que la TV no congele segmentos viejos
-        request.response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        request.response.headers.set('Pragma', 'no-cache');
-        request.response.headers.set('Expires', '0');
-        // Para streaming directo, mantener conexión viva
-        // El TV irá pidiendo cada segmento individualmente
-        try {
-          await request.response.addStream(response.stream);
-          await request.response.close();
-        } catch (_) {
-          // Si el TV cierra la conexión, no es error nuestro
-          print('⚠️ [SEG] Cliente cerró conexión en: $segName');
-        }
+        request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
+        request.response.add(utf8.encode(rewrittenBody));
+        await request.response.close();
         client.close();
+      } else {
+        _serveStream(request, streamedResponse, null, streamedResponse.stream, algoParam, url, upstreamContentType, client, requestId);
       }
     } catch (e) {
-      print('❌ [PROXY] Error en upstream: $e');
+      print('❌ [PROXY][$requestId] Error: $e');
       request.response.statusCode = HttpStatus.serviceUnavailable;
       await request.response.close();
     }
   }
 
-  String _rewriteM3u8(String content, String baseUrl, Map<String, String> originalHeaders, String host, {int? algorithm}) {
-    final lines = LineSplitter.split(content);
-    final rewrittenLines = <String>[];
-    final baseUri = Uri.parse(baseUrl);
+  void _serveStream(HttpRequest request, http.StreamedResponse response, List<int>? firstChunk, Stream<List<int>> stream, String? algoParam, String url, String upstreamContentType, http.Client client, String requestId) async {
+    request.response.statusCode = response.statusCode;
     
-    bool hasVersion = content.contains('#EXT-X-VERSION');
-    bool hasEndList = content.contains('#EXT-X-ENDLIST');
-    bool hasPlaylistType = content.contains('#EXT-X-PLAYLIST-TYPE');
-    final bool isLive = content.contains('#EXT-X-MEDIA-SEQUENCE');
+    // Copiar cabeceras base
+    response.headers.forEach((key, value) {
+      final k = key.toLowerCase();
+      if (k != 'transfer-encoding' && k != 'content-encoding' && k != 'content-type') {
+        request.response.headers.set(key, value);
+      }
+    });
 
-    if (!hasVersion) {
-      rewrittenLines.add('#EXTM3U');
-      rewrittenLines.add('#EXT-X-VERSION:3');
+    request.response.headers.set('Access-Control-Allow-Origin', '*');
+    request.response.headers.set('Connection', 'keep-alive');
+
+    // --- LÓGICA DE REMUXING (CONVERSIÓN TS -> MP4 PARA FRAGMENTOS) ---
+    if (algoParam == '1' && (url.contains('.ts') || url.contains('segment') || upstreamContentType.contains('mp2t'))) {
+      print('🎬 [REMUX][$requestId] Converting fragment to MP4 for Smart TV...');
+      try {
+        final List<int> bytes = [];
+        if (firstChunk != null) bytes.addAll(firstChunk);
+        await for (var chunk in stream) {
+          bytes.addAll(chunk);
+        }
+
+        final tempDir = await getTemporaryDirectory();
+        final inputPath = '${tempDir.path}/in_$requestId.ts';
+        final outputPath = '${tempDir.path}/out_$requestId.mp4';
+        
+        await File(inputPath).writeAsBytes(bytes);
+
+        final ffmpegCommand = '-i "$inputPath" -c copy -f mp4 -movflags frag_keyframe+empty_moov -y "$outputPath"';
+        
+        final session = await FFmpegKit.execute(ffmpegCommand);
+        final returnCode = await session.getReturnCode();
+        
+        if (ReturnCode.isSuccess(returnCode)) {
+          final convertedBytes = await File(outputPath).readAsBytes();
+          request.response.headers.set('content-type', 'video/mp4');
+          request.response.headers.contentLength = convertedBytes.length;
+          request.response.add(convertedBytes);
+          print('✅ [REMUX][$requestId] Success! Sent as MP4');
+        } else {
+          request.response.headers.set('content-type', 'video/MP2T');
+          request.response.add(bytes);
+        }
+
+        try { await File(inputPath).delete(); await File(outputPath).delete(); } catch (_) {}
+      } catch (e) {
+        print('⚠️ [REMUX][$requestId] Error: $e');
+      } finally {
+        await request.response.close();
+        client.close();
+      }
+      return;
     }
+
+    // Flujo normal para otros archivos
+    request.response.headers.set('content-type', upstreamContentType);
+    if (firstChunk != null) request.response.add(firstChunk);
+    await request.response.addStream(stream);
+    await request.response.close();
+    client.close();
+  }
+
+  // --- LÓGICA DE PUENTE (TRANSCODING STREAM COMPLETO) ---
+  void _handleBridgeRequest(HttpRequest request, [String? overrideUrl, String? overrideHeaders]) async {
+    final encodedUrl = overrideUrl ?? request.uri.queryParameters['url'];
+    final encodedHeaders = overrideHeaders ?? request.uri.queryParameters['h'];
     
-    // 🔥 CRÍTICO: Forzar VOD solo si NO es LIVE.
-    // Si tiene MEDIA-SEQUENCE es LIVE y el seek depende del TV, no del playlist.
-    if (!hasPlaylistType && !isLive) {
-       rewrittenLines.add('#EXT-X-PLAYLIST-TYPE:VOD');
+    if (encodedUrl == null) {
+      request.response.statusCode = HttpStatus.badRequest;
+      request.response.write('Falta URL');
+      await request.response.close();
+      return;
     }
+
+    String normalize(String s) {
+      int pad = 4 - (s.length % 4);
+      if (pad < 4 && pad > 0) s += '=' * pad;
+      return s;
+    }
+
+    final requestId = DateTime.now().millisecondsSinceEpoch.toString().substring(7);
+    final String hlsUrl = utf8.decode(base64Url.decode(normalize(encodedUrl)));
+    
+    _BridgeSession? currentSession = _activeBridgeSessions[hlsUrl];
+    String? pipePath;
+
+    if (currentSession != null) {
+      print('♻️ [BRIDGE] Reusing session for: $hlsUrl');
+      pipePath = currentSession.filePath;
+    } else {
+      final tempDir = await getTemporaryDirectory();
+      pipePath = '${tempDir.path}/bridge_${requestId}.ts';
+      
+      String ffHeaders = "";
+      if (encodedHeaders != null) {
+        try {
+          final decoded = jsonDecode(utf8.decode(base64Url.decode(normalize(encodedHeaders))));
+          if (decoded is Map) {
+            decoded.forEach((k, v) => ffHeaders += "$k: $v\r\n");
+          }
+        } catch (e) { print('⚠️ [BRIDGE] Error decoding headers: $e'); }
+      }
+      
+      // Habilitar logs de FFmpeg para ver qué pasa por dentro
+      FFmpegKitConfig.enableLogCallback((log) {
+        if (log.getMessage().contains('Error') || log.getMessage().contains('http')) {
+          print('🎬 [FFMPEG-LOG] ${log.getMessage()}');
+        }
+      });
+
+      final ffmpegCommand = '-headers "$ffHeaders" -allowed_extensions ALL -i "$hlsUrl" -c copy -f mpegts -y "$pipePath"';
+      print('🌉 [BRIDGE][$requestId] Starting NEW Bridge: $hlsUrl');
+      print('🎬 [BRIDGE] Command: ffmpeg $ffmpegCommand');
+      
+      final session = await FFmpegKit.executeAsync(ffmpegCommand);
+      currentSession = _BridgeSession(session, pipePath);
+      _activeBridgeSessions[hlsUrl] = currentSession;
+    }
+
+    try {
+      request.response.headers.set('Content-Type', 'video/mp2t');
+      request.response.headers.set('Access-Control-Allow-Origin', '*');
+      request.response.headers.set('Accept-Ranges', 'none');
+      request.response.headers.set('Connection', 'keep-alive');
+
+      final file = File(pipePath);
+      int retry = 0;
+      while (!(await file.exists()) && retry < 40) {
+        await Future.delayed(Duration(milliseconds: 100));
+        retry++;
+      }
+      
+      int lastPos = 0;
+      int idleCount = 0;
+      int totalSent = 0;
+
+      while (true) {
+        if (await file.exists()) {
+          final currentLength = await file.length();
+          if (currentLength > lastPos) {
+            idleCount = 0;
+            final raf = await file.open();
+            await raf.setPosition(lastPos);
+            final buffer = await raf.read(currentLength - lastPos);
+            await raf.close();
+            
+            request.response.add(buffer);
+            await request.response.flush();
+            
+            totalSent += buffer.length;
+            lastPos = currentLength;
+            
+            if (lastPos % 100000 == 0) { // Loguear cada ~100KB para no saturar
+               print('📡 [BRIDGE][$requestId] Sent: ${(totalSent/1024/1024).toStringAsFixed(2)} MB');
+            }
+          } else {
+            idleCount++;
+            final returnCode = await currentSession.ffmpegSession.getReturnCode();
+            if (returnCode != null && idleCount > 100) {
+               print('🏁 [BRIDGE] FFmpeg finished (Code: $returnCode)');
+               break; 
+            }
+            await Future.delayed(Duration(milliseconds: 100));
+          }
+        } else {
+          await Future.delayed(Duration(milliseconds: 100));
+        }
+      }
+    } catch (e) {
+      print('❌ [BRIDGE] Request interrupted: $e');
+    } finally {
+      // SOLO eliminamos la sesión del mapa si nosotros somos los dueños (el pipePath coincide con el requestId)
+      if (pipePath.contains(requestId)) {
+         _activeBridgeSessions.remove(hlsUrl);
+         print('🏁 [BRIDGE] Main session cleaned up');
+      }
+      await request.response.close();
+    }
+  }
+
+  String _rewriteM3u8(String content, String playlistUrl, Map<String, String> headers, String requestHost, {String? algorithm}) {
+    final lines = LineSplitter.split(content);
+    final List<String> rewrittenLines = [];
+    final baseUri = Uri.parse(playlistUrl);
+    bool hasEndList = false;
 
     for (var line in lines) {
       final trimmedLine = line.trim();
-      if (trimmedLine.isEmpty || (trimmedLine == '#EXTM3U' && !hasVersion)) continue;
+      if (trimmedLine.isEmpty) continue;
+      if (trimmedLine.contains('#EXT-X-ENDLIST')) hasEndList = true;
 
       if (trimmedLine.startsWith('#')) {
         String newLine = trimmedLine;
-        // Soporte universal y tolerante para atributos URI="..." (pistas de audio, llaves, subtítulos)
         final uriMatch = RegExp(r'URI\s*=\s*"([^"]+)"', caseSensitive: false).firstMatch(trimmedLine);
         if (uriMatch != null) {
-           final internalUrl = uriMatch.group(1)!;
-           final absoluteUri = baseUri.resolve(internalUrl);
-           final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host, algorithm: algorithm);
-           // Reemplazamos la URL interna por la proxeada, manteniendo la estructura de la etiqueta
-           newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl.trim());
+          final internalUrl = uriMatch.group(1)!;
+          final absoluteUri = baseUri.resolve(internalUrl);
+          final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm != null ? int.tryParse(algorithm) : null);
+          newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl);
         }
         rewrittenLines.add(newLine);
       } else {
-        // Es una URL de segmento o de sub-playlist, la proxiamos usando el host actual
         final absoluteUri = baseUri.resolve(trimmedLine);
-        final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), originalHeaders, host, algorithm: algorithm);
-        rewrittenLines.add(proxiedUrl.trim());
+        final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm != null ? int.tryParse(algorithm) : null);
+        rewrittenLines.add(proxiedUrl);
       }
     }
-    // 🔥 CRÍTICO: Solo agregar ENDLIST si NO es LIVE
-    if (!hasEndList && !isLive) {
-      rewrittenLines.add('#EXT-X-ENDLIST');
-    }
-
-    return '${rewrittenLines.join('\n')}\n';
+    if (!hasEndList) rewrittenLines.add('#EXT-X-ENDLIST');
+    return rewrittenLines.join('\n');
   }
 
   String _buildProxiedUrl(String url, Map<String, String>? headers, String host, {int? algorithm}) {
-    // Usamos base64Url para evitar caracteres problemáticos (+ y /) y quitamos el padding (=) 
     final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
     String? bHeaders;
     if (headers != null && headers.isNotEmpty) {
       bHeaders = base64Url.encode(utf8.encode(jsonEncode(headers))).replaceAll('=', '');
     }
 
-    // Añadimos una extensión virtual al final de la ruta para que VLC/TVs identifiquen el tipo
-    String extension = '.mp4';
-    if (url.toLowerCase().contains('.m3u8') || url.toLowerCase().contains('.txt') || url.toLowerCase().contains('master')) {
-      extension = '.m3u8';
-    }
-
+    String extension = url.toLowerCase().contains('.m3u8') ? '.m3u8' : '.mp4';
     var proxyUrl = 'http://$host/proxy$extension?url=$bUrl';
-    if (bHeaders != null) {
-      proxyUrl += '&h=$bHeaders';
-    }
-    if (algorithm != null) {
-      proxyUrl += '&a=$algorithm';
-    }
+    if (bHeaders != null) proxyUrl += '&h=$bHeaders';
+    if (algorithm != null) proxyUrl += '&a=$algorithm';
+
     return proxyUrl;
   }
 
   String getProxiedUrl(String url, Map<String, String>? headers, {bool useLocalhost = false, int? algorithm}) {
     String host = (useLocalhost || _localIp.isEmpty) ? '127.0.0.1:$_port' : '$_localIp:$_port';
-    
-    // Si estamos en Cast pero no hay IP local, intentamos buscarla de nuevo
-    if (!useLocalhost && _localIp.isEmpty) {
-      _log('⚠️ [PROXY] IP local desconocida para Cast. Forzando re-escaneo...');
-      // Intentamos una búsqueda rápida sincrónica de interfaces para no bloquear
-      _refreshLocalIp();
-      host = _localIp.isEmpty ? '127.0.0.1:$_port' : '$_localIp:$_port';
-    }
-
-    final proxied = _buildProxiedUrl(url, headers, host, algorithm: algorithm);
-    print('🔗 [PROXY_GEN] URL Generada (Algo ${algorithm ?? "auto"}): $proxied');
-    return proxied;
+    return _buildProxiedUrl(url, headers, host, algorithm: algorithm);
   }
 
-  /// Búsqueda rápida de IP local para casos donde el arranque inicial falló o cambió la red
   void _refreshLocalIp() {
-     try {
-       NetworkInterface.list(type: InternetAddressType.IPv4).then((interfaces) {
-         for (var iface in interfaces) {
-           for (var addr in iface.addresses) {
-             final ip = addr.address;
-             if (ip.startsWith('192.168.') || ip.startsWith('10.') || RegExp(r'^172\.(1[6-9]|2[0-9]|3[0-1])\.').hasMatch(ip)) {
-               _localIp = ip;
-               return;
-             }
-           }
-         }
-       });
-     } catch (_) {}
+    NetworkInterface.list(type: InternetAddressType.IPv4).then((interfaces) {
+      for (var iface in interfaces) {
+        for (var addr in iface.addresses) {
+          final ip = addr.address;
+          if (ip.startsWith('192.168.') || ip.startsWith('10.') || RegExp(r'^172\.(1[6-9]|2[0-9]|3[0-1])\.').hasMatch(ip)) {
+            _localIp = ip;
+            return;
+          }
+        }
+      }
+    }).catchError((_) {});
   }
-
-  void _log(String msg) => print(msg);
 
   Future<void> stop() async {
     await _server?.close(force: true);
     _server = null;
     _port = 0;
-    _localIp = '';
   }
+}
+
+class _BridgeSession {
+  final dynamic ffmpegSession;
+  final String filePath;
+  _BridgeSession(this.ffmpegSession, this.filePath);
 }

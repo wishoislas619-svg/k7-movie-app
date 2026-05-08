@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:movie_app/core/constants/app_constants.dart';
 import 'package:dart_cast/dart_cast.dart' as dc;
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -263,20 +265,32 @@ class CastService extends ChangeNotifier {
       _log('  UA: Android móvil (Estándar)');
     }
 
-    final isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
-    final mediaType = _detectMediaType(url);
-    _log('  isDlna   : $isDlna');
-    _log('  mediaType: $mediaType');
-
-    String finalUrl = url;
-    
-    // --- LÓGICA DE PROXY UNIFICADO PARA CAST ---
-    // 1. Si ya es una URL proxeada por MediaProxyService, verificamos si usa 127.0.0.1
-    // 2. Si usa 127.0.0.1, la convertimos a IP de RED para que la TV la vea.
+    final bool isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
     final bool isLocalhost = url.contains('127.0.0.1') || url.contains('localhost');
-    final bool isAlreadyProxied = url.contains('/proxy');
+    final bool isAlreadyProxied = url.contains('/proxy') || url.contains('/bridge');
     
-    if (isAlreadyProxied && isLocalhost) {
+    String finalUrl = url;
+    // Usamos una variable mutable para poder cambiar el tipo si usamos el Puente
+    dc.CastMediaType mediaType = _detectMediaType(url);
+
+    // --- LÓGICA DE PUENTE HLS-A-MP4 (ALTO IMPACTO) ---
+    if (mediaType == dc.CastMediaType.hls || url.contains('.m3u8')) {
+      _log('🚀 CAST: Activando PUENTE HLS-a-MP4 para máxima estabilidad');
+      await MediaProxyService().start();
+      
+      // CAMBIO CLAVE: Ahora le decimos a todo el sistema que esto ES un MP4
+      mediaType = dc.CastMediaType.mp4; 
+      
+      final String proxyBase = MediaProxyService().getProxiedUrl('', null, useLocalhost: false);
+      final String host = proxyBase.split('/proxy')[0].replaceFirst('http://', '');
+      
+      final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
+      finalUrl = 'http://$host/bridge.ts?url=$bUrl&a=1';
+      
+      _log('  URL de Puente: $finalUrl');
+    }
+    // --- LÓGICA DE PROXY UNIFICADO PARA OTROS TIPOS ---
+    else if (isAlreadyProxied && isLocalhost) {
       _log('  CAST: Convirtiendo URL de localhost a IP de RED para la TV');
       final unproxied = MediaProxyService.tryUnproxy(url);
       if (unproxied != null) {
@@ -308,13 +322,10 @@ class CastService extends ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 600));
     }
 
-    // 🔥 CRÍTICO: Para HLS proxeado, forzar type a MP4 en el media.
-    // Los protocolos Chromecast/DIAL/AirPlay activan/desactivan controles según
-    // el media type. HLS desactiva pausa/seek. Al enviar como MP4 con la URL
-    // proxeada, el TV cree que es video normal y activa todos los controles.
-    final dc.CastMediaType finalMediaType = (mediaType == dc.CastMediaType.hls && finalUrl.contains('/proxy'))
-        ? dc.CastMediaType.mp4
-        : mediaType;
+    // 🚀 IDENTIDAD REAL: No mentimos a la TV sobre el tipo de media.
+    // Si es HLS, enviamos HLS. Si la TV no lo soporta, el proxy lo manejará,
+    // pero forzar MP4 aquí rompe el reproductor HLS nativo de muchas Smart TVs.
+    final dc.CastMediaType finalMediaType = mediaType;
 
     final media = dc.CastMedia(
       url: finalUrl,
@@ -348,6 +359,7 @@ class CastService extends ChangeNotifier {
         }
       }
       
+      _log('🚀 [LOAD] Sending to TV: $finalUrl | Type: $finalMediaType');
       await _session!.loadMedia(media);
       _log('  ✅ loadMedia completado (Estándar)');
     } catch (e, stack) {
@@ -622,21 +634,38 @@ class CastService extends ChangeNotifier {
     String? imageUrl,
     Duration? duration,
   }) async {
+    _log('🛰️ [DLNA_SENIOR] Target: $_dlnaControlUrl');
     if (_dlnaControlUrl == null) return false;
+
+    String finalUrl = url;
+    dc.CastMediaType? finalMediaType = mediaType;
+    
+    // 🌉 REFUERZO DE ÚLTIMA MILLA: Si el HLS llega aquí sin proxeat, lo capturamos
+    if (url.contains('.m3u8') && !url.contains('/bridge')) {
+      print('🌉 [BRIDGE_FORCE] Detectado HLS en el punto de salida. Forzando Puente...');
+      await MediaProxyService().start();
+      
+      final String proxyBase = MediaProxyService().getProxiedUrl('', null, useLocalhost: false);
+      final String host = proxyBase.split('/proxy')[0].replaceFirst('http://', '');
+      final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
+      finalUrl = 'http://$host/bridge.mp4?url=$bUrl&a=1';
+      finalMediaType = dc.CastMediaType.mp4;
+      
+      print('🌉 [BRIDGE_FORCE] URL transformada: $finalUrl');
+    }
 
     final durationStr = duration != null ? _formatDurationForDlna(duration) : "0:00:00";
     final sanitizedTitle = _sanitizeTitleForDlna(title);
     
     // MimeType dinámico según el contenido
     String mimeType = 'video/mp4';
-    if (mediaType == dc.CastMediaType.hls) {
-      // 🔥 CRÍTICO: Usar video/mp4. Smart TVs desactivan controles (pausa/play/seek)
-      // cuando detectan HLS (lo tratan como live). Al usar 'video/mp4' la TV activa
-      // la barra de controles. El proxy local maneja el HLS transparentemente.
-      mimeType = 'video/mp4';
-    } else if (mediaType == dc.CastMediaType.mkv) {
+    if (finalUrl.contains('/bridge')) {
+      mimeType = 'video/mp2t'; // MPEG-TS es el nuevo estándar del puente
+    } else if (finalMediaType == dc.CastMediaType.hls) {
+      mimeType = 'application/vnd.apple.mpegurl';
+    } else if (finalMediaType == dc.CastMediaType.mkv) {
       mimeType = 'video/x-matroska';
-    } else if (mediaType == dc.CastMediaType.mpegTs) {
+    } else if (finalMediaType == dc.CastMediaType.mpegTs) {
       mimeType = 'video/mp2t';
     }
 
@@ -644,16 +673,19 @@ class CastService extends ChangeNotifier {
     // DLNA.ORG_OP=01 -> Habilita SEEK (Adelantar/Atrasar)
     // DLNA.ORG_CI=0  -> No es transcodificado
     // DLNA.ORG_FLAGS -> 01700000... indica soporte de streaming y pausa/seek
+    final String protocolInfo = 'http-get:*:$mimeType:*';
+    
     final metadata = '''
-<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:sec="http://www.sec.co.kr/">
+<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">
   <item id="0" parentID="-1" restricted="1">
     <dc:title>${_escapeXml(sanitizedTitle)}</dc:title>
-    <upnp:class>object.item.videoItem</upnp:class>
-    <res protocolInfo="http-get:*:$mimeType:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000" duration="$durationStr">$url</res>
-    ${imageUrl != null ? '<upnp:albumArtURI>${_escapeXml(imageUrl)}</upnp:albumArtURI>' : ''}
+    <upnp:class>object.item.videoItem.movie</upnp:class>
+    <res protocolInfo="$protocolInfo">$finalUrl</res>
   </item>
 </DIDL-Lite>
 '''.trim();
+
+    _log('📜 [DLNA_METADATA] Title: $sanitizedTitle | Mime: $mimeType');
 
     final success = await _sendDlnaSoapAction(
       controlUrl: _dlnaControlUrl!,
@@ -661,7 +693,7 @@ class CastService extends ChangeNotifier {
       action: 'SetAVTransportURI',
       args: {
         'InstanceID': '0',
-        'CurrentURI': url,
+        'CurrentURI': finalUrl,
         'CurrentURIMetaData': metadata,
       },
     );
