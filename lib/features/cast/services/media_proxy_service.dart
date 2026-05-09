@@ -20,6 +20,7 @@ class MediaProxyService {
   int _port = 0;
   String _localIp = '';
   final Map<String, _BridgeSession> _activeBridgeSessions = {};
+  final Map<String, Map<String, String>> _pendingBridgeHeaders = {};
 
   /// Intenta revertir una URL proxeada a su URL original y headers.
   static Map<String, dynamic>? tryUnproxy(String proxiedUrl) {
@@ -77,7 +78,8 @@ class MediaProxyService {
     final encodedUrl = request.uri.queryParameters['url'];
     final encodedHeaders = request.uri.queryParameters['h'] ?? request.uri.queryParameters['headers'];
     final algoParam = request.uri.queryParameters['a'];
-
+    final bid = request.uri.queryParameters['bid']; // Bridge ID
+    
     if (encodedUrl == null) {
       request.response.statusCode = HttpStatus.badRequest;
       await request.response.close();
@@ -114,10 +116,16 @@ class MediaProxyService {
       } catch (_) {}
     }
 
+    // 💡 REUPERAR HEADERS DE MEMORIA (para el puente)
+    if (bid != null && _pendingBridgeHeaders.containsKey(bid)) {
+      print('📥 [PROXY] Recovering headers for bridge bid: $bid');
+      headers.addAll(_pendingBridgeHeaders[bid]!);
+    }
+
     print('🔍 [PROXY][$requestId] Request: $url');
 
     // 🌉 AUTO-BRIDGE: Si es un manifiesto HLS, lo convertimos en Puente MPEG-TS automáticamente
-    if (isManifestRequest) {
+    if (isManifestRequest && bid == null) {
       print('🌉 [PROXY_AUTO_BRIDGE] Capturada petición HLS. Transmutando a Puente MPEG-TS...');
       _handleBridgeRequest(request, encodedUrl, encodedHeaders);
       return;
@@ -137,7 +145,7 @@ class MediaProxyService {
       if (isHls) {
         final fullBody = await streamedResponse.stream.bytesToString();
         final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
-        final rewrittenBody = _rewriteM3u8(fullBody, url, headers, requestHost, algorithm: algoParam);
+        final rewrittenBody = _rewriteM3u8(fullBody, url, headers, requestHost, algorithm: algoParam, bid: bid);
         
         request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
         request.response.add(utf8.encode(rewrittenBody));
@@ -248,25 +256,28 @@ class MediaProxyService {
       final tempDir = await getTemporaryDirectory();
       pipePath = '${tempDir.path}/bridge_${requestId}.ts';
       
-      String ffHeaders = "";
+      // 🧠 MEMORIA DE CABECERAS: Guardar para FFmpeg
       if (encodedHeaders != null) {
         try {
-          final decoded = jsonDecode(utf8.decode(base64Url.decode(normalize(encodedHeaders))));
+          final decoded = json.decode(utf8.decode(base64Url.decode(normalize(encodedHeaders))));
           if (decoded is Map) {
-            decoded.forEach((k, v) => ffHeaders += "$k: $v\r\n");
+            _pendingBridgeHeaders[requestId] = Map<String, String>.from(decoded);
           }
-        } catch (e) { print('⚠️ [BRIDGE] Error decoding headers: $e'); }
+        } catch (_) {}
       }
       
-      // Habilitar logs de FFmpeg para ver qué pasa por dentro
+      // 🚀 COMANDO CORTO: Usamos la IP REAL y un ID de referencia (bid)
+      // Esto evita que el comando sea demasiado largo y falle en Android.
+      final localProxyUrl = 'http://$_localIp:$_port/proxy?url=$encodedUrl&bid=$requestId';
+      
       FFmpegKitConfig.enableLogCallback((log) {
-        if (log.getMessage().contains('Error') || log.getMessage().contains('http')) {
+        if (log.getMessage().contains('Error') || log.getMessage().contains('http') || log.getMessage().contains('Protocol')) {
           print('🎬 [FFMPEG-LOG] ${log.getMessage()}');
         }
       });
 
-      final ffmpegCommand = '-headers "$ffHeaders" -allowed_extensions ALL -i "$hlsUrl" -c copy -f mpegts -y "$pipePath"';
-      print('🌉 [BRIDGE][$requestId] Starting NEW Bridge: $hlsUrl');
+      final ffmpegCommand = '-allowed_extensions ALL -i "$localProxyUrl" -c copy -f mpegts -y "$pipePath"';
+      print('🌉 [BRIDGE][$requestId] Starting Bridge (Bypass Short-Url): $hlsUrl');
       print('🎬 [BRIDGE] Command: ffmpeg $ffmpegCommand');
       
       final session = await FFmpegKit.executeAsync(ffmpegCommand);
@@ -335,7 +346,7 @@ class MediaProxyService {
     }
   }
 
-  String _rewriteM3u8(String content, String playlistUrl, Map<String, String> headers, String requestHost, {String? algorithm}) {
+  String _rewriteM3u8(String content, String playlistUrl, Map<String, String> headers, String requestHost, {String? algorithm, String? bid}) {
     final lines = LineSplitter.split(content);
     final List<String> rewrittenLines = [];
     final baseUri = Uri.parse(playlistUrl);
@@ -352,13 +363,13 @@ class MediaProxyService {
         if (uriMatch != null) {
           final internalUrl = uriMatch.group(1)!;
           final absoluteUri = baseUri.resolve(internalUrl);
-          final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm != null ? int.tryParse(algorithm) : null);
+          final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm != null ? int.tryParse(algorithm) : null, bid: bid);
           newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl);
         }
         rewrittenLines.add(newLine);
       } else {
         final absoluteUri = baseUri.resolve(trimmedLine);
-        final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm != null ? int.tryParse(algorithm) : null);
+        final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm != null ? int.tryParse(algorithm) : null, bid: bid);
         rewrittenLines.add(proxiedUrl);
       }
     }
@@ -366,17 +377,21 @@ class MediaProxyService {
     return rewrittenLines.join('\n');
   }
 
-  String _buildProxiedUrl(String url, Map<String, String>? headers, String host, {int? algorithm}) {
+  String _buildProxiedUrl(String url, Map<String, String>? headers, String host, {int? algorithm, String? bid}) {
     final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
     String? bHeaders;
     if (headers != null && headers.isNotEmpty) {
       bHeaders = base64Url.encode(utf8.encode(jsonEncode(headers))).replaceAll('=', '');
     }
 
-    String extension = url.toLowerCase().contains('.m3u8') ? '.m3u8' : '.mp4';
+    String extension = '.mp4';
+    if (url.toLowerCase().contains('.m3u8')) extension = '.m3u8';
+    if (url.toLowerCase().contains('.ts')) extension = '.ts';
+    
     var proxyUrl = 'http://$host/proxy$extension?url=$bUrl';
     if (bHeaders != null) proxyUrl += '&h=$bHeaders';
     if (algorithm != null) proxyUrl += '&a=$algorithm';
+    if (bid != null) proxyUrl += '&bid=$bid';
 
     return proxyUrl;
   }
