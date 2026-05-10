@@ -1,5 +1,6 @@
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit_config.dart';
+import 'package:ffmpeg_kit_flutter_new_min_gpl/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:ffmpeg_kit_flutter_new_min_gpl/session_state.dart';
 import 'dart:io';
@@ -21,6 +22,54 @@ class MediaProxyService {
   String _localIp = '';
   final Map<String, _BridgeSession> _activeBridgeSessions = {};
   final Map<String, Map<String, String>> _pendingBridgeHeaders = {};
+  final Map<String, String> _localFileRegistry = {}; // fileId → filePath
+  final Map<String, String> _remuxedFiles = {};      // originalPath → remuxedPath
+
+  /// Registra un archivo local con un ID opaco para que la TV reciba una URL limpia.
+  void registerLocalFile(String fileId, String filePath) {
+    _localFileRegistry[fileId] = filePath;
+  }
+
+  String get localIp => _localIp;
+  int get port => _port;
+
+  /// Calcula la duración total de un HLS sumando sus fragmentos.
+  /// Soporta Master Manifests de forma recursiva.
+  Future<double> getHlsDuration(String url, {Map<String, String>? headers}) async {
+    try {
+      final res = await http.get(Uri.parse(url), headers: headers).timeout(Duration(seconds: 5));
+      if (res.statusCode != 200) return 0;
+      
+      final body = res.body;
+      final bool isManifest = body.contains('#EXTM3U') || body.contains('#EXT-X-STREAM-INF') || body.contains('#EXTINF');
+      
+      if (!isManifest) return 0;
+
+      if (body.contains('#EXT-X-STREAM-INF')) {
+        // Es un Master Manifest, buscar la variante con mayor resolución o la primera
+        final lines = body.split('\n');
+        for (int i = 0; i < lines.length; i++) {
+          if (lines[i].contains('#EXT-X-STREAM-INF') && i + 1 < lines.length) {
+            String variantUrl = lines[i+1].trim();
+            if (!variantUrl.startsWith('http')) {
+               variantUrl = Uri.parse(url).resolve(variantUrl).toString();
+            }
+            return await getHlsDuration(variantUrl, headers: headers);
+          }
+        }
+      }
+      
+      double duration = 0;
+      final matches = RegExp(r'#EXTINF:([\d.]+),').allMatches(body);
+      for (var m in matches) {
+        duration += double.tryParse(m.group(1) ?? '0') ?? 0;
+      }
+      return duration;
+    } catch (e) {
+      print('⚠️ [PROXY] Error calculando duración HLS: $e');
+      return 0;
+    }
+  }
 
   /// Intenta revertir una URL proxeada a su URL original y headers.
   static Map<String, dynamic>? tryUnproxy(String proxiedUrl) {
@@ -49,16 +98,21 @@ class MediaProxyService {
     }
   }
 
-  Future<void> start() async {
-    if (_server != null) return;
+  Future<void> start({String? targetIp}) async {
+    if (_server != null) {
+      if (targetIp != null) _refreshLocalIp(targetIp: targetIp);
+      return;
+    }
     try {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
       _port = _server!.port;
-      _refreshLocalIp();
+      _refreshLocalIp(targetIp: targetIp);
       
       _server!.listen((HttpRequest request) {
         if (request.uri.path.startsWith('/bridge')) {
           _handleBridgeRequest(request);
+        } else if (request.uri.path.startsWith('/local/')) {
+          _handleLocalFileRequest(request);
         } else if (request.uri.path.startsWith('/proxy')) {
           _handleProxyRequest(request);
         } else {
@@ -78,6 +132,7 @@ class MediaProxyService {
     final encodedUrl = request.uri.queryParameters['url'];
     final encodedHeaders = request.uri.queryParameters['h'] ?? request.uri.queryParameters['headers'];
     final algoParam = request.uri.queryParameters['a'];
+    final remuxParam = request.uri.queryParameters['remux'] == '1';
     final bid = request.uri.queryParameters['bid']; // Bridge ID
     
     if (encodedUrl == null) {
@@ -124,11 +179,26 @@ class MediaProxyService {
 
     print('🔍 [PROXY][$requestId] Request: $url');
 
-    // 🌉 AUTO-BRIDGE: Si es un manifiesto HLS, lo convertimos en Puente MPEG-TS automáticamente
-    if (isManifestRequest && bid == null) {
-      print('🌉 [PROXY_AUTO_BRIDGE] Capturada petición HLS. Transmutando a Puente MPEG-TS...');
+    final bool forceBridge = request.uri.queryParameters['bridge'] == '1';
+
+    // 🌉 AUTO-BRIDGE: Ahora solo se activa si se solicita explícitamente (generalmente desde el Cast)
+    if (isManifestRequest && bid == null && forceBridge) {
+      print('🌉 [PROXY_BRIDGE] Activando modo Puente MP4 (Cast)...');
       _handleBridgeRequest(request, encodedUrl, encodedHeaders);
       return;
+    }
+    
+    if (isManifestRequest && bid != null) {
+       // Si ya tiene bid, es una petición interna del bridge, no re-procesar.
+    }
+    
+    // Si ya viene con un bid, es que es una petición interna del bridge,
+    // por lo que debe continuar hacia el proxy estándar sin volver a disparar el bridge.
+
+    // 📂 SERVIR ARCHIVO LOCAL: Si la URL no empieza por http, es un path de sistema
+    if (!url.startsWith('http')) {
+       await _serveLocalFile(request, url);
+       return;
     }
 
     try {
@@ -145,14 +215,14 @@ class MediaProxyService {
       if (isHls) {
         final fullBody = await streamedResponse.stream.bytesToString();
         final requestHost = request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
-        final rewrittenBody = _rewriteM3u8(fullBody, url, headers, requestHost, algorithm: algoParam, bid: bid);
+        final rewrittenBody = _rewriteM3u8(fullBody, url, headers, requestHost, algorithm: int.tryParse(algoParam ?? ''), bid: bid, remux: remuxParam);
         
         request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
         request.response.add(utf8.encode(rewrittenBody));
         await request.response.close();
         client.close();
       } else {
-        _serveStream(request, streamedResponse, null, streamedResponse.stream, algoParam, url, upstreamContentType, client, requestId);
+        _serveStream(request, streamedResponse, null, streamedResponse.stream, algoParam, url, upstreamContentType, client, requestId, remux: remuxParam);
       }
     } catch (e) {
       print('❌ [PROXY][$requestId] Error: $e');
@@ -161,7 +231,7 @@ class MediaProxyService {
     }
   }
 
-  void _serveStream(HttpRequest request, http.StreamedResponse response, List<int>? firstChunk, Stream<List<int>> stream, String? algoParam, String url, String upstreamContentType, http.Client client, String requestId) async {
+  void _serveStream(HttpRequest request, http.StreamedResponse response, List<int>? firstChunk, Stream<List<int>> stream, String? algoParam, String url, String upstreamContentType, http.Client client, String requestId, {bool remux = false}) async {
     request.response.statusCode = response.statusCode;
     
     // Copiar cabeceras base
@@ -176,7 +246,11 @@ class MediaProxyService {
     request.response.headers.set('Connection', 'keep-alive');
 
     // --- LÓGICA DE REMUXING (CONVERSIÓN TS -> MP4 PARA FRAGMENTOS) ---
-    if (algoParam == '1' && (url.contains('.ts') || url.contains('segment') || upstreamContentType.contains('mp2t'))) {
+    // Solo remuxamos si se solicita explícitamente o si es Alg 2/3 (Bridge)
+    // Para Alg 1 en el reproductor interno, es mejor usar TS nativo para evitar tirones.
+    final shouldRemux = remux || (algoParam != '1' && algoParam != null);
+    
+    if (shouldRemux && (url.contains('.ts') || url.contains('segment') || upstreamContentType.contains('mp2t'))) {
       print('🎬 [REMUX][$requestId] Converting fragment to MP4 for Smart TV...');
       try {
         final List<int> bytes = [];
@@ -191,7 +265,9 @@ class MediaProxyService {
         
         await File(inputPath).writeAsBytes(bytes);
 
-        final ffmpegCommand = '-i "$inputPath" -c copy -f mp4 -movflags frag_keyframe+empty_moov -y "$outputPath"';
+        // Re-codificamos audio a AAC para asegurar que el AudioSpecificConfig sea válido (evita fallos en Media3)
+        // El video se mantiene en copy para no perder rendimiento.
+        final ffmpegCommand = '-i "$inputPath" -c:v copy -c:a aac -b:a 128k -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof -y "$outputPath"';
         
         final session = await FFmpegKit.execute(ffmpegCommand);
         final returnCode = await session.getReturnCode();
@@ -254,7 +330,7 @@ class MediaProxyService {
       pipePath = currentSession.filePath;
     } else {
       final tempDir = await getTemporaryDirectory();
-      pipePath = '${tempDir.path}/bridge_${requestId}.ts';
+      pipePath = '${tempDir.path}/bridge_${requestId}.mp4';
       
       // 🧠 MEMORIA DE CABECERAS: Guardar para FFmpeg
       if (encodedHeaders != null) {
@@ -276,7 +352,8 @@ class MediaProxyService {
         }
       });
 
-      final ffmpegCommand = '-allowed_extensions ALL -i "$localProxyUrl" -c copy -f mpegts -y "$pipePath"';
+      // Usamos MP4 fragmentado para máxima compatibilidad con el player de la app y Smart TVs
+      final ffmpegCommand = '-allowed_extensions ALL -i "$localProxyUrl" -c copy -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof -y "$pipePath"';
       print('🌉 [BRIDGE][$requestId] Starting Bridge (Bypass Short-Url): $hlsUrl');
       print('🎬 [BRIDGE] Command: ffmpeg $ffmpegCommand');
       
@@ -286,10 +363,36 @@ class MediaProxyService {
     }
 
     try {
-      request.response.headers.set('Content-Type', 'video/mp2t');
+      // --- CÁLCULO DE DURACIÓN PARA EL SEEK DEL RECEPTOR ---
+      double totalDuration = 0;
+      try {
+        final Map<String, String> mHeaders = {};
+        if (encodedHeaders != null) {
+          final decoded = json.decode(utf8.decode(base64Url.decode(normalize(encodedHeaders))));
+          if (decoded is Map) mHeaders.addAll(Map<String, String>.from(decoded));
+        }
+        
+
+        totalDuration = await getHlsDuration(hlsUrl, headers: mHeaders);
+        
+        if (totalDuration > 0) {
+          print('⏱️ [BRIDGE] Duración total detectada: ${totalDuration.toStringAsFixed(2)}s');
+        }
+      } catch (e) {
+        print('⚠️ [BRIDGE] No se pudo calcular la duración: $e');
+      }
+
+      request.response.headers.set('Content-Type', 'video/mp4');
       request.response.headers.set('Access-Control-Allow-Origin', '*');
-      request.response.headers.set('Accept-Ranges', 'none');
+      request.response.headers.set('Accept-Ranges', 'bytes'); // Habilitar bytes para que la TV intente seek
       request.response.headers.set('Connection', 'keep-alive');
+      
+      if (totalDuration > 0) {
+        final durStr = totalDuration.toStringAsFixed(2);
+        request.response.headers.set('X-Content-Duration', durStr);
+        request.response.headers.set('Content-Duration', durStr);
+        request.response.headers.set('X-VOD-Duration', durStr); // Cabecera adicional para algunos receptores
+      }
 
       final file = File(pipePath);
       int retry = 0;
@@ -346,38 +449,50 @@ class MediaProxyService {
     }
   }
 
-  String _rewriteM3u8(String content, String playlistUrl, Map<String, String> headers, String requestHost, {String? algorithm, String? bid}) {
-    final lines = LineSplitter.split(content);
-    final List<String> rewrittenLines = [];
-    final baseUri = Uri.parse(playlistUrl);
+  String _rewriteM3u8(String body, String baseUriStr, Map<String, String> headers, String requestHost, {int? algorithm, String? bid, bool remux = false}) {
+    final baseUri = Uri.parse(baseUriStr);
+    final lines = body.split('\n');
+    final rewrittenLines = <String>[];
     bool hasEndList = false;
 
     for (var line in lines) {
       final trimmedLine = line.trim();
       if (trimmedLine.isEmpty) continue;
-      if (trimmedLine.contains('#EXT-X-ENDLIST')) hasEndList = true;
 
       if (trimmedLine.startsWith('#')) {
-        String newLine = trimmedLine;
+        if (trimmedLine.contains('#EXT-X-ENDLIST')) hasEndList = true;
+        if (trimmedLine.contains('#EXT-X-PLAYLIST-TYPE')) {
+          // Ya tiene tipo de playlist, no tocar
+        }
+        
+        if (trimmedLine.startsWith('#EXT-X-TARGETDURATION') && !body.contains('#EXT-X-PLAYLIST-TYPE')) {
+          rewrittenLines.add(trimmedLine);
+          rewrittenLines.add('#EXT-X-PLAYLIST-TYPE:VOD');
+          continue;
+        }
         final uriMatch = RegExp(r'URI\s*=\s*"([^"]+)"', caseSensitive: false).firstMatch(trimmedLine);
         if (uriMatch != null) {
           final internalUrl = uriMatch.group(1)!;
           final absoluteUri = baseUri.resolve(internalUrl);
-          final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm != null ? int.tryParse(algorithm) : null, bid: bid);
-          newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl);
+          final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm, bid: bid, remux: remux);
+          rewrittenLines.add(trimmedLine.replaceFirst(internalUrl, proxiedUrl));
+        } else {
+          rewrittenLines.add(trimmedLine);
         }
-        rewrittenLines.add(newLine);
       } else {
+        // Es un fragmento o un sub-manifiesto
         final absoluteUri = baseUri.resolve(trimmedLine);
-        final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm != null ? int.tryParse(algorithm) : null, bid: bid);
+        final proxiedUrl = _buildProxiedUrl(absoluteUri.toString(), headers, requestHost, algorithm: algorithm, bid: bid, remux: remux);
         rewrittenLines.add(proxiedUrl);
       }
     }
-    if (!hasEndList) rewrittenLines.add('#EXT-X-ENDLIST');
+    if (!hasEndList && !body.contains('#EXT-X-STREAM-INF')) {
+      rewrittenLines.add('#EXT-X-ENDLIST');
+    }
     return rewrittenLines.join('\n');
   }
 
-  String _buildProxiedUrl(String url, Map<String, String>? headers, String host, {int? algorithm, String? bid}) {
+  String _buildProxiedUrl(String url, Map<String, String>? headers, String host, {int? algorithm, String? bid, bool remux = false, bool useBridge = false}) {
     final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
     String? bHeaders;
     if (headers != null && headers.isNotEmpty) {
@@ -385,34 +500,223 @@ class MediaProxyService {
     }
 
     String extension = '.mp4';
-    if (url.toLowerCase().contains('.m3u8')) extension = '.m3u8';
-    if (url.toLowerCase().contains('.ts')) extension = '.ts';
+    final lowerUrl = url.toLowerCase();
+    
+    // Detección de HLS
+    final bool isHls = lowerUrl.contains('.m3u8') || 
+                       lowerUrl.contains('playlist') || 
+                       lowerUrl.contains('master') || 
+                       lowerUrl.contains('cf-master') ||
+                       lowerUrl.contains('m3u8-proxy');
+
+    if (isHls && !useBridge) {
+      extension = '.m3u8';
+    }
+    
+    if (url.toLowerCase().contains('.ts')) {
+      extension = (algorithm != 1 || remux) ? '.mp4' : '.ts';
+    }
     
     var proxyUrl = 'http://$host/proxy$extension?url=$bUrl';
     if (bHeaders != null) proxyUrl += '&h=$bHeaders';
     if (algorithm != null) proxyUrl += '&a=$algorithm';
     if (bid != null) proxyUrl += '&bid=$bid';
+    if (remux) proxyUrl += '&remux=1';
+    if (useBridge) proxyUrl += '&bridge=1';
 
     return proxyUrl;
   }
 
-  String getProxiedUrl(String url, Map<String, String>? headers, {bool useLocalhost = false, int? algorithm}) {
-    String host = (useLocalhost || _localIp.isEmpty) ? '127.0.0.1:$_port' : '$_localIp:$_port';
-    return _buildProxiedUrl(url, headers, host, algorithm: algorithm);
+  Future<void> _handleLocalFileRequest(HttpRequest request) async {
+    // Extraer el ID del path: /local/1234567890.mp4 → "1234567890"
+    final segment = request.uri.path.split('/local/').last;
+    final fileId = segment.replaceAll('.mp4', '').replaceAll('.mkv', '').replaceAll('.ts', '').replaceAll('.m3u8', '');
+    
+    final filePath = _localFileRegistry[fileId];
+    if (filePath == null) {
+      print('❌ [LOCAL] ID no registrado: $fileId');
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+      return;
+    }
+    
+    print('📂 [LOCAL] Sirviendo: $filePath (ID: $fileId)');
+    await _serveLocalFile(request, filePath);
   }
 
-  void _refreshLocalIp() {
+  /// Remuxea un archivo local a un MP4 fragmentado real.
+  Future<String?> remuxLocalFile(String inputPath, String fileId) async {
+    if (_remuxedFiles.containsKey(inputPath)) {
+      final cachedPath = _remuxedFiles[inputPath]!;
+      if (await File(cachedPath).exists()) {
+        print('🎬 [LOCAL_REMUX] Usando archivo en caché: $cachedPath');
+        return cachedPath;
+      }
+    }
+
+    final tempDir = await getTemporaryDirectory();
+    final outputPath = '${tempDir.path}/remux_$fileId.mp4';
+    
+    print('🎬 [LOCAL_REMUX] Convirtiendo contenedor a MP4 real (H264 + AAC): $fileId');
+    
+    final command = '-i "$inputPath" -c:v copy -c:a aac -b:a 128k -threads 0 -f mp4 -movflags faststart -y "$outputPath"';
+    
+    // Habilitar logs para diagnóstico en tiempo real
+    FFmpegKitConfig.enableLogCallback((log) {
+      if (log.getMessage().contains('Error') || log.getMessage().contains('fail')) {
+        print('🎥 [FFMPEG_LOG] ${log.getMessage()}');
+      }
+    });
+
+    final session = await FFmpegKit.execute(command);
+    final returnCode = await session.getReturnCode();
+
+    if (ReturnCode.isSuccess(returnCode)) {
+      print('✅ [LOCAL_REMUX] Éxito: $outputPath');
+      _remuxedFiles[inputPath] = outputPath;
+      return outputPath;
+    } else {
+      print('❌ [LOCAL_REMUX] Falló remuxing, se servirá original');
+      return null;
+    }
+  }
+
+  // --- SERVICIO DE ARCHIVOS LOCALES (Descargas) ---
+  // Usa HTTP/1.0 manual para máxima compatibilidad con Smart TVs antiguas/estrictas.
+  Future<void> _serveLocalFile(HttpRequest request, String path) async {
+    final file = File(path);
+    if (!await file.exists()) {
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+      return;
+    }
+
+    final size = await file.length();
+    final rangeHeader = request.headers.value(HttpHeaders.rangeHeader);
+    final contentType = 'video/mp4';
+
+    // Desacoplamos el socket para escribir HTTP/1.0 manualmente
+    final socket = await request.response.detachSocket(writeHeaders: false);
+    
+    try {
+      int start = 0;
+      int end = size - 1;
+      int statusCode = 200;
+      String statusText = 'OK';
+
+      if (rangeHeader != null && rangeHeader.startsWith('bytes=')) {
+        final parts = rangeHeader.substring(6).split('-');
+        start = int.parse(parts[0]);
+        if (parts.length > 1 && parts[1].isNotEmpty) {
+          end = int.parse(parts[1]).clamp(0, size - 1);
+        }
+        statusCode = 206;
+        statusText = 'Partial Content';
+      }
+
+      final contentLength = end - start + 1;
+      final headers = StringBuffer();
+      headers.write('HTTP/1.0 $statusCode $statusText\r\n');
+      headers.write('Content-Type: $contentType\r\n');
+      headers.write('Content-Length: $contentLength\r\n');
+      headers.write('Accept-Ranges: bytes\r\n');
+      headers.write('Connection: close\r\n');
+      headers.write('Access-Control-Allow-Origin: *\r\n');
+      
+      // Cabeceras DLNA optimizadas para Samsung
+      headers.write('contentFeatures.dlna.org: DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n');
+      headers.write('transferMode.dlna.org: Streaming\r\n');
+
+      if (statusCode == 206) {
+        headers.write('Content-Range: bytes $start-$end/$size\r\n');
+      }
+      headers.write('\r\n');
+
+      socket.add(utf8.encode(headers.toString()));
+
+      if (request.method != 'HEAD') {
+        // Usamos una lectura controlada para evitar ruidos de SocketException
+        try {
+          await file.openRead(start, end + 1).pipe(socket);
+        } catch (_) {
+          // Es normal que la TV cierre la conexión abruptamente al cambiar de posición o al inicio
+        }
+      }
+    } catch (e) {
+      if (!e.toString().contains('Connection reset')) {
+        print('❌ [PROXY] Error crítico en servidor HTTP/1.0: $e');
+      }
+    } finally {
+      try {
+        await socket.close();
+      } catch (_) {}
+    }
+  }
+
+  /// Obtiene la duración de un archivo local en segundos usando ffprobe.
+  Future<double> getFileDuration(String path) async {
+    try {
+      final session = await FFprobeKit.execute('-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$path"');
+      final output = await session.getOutput();
+      if (output != null) {
+        return double.tryParse(output.trim()) ?? 0;
+      }
+    } catch (e) {
+      print('❌ [PROXY] Error obteniendo duración del archivo: $e');
+    }
+    return 0;
+  }
+
+  String getProxiedUrl(String url, Map<String, String>? headers, {bool useLocalhost = false, int? algorithm, bool remux = false, bool useBridge = false}) {
+    String host = (useLocalhost || _localIp.isEmpty) ? '127.0.0.1:$_port' : '$_localIp:$_port';
+    return _buildProxiedUrl(url, headers, host, algorithm: algorithm, remux: remux, useBridge: useBridge);
+  }
+
+  void _refreshLocalIp({String? targetIp}) {
     NetworkInterface.list(type: InternetAddressType.IPv4).then((interfaces) {
+      String? fallbackIp;
+      print('🌐 [PROXY] Escaneando interfaces de red...');
+      
       for (var iface in interfaces) {
         for (var addr in iface.addresses) {
           final ip = addr.address;
-          if (ip.startsWith('192.168.') || ip.startsWith('10.') || RegExp(r'^172\.(1[6-9]|2[0-9]|3[0-1])\.').hasMatch(ip)) {
+          if (ip == '127.0.0.1') continue;
+          print('  • Interfaz: ${iface.name} | IP: $ip');
+
+          // 1. Prioridad máxima: Misma subred que la TV (ej: 192.168.1.X == 192.168.1.Y)
+          if (targetIp != null) {
+            final tParts = targetIp.split('.');
+            final iParts = ip.split('.');
+            if (tParts.length >= 3 && iParts.length >= 3) {
+              if (tParts[0] == iParts[0] && tParts[1] == iParts[1] && tParts[2] == iParts[2]) {
+                print('  🎯 [MATCH] IP en la misma subred que la TV: $ip');
+                _localIp = ip;
+                return;
+              }
+            }
+          }
+
+          // 2. Segunda prioridad: Redes 192.168.X.X (WiFi estándar)
+          if (ip.startsWith('192.168.')) {
             _localIp = ip;
+            print('  🏠 [MATCH] IP de WiFi detectada: $ip');
             return;
+          }
+
+          // 3. Tercera prioridad: Redes 172.X.X.X o 10.X.X.X
+          if (ip.startsWith('172.') || ip.startsWith('10.')) {
+            fallbackIp = ip;
           }
         }
       }
-    }).catchError((_) {});
+      
+      if (fallbackIp != null) {
+        _localIp = fallbackIp;
+        print('  ⚠️ [FALLBACK] Usando IP secundaria: $fallbackIp');
+      }
+    }).catchError((e) {
+      print('❌ [PROXY] Error obteniendo interfaces: $e');
+    });
   }
 
   Future<void> stop() async {

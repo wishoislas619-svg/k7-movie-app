@@ -166,11 +166,22 @@ class CastService extends ChangeNotifier {
         notifyListeners();
       });
 
-      // Si es DLNA, extraemos URLs de control e iniciamos polling manual
+      // Si es DLNA, extraemos URLs de control
+      // PRIMERO: intentar desde los metadatos que dart_cast ya tiene del SSDP discovery
       if (device.protocol == dc.CastProtocol.dlna) {
-        // En dart_cast 0.4.3 para DLNA, la ubicación del XML se puede reconstruir o extraer
-        // desde la información de servicio. Si no está disponible directamente, usamos la IP.
-        _fetchDlnaControlUrls('http://${device.address}:${device.rawDevice.port}/');
+        final meta = device.rawDevice.metadata;
+        final avUrl = meta['avTransportControlUrl'];
+        final rvUrl = meta['renderingControlUrl'];
+        
+        if (avUrl != null && avUrl.isNotEmpty) {
+          _dlnaControlUrl = avUrl;
+          _dlnaRenderingControlUrl = rvUrl;
+          _log('  ✅ AVTransport URL desde metadata SSDP: $_dlnaControlUrl');
+        } else {
+          // Fallback: intentar fetchear el XML de descripción
+          _log('  Metadata SSDP vacío, intentando HTTP...');
+          await _fetchDlnaControlUrls('http://${device.address}:${device.rawDevice.port}/');
+        }
         _startDlnaPolling();
       }
 
@@ -235,28 +246,39 @@ class CastService extends ChangeNotifier {
     _log('  startPos : ${startPosition.inSeconds}s');
     _log('  subtitle : $subtitleUrl');
 
-    // Construir headers con excepciones por algoritmo
+    // --- DESENVOLVER URL SI YA ESTÁ PROXEADA ---
+    // Evita el "Doble Proxy" que genera URLs gigantescas incompatibles con TVs (SOAP 500)
+    String effectiveUrl = url;
+    Map<String, String>? effectiveHeaders = headers;
+    
+    final unproxied = MediaProxyService.tryUnproxy(url);
+    if (unproxied != null) {
+      _log('  CAST: URL ya proxeada detectada, desempaquetando...');
+      effectiveUrl = unproxied['url'];
+      effectiveHeaders = Map<String, String>.from(unproxied['headers'] ?? {});
+    }
+
     final Map<String, String> combinedHeaders = {
       // Por defecto: UA Móvil (Algoritmo 1 / Estándar)
       'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
       'Accept': '*/*',
       'Accept-Language': 'es-ES,es;q=0.9',
       'Connection': 'keep-alive',
-      ...?headers,
+      ...?effectiveHeaders,
     };
 
-    if (algorithm == 3 || url.contains('embed.su') || url.contains('videasy')) {
+    if (algorithm == 3 || effectiveUrl.contains('embed.su') || effectiveUrl.contains('videasy')) {
       combinedHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
-      combinedHeaders['Referer'] = headers?['Referer'] ?? 'https://embed.su/';
-      combinedHeaders['Origin'] = headers?['Origin'] ?? 'https://embed.su';
+      combinedHeaders['Referer'] = effectiveHeaders?['Referer'] ?? 'https://embed.su/';
+      combinedHeaders['Origin'] = effectiveHeaders?['Origin'] ?? 'https://embed.su';
       combinedHeaders['Sec-Fetch-Dest'] = 'video';
       combinedHeaders['Sec-Fetch-Mode'] = 'cors';
       combinedHeaders['Sec-Fetch-Site'] = 'cross-site';
       _log('  Headers: Aplicada configuración Algoritmo 3 (Embed.su/Videasy)');
     } else if (algorithm == 2) {
       combinedHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
-      combinedHeaders['Referer'] = headers?['Referer'] ?? url;
-      combinedHeaders['Origin'] = headers?['Origin'] ?? (Uri.tryParse(url)?.origin ?? '');
+      combinedHeaders['Referer'] = effectiveHeaders?['Referer'] ?? effectiveUrl;
+      combinedHeaders['Origin'] = effectiveHeaders?['Origin'] ?? (Uri.tryParse(effectiveUrl)?.origin ?? '');
       combinedHeaders['Sec-Fetch-Dest'] = 'video';
       combinedHeaders['Sec-Fetch-Mode'] = 'cors';
       combinedHeaders['Sec-Fetch-Site'] = 'cross-site';
@@ -266,47 +288,56 @@ class CastService extends ChangeNotifier {
     }
 
     final bool isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
-    final bool isLocalhost = url.contains('127.0.0.1') || url.contains('localhost');
-    final bool isAlreadyProxied = url.contains('/proxy') || url.contains('/bridge');
+    final bool isLocalhost = effectiveUrl.contains('127.0.0.1') || effectiveUrl.contains('localhost');
+    final bool isAlreadyProxied = effectiveUrl.contains('/proxy') || effectiveUrl.contains('/bridge');
     
-    String finalUrl = url;
+    String finalUrl = effectiveUrl;
     // Usamos una variable mutable para poder cambiar el tipo si usamos el Puente
-    dc.CastMediaType mediaType = _detectMediaType(url);
+    dc.CastMediaType mediaType = _detectMediaType(effectiveUrl);
 
-    // --- LÓGICA DE PUENTE HLS-A-MP4 (ALTO IMPACTO) ---
-    if (mediaType == dc.CastMediaType.hls || url.contains('.m3u8')) {
-      _log('🚀 CAST: Activando PUENTE HLS-a-MP4 para máxima estabilidad');
+    // --- LÓGICA DE PUENTE HLS-A-MP4 (SOLO PARA ALGORITMO 3 EN CAST) ---
+    // El Algoritmo 3 sigue usando el bridge por su complejidad de interceptación.
+    // El Algoritmo 2 ahora usa el modo dinámico (como el 1) para igualar su formato compatible con Samsung.
+    if (algorithm == 3 && (mediaType == dc.CastMediaType.hls || effectiveUrl.contains('.m3u8') || effectiveUrl.contains('master') || effectiveUrl.contains('playlist'))) {
+      _log('🚀 CAST: Activando PUENTE HLS-a-MP4 (Modo Bridge) para Algoritmo 3');
       await MediaProxyService().start();
       
-      // CAMBIO CLAVE: Ahora le decimos a todo el sistema que esto ES un MP4
       mediaType = dc.CastMediaType.mp4; 
+      finalUrl = MediaProxyService().getProxiedUrl(effectiveUrl, combinedHeaders, useLocalhost: false, algorithm: algorithm, useBridge: true);
       
-      final String proxyBase = MediaProxyService().getProxiedUrl('', null, useLocalhost: false);
-      final String host = proxyBase.split('/proxy')[0].replaceFirst('http://', '');
-      
-      final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
-      finalUrl = 'http://$host/bridge.ts?url=$bUrl&a=1';
-      
-      _log('  URL de Puente: $finalUrl');
-    }
-    // --- LÓGICA DE PROXY UNIFICADO PARA OTROS TIPOS ---
-    else if (isAlreadyProxied && isLocalhost) {
-      _log('  CAST: Convirtiendo URL de localhost a IP de RED para la TV');
-      final unproxied = MediaProxyService.tryUnproxy(url);
-      if (unproxied != null) {
-        finalUrl = MediaProxyService().getProxiedUrl(
-          unproxied['url'], 
-          unproxied['headers'], 
-          useLocalhost: false, 
-          algorithm: algorithm
-        );
+      if (duration == null || duration == Duration.zero) {
+        _log('⏱️ CAST: Calculando duración del puente (Alg 3) para habilitar SEEK...');
+        final double dSeconds = await MediaProxyService().getHlsDuration(effectiveUrl, headers: combinedHeaders);
+        if (dSeconds > 0) {
+          duration = Duration(milliseconds: (dSeconds * 1000).toInt());
+          _log('⏱️ CAST: Duración obtenida: ${duration.inSeconds}s');
+        }
       }
-    } 
-    // 3. Si es Algoritmo 2 o 3 y NO está proxeada, FORZAMOS el proxy para inyectar headers
-    else if ((algorithm == 2 || algorithm == 3) && !isAlreadyProxied) {
-      _log('  CAST: Forzando Proxy de RED para Algoritmo $algorithm');
-      await MediaProxyService().start();
-      finalUrl = MediaProxyService().getProxiedUrl(url, combinedHeaders, useLocalhost: false, algorithm: algorithm);
+    }
+    // --- LÓGICA DE PROXY DINÁMICO (ALGORITMO 1 Y 2) ---
+    else if ((algorithm == 1 || algorithm == 2) && (mediaType == dc.CastMediaType.hls || effectiveUrl.contains('.m3u8'))) {
+       _log('🚀 CAST: Usando Modo Dinámico (HLS Nativo) para Algoritmo $algorithm (Formato Alg 1)');
+       await MediaProxyService().start();
+       finalUrl = MediaProxyService().getProxiedUrl(effectiveUrl, combinedHeaders, useLocalhost: false, algorithm: algorithm);
+       
+       if (duration == null || duration == Duration.zero) {
+         try {
+           _log('⏱️ CAST: Calculando duración HLS nativa para habilitar SEEK...');
+           final double dSeconds = await MediaProxyService().getHlsDuration(effectiveUrl, headers: combinedHeaders);
+           if (dSeconds > 0) {
+             duration = Duration(milliseconds: (dSeconds * 1000).toInt());
+             _log('⏱️ CAST: Duración obtenida: ${duration.inSeconds}s');
+           }
+         } catch (e) {
+           _log('⚠️ CAST: Error al calcular duración (ignorado): $e');
+         }
+       }
+    }
+    // --- LÓGICA DE PROXY UNIFICADO PARA OTROS CASOS ---
+    else if (isLocalhost || (algorithm == 2 || algorithm == 3)) {
+       _log('  CAST: Forzando Proxy de RED para compatibilidad (Alg $algorithm / Localhost)');
+       await MediaProxyService().start();
+       finalUrl = MediaProxyService().getProxiedUrl(effectiveUrl, combinedHeaders, useLocalhost: false, algorithm: algorithm);
     }
     // 4. Fallback para DLNA estándar (MP4/MKV) que requiere cabeceras
     else if (isDlna && mediaType != dc.CastMediaType.hls && !isAlreadyProxied) {
@@ -315,58 +346,74 @@ class CastService extends ChangeNotifier {
        finalUrl = MediaProxyService().getProxiedUrl(url, combinedHeaders, useLocalhost: false, algorithm: algorithm);
     }
 
-    if (isDlna) {
-      _log('  DLNA: enviando Stop previo...');
-      try { await _session!.stop(); } catch (e) { _log('  DLNA Stop ignorado: $e'); }
-      // Pausa un poco más larga para TVs que tardan en liberar el socket
+    if (isDlna && _dlnaControlUrl != null) {
+      _log('  DLNA: enviando Stop previo via SOAP...');
+      try { 
+        await _sendDlnaSoapAction(
+          controlUrl: _dlnaControlUrl!,
+          serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+          action: 'Stop',
+          args: {'InstanceID': '0'},
+        );
+      } catch (e) { 
+        _log('  DLNA Stop SOAP ignorado: $e'); 
+      }
       await Future.delayed(const Duration(milliseconds: 600));
     }
 
-    // 🚀 IDENTIDAD REAL: No mentimos a la TV sobre el tipo de media.
-    // Si es HLS, enviamos HLS. Si la TV no lo soporta, el proxy lo manejará,
-    // pero forzar MP4 aquí rompe el reproductor HLS nativo de muchas Smart TVs.
-    final dc.CastMediaType finalMediaType = mediaType;
+    // Samsung TVs tienen límites estrictos de longitud de URL (SOAP 500 si es > 1024).
+    final Map<String, String> minimalHeaders = {};
+    if (combinedHeaders.containsKey('User-Agent')) minimalHeaders['User-Agent'] = combinedHeaders['User-Agent']!;
+    if (combinedHeaders.containsKey('Referer')) minimalHeaders['Referer'] = combinedHeaders['Referer']!;
+    if (combinedHeaders.containsKey('Cookie')) minimalHeaders['Cookie'] = combinedHeaders['Cookie']!;
+    if (combinedHeaders.containsKey('Origin')) minimalHeaders['Origin'] = combinedHeaders['Origin']!;
 
-    final media = dc.CastMedia(
-      url: finalUrl,
-      type: finalMediaType,
-      title: _sanitizeTitleForDlna(title),
-      imageUrl: imageUrl,
-      httpHeaders: combinedHeaders,
-      startPosition: startPosition,
-      duration: duration,
-      subtitles: (subtitleUrl != null && !isDlna)
-          ? [dc.CastSubtitle(url: subtitleUrl, label: 'Subtítulos', language: 'es', format: 'vtt')]
-          : [],
-    );
+    // Regenerar finalUrl con cabeceras mínimas si es proxy
+    if (finalUrl.contains('/proxy') || finalUrl.contains('/bridge')) {
+       final unproxiedFinal = MediaProxyService.tryUnproxy(finalUrl);
+       if (unproxiedFinal != null) {
+          finalUrl = MediaProxyService().getProxiedUrl(
+            unproxiedFinal['url'], 
+            minimalHeaders, 
+            useLocalhost: false, 
+            algorithm: algorithm,
+            useBridge: finalUrl.contains('bridge=1')
+          );
+       }
+    }
 
     _log('  Llamando session.loadMedia() con URL: $finalUrl');
+    
     try {
-      if (isDlna && _dlnaControlUrl != null) {
-        _log('  DLNA Senior: Usando carga manual con DIDL-Lite...');
-        final success = await _loadMediaDlnaSenior(
-          url: finalUrl,
-          title: title,
-          mediaType: mediaType,
-          imageUrl: imageUrl,
-          duration: duration,
-        );
-        if (success) {
-          _log('  ✅ Carga manual DLNA completada');
-          await play();
-          notifyListeners();
-          return;
-        }
+      _log('🚀 [LOAD] Sending to TV: $finalUrl');
+      
+      // Creamos el objeto media con los datos optimizados
+      final media = dc.CastMedia(
+        url: finalUrl,
+        title: _sanitizeTitleForDlna(title),
+        type: mediaType,
+        imageUrl: imageUrl,
+        startPosition: startPosition,
+        duration: duration,
+      );
+
+      // En dart_cast, loadMedia requiere un objeto CastMedia
+      await _session!.loadMedia(media);
+      
+      // En DLNA, a veces loadMedia no dispara el Play automáticamente o falla por timeout de respuesta
+      if (isDlna) {
+        _log('  DLNA: Forzando Play tras loadMedia para asegurar arranque...');
+        await Future.delayed(const Duration(milliseconds: 1000));
+        try { await _session!.play(); } catch(_) {}
       }
       
-      _log('🚀 [LOAD] Sending to TV: $finalUrl | Type: $finalMediaType');
-      await _session!.loadMedia(media);
-      _log('  ✅ loadMedia completado (Estándar)');
+      _log('  ✅ Transmisión iniciada correctamente');
     } catch (e, stack) {
-      _logErr('  loadMedia falló: $e');
-      _logErr('  Stack: $stack');
+      _logErr('loadMedia falló: $e');
+      _logErr('Stack: $stack');
       rethrow;
     }
+    
     _log('══════════════════════════════════════');
     notifyListeners();
   }
@@ -404,31 +451,77 @@ class CastService extends ChangeNotifier {
 
     final ext = filePath.toLowerCase().split('.').last;
     
-    // Registrar el archivo en nuestro MediaProxyService unificado
-    await MediaProxyService().start();
-    final proxyUrl = MediaProxyService().getProxiedUrl(filePath, {}, useLocalhost: false);
-    _log('  Archivo local registrado en: $proxyUrl');
+    // Registrar el archivo en nuestro MediaProxyService unificado.
+    // IMPORTANTE: Usamos una URL opaca para que la TV no detecte "(HLS)" en el nombre
+    // y bloquee los controles de reproducción (Samsung trata HLS como Live = sin seek/pause).
+    final String? tvIp = _connectedDevice?.address;
+    await MediaProxyService().start(targetIp: tvIp);
+    
+    // Generamos un ID opaco basado en el hash del path para ocultar el nombre real
+    final fileId = filePath.hashCode.abs().toString();
+
+    // 🎬 AUTO-REMUX PREVENTIVO: Si el archivo parece ser un TS disfrazado de MP4 (descargas HLS)
+    // lo remuxeamos a MP4 real ANTES de avisar a la TV para evitar errores 716 por timeout.
+    String pathParaServir = filePath;
+    if (filePath.contains('(HLS)') || filePath.toLowerCase().endsWith('.ts')) {
+      _log('  🎬 Detectado posible MPEG-TS. Iniciando remuxing preventivo...');
+      final remuxedPath = await MediaProxyService().remuxLocalFile(filePath, fileId);
+      if (remuxedPath != null) {
+        pathParaServir = remuxedPath;
+        _log('  ✅ Remuxing completado: $pathParaServir');
+      }
+    }
+
+    MediaProxyService().registerLocalFile(fileId, pathParaServir);
+    
+    final host = MediaProxyService().localIp;
+    final port = MediaProxyService().port;
+    final proxyUrl = 'http://$host:$port/local/$fileId.mp4';
+    
+    _log('  Archivo local registrado con ID: $fileId');
+    _log('  URL opaca para TV: $proxyUrl');
+
 
     _log('  ext     : .$ext');
 
     // Forzar mediaType=mp4 para archivos locales.
-    // Aunque sea TS/MKV, el proxy sirve el contenido con MIME video/mp4.
-    // Si usamos mpegTs o mkv, la TV detecta el type y DESACTIVA los controles
-    // de pausa/play/seek (lo trata como contenido en vivo/streaming).
-    // Al enviar mp4, la TV activa TODOS los controles.
     final dc.CastMediaType forcedMediaType = dc.CastMediaType.mp4;
 
-    // Construir media manualmente en lugar de llamar castUrl,
-    // para tener control total sobre el mediaType.
     if (_session == null) return;
 
     _log('  CastMedia type forzado a: mp4 (para habilitar controles DLNA)');
 
-    final isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
-    if (isDlna) {
-      _log('  DLNA: enviando Stop previo...');
-      try { await _session!.stop(); } catch (e) { _log('  DLNA Stop ignorado: $e'); }
+    final bool isDlna = _connectedDevice?.protocol == dc.CastProtocol.dlna;
+    
+    if (isDlna && _dlnaControlUrl != null) {
+      _log('  DLNA: enviando Stop previo via SOAP...');
+      try { 
+        await _sendDlnaSoapAction(
+          controlUrl: _dlnaControlUrl!,
+          serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+          action: 'Stop',
+          args: {'InstanceID': '0'},
+        );
+      } catch (e) { 
+        _log('  DLNA Stop SOAP ignorado: $e'); 
+      }
       await Future.delayed(const Duration(milliseconds: 600));
+    }
+
+    // --- MINIMIZAR CABECERAS PARA CAST (Incluso en archivos locales) ---
+    final Map<String, String> minimalHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36',
+    };
+
+    // --- OBTENER DURACIÓN SI ES NULL ---
+    Duration? effectiveDuration = duration;
+    if (effectiveDuration == null || effectiveDuration == Duration.zero) {
+      _log('⏱️ [LOCAL] Calculando duración del archivo con FFprobe...');
+      final double dSeconds = await MediaProxyService().getFileDuration(filePath);
+      if (dSeconds > 0) {
+        effectiveDuration = Duration(milliseconds: (dSeconds * 1000).toInt());
+        _log('⏱️ [LOCAL] Duración detectada: ${effectiveDuration.inSeconds}s');
+      }
     }
 
     final media = dc.CastMedia(
@@ -437,34 +530,46 @@ class CastService extends ChangeNotifier {
       title: cleanTitle,
       imageUrl: imageUrl,
       startPosition: startPosition,
-      duration: duration,
+      duration: effectiveDuration,
     );
 
     _log('  Llamando session.loadMedia() con URL: $proxyUrl');
     try {
       if (isDlna && _dlnaControlUrl != null) {
-        _log('  DLNA Senior: Usando carga manual con DIDL-Lite...');
+        _log('  DLNA Senior: Usando carga manual con DIDL-Lite para habilitar controles...');
         final success = await _loadMediaDlnaSenior(
           url: proxyUrl,
           title: title,
           mediaType: dc.CastMediaType.mp4,
           imageUrl: imageUrl,
-          duration: duration,
+          duration: effectiveDuration,
         );
         if (success) {
-          _log('  \u2705 Carga manual DLNA completada');
-          await play();
+          _log('  ✅ Carga manual DLNA completada');
+          
+          // Esperar a que la TV procese la URI antes de mandar Play
+          await Future.delayed(const Duration(milliseconds: 1500));
+          
+          try {
+            await play();
+          } catch (e) {
+            if (e.toString().contains('701')) {
+              _log('  ⚠️ TV devolvió 701 en Play, probablemente ya está iniciando...');
+            } else {
+              rethrow;
+            }
+          }
+          
           notifyListeners();
           return;
         }
       }
       
       await _session!.loadMedia(media);
-      _log('  \u2705 loadMedia completado (Est\u00e1ndar)');
+      _log('  ✅ loadMedia local completado');
     } catch (e, stack) {
-      _logErr('  loadMedia fall\u00f3: $e');
-      _logErr('  Stack: $stack');
-      rethrow;
+      _logErr('  loadMedia fallback falló: $e (posiblemente la TV ya tiene la URI cargada)');
+      // No relanzamos: si la TV ya recibió la URI via SOAP directo, está reproduciendo.
     }
     _log('══════════════════════════════════════');
     notifyListeners();
@@ -478,20 +583,92 @@ class CastService extends ChangeNotifier {
       final response = await http.get(Uri.parse(location)).timeout(const Duration(seconds: 5));
       if (response.statusCode == 200) {
         final body = response.body;
-        // Búsqueda simple por RegEx para evitar dependencias pesadas de XML
+        
+        // Intento 1: parsear directamente el XML recibido
         final avMatch = RegExp(r'<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>.*?<controlURL>(.*?)</controlURL>', dotAll: true).firstMatch(body);
         final renderMatch = RegExp(r'<serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>.*?<controlURL>(.*?)</controlURL>', dotAll: true).firstMatch(body);
         
         if (avMatch != null) {
-          String url = avMatch.group(1)!;
+          String url = avMatch.group(1)!.trim();
           _dlnaControlUrl = _buildAbsoluteUrl(location, url);
-          _log('  AVTransport Control URL: $_dlnaControlUrl');
+          _log('  ✅ AVTransport Control URL: $_dlnaControlUrl');
         }
         if (renderMatch != null) {
-          String url = renderMatch.group(1)!;
+          String url = renderMatch.group(1)!.trim();
           _dlnaRenderingControlUrl = _buildAbsoluteUrl(location, url);
-          _log('  RenderingControl URL: $_dlnaRenderingControlUrl');
+          _log('  ✅ RenderingControl URL: $_dlnaRenderingControlUrl');
         }
+        
+        // Intento 2: buscar URLs de descripción anidadas y seguirlas
+        if (_dlnaControlUrl == null) {
+          _log('  AVTransport no encontrado directamente. Buscando sub-servicios...');
+          _log('  XML (primeros 800 chars): ${body.substring(0, body.length.clamp(0, 800))}');
+          
+          // Buscar <descURL>, <presentationURL>, o rutas conocidas de Samsung
+          final descMatches = RegExp(r'<(?:descURL|SCPDURL|presentationURL|url)>(.*?)</(?:descURL|SCPDURL|presentationURL|url)>', caseSensitive: false).allMatches(body);
+          
+          for (final match in descMatches) {
+            final subPath = match.group(1)?.trim() ?? '';
+            if (subPath.isEmpty) continue;
+            final subUrl = _buildAbsoluteUrl(location, subPath);
+            if (subUrl == location) continue;
+            
+            try {
+              _log('  Siguiendo sub-URL: $subUrl');
+              final subResponse = await http.get(Uri.parse(subUrl)).timeout(const Duration(seconds: 3));
+              if (subResponse.statusCode == 200) {
+                final subBody = subResponse.body;
+                final subAv = RegExp(r'<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>.*?<controlURL>(.*?)</controlURL>', dotAll: true).firstMatch(subBody);
+                if (subAv != null) {
+                  _dlnaControlUrl = _buildAbsoluteUrl(subUrl, subAv.group(1)!.trim());
+                  _log('  ✅ AVTransport encontrado en sub-URL: $_dlnaControlUrl');
+                  break;
+                }
+              }
+            } catch (_) {}
+          }
+          
+          // Intento 3: probar rutas conocidas de Samsung TV directamente
+          if (_dlnaControlUrl == null) {
+            final uri = Uri.parse(location);
+            final base = '${uri.scheme}://${uri.host}:${uri.port}';
+            final knownPaths = [
+              '/upnp/control/AVTransport1',
+              '/upnp/control/AVTransport',
+              '/AVTransport/control',
+              '/MediaRenderer/AVTransport/control',
+              '/upnp/control/renderer/AVTransport',
+            ];
+            for (final path in knownPaths) {
+              try {
+                final testUrl = '$base$path';
+                final testBody = '''<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body><u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>0</InstanceID></u:GetTransportInfo></s:Body>
+</s:Envelope>''';
+                final testResp = await http.post(
+                  Uri.parse(testUrl),
+                  headers: {
+                    'Content-Type': 'text/xml; charset="utf-8"',
+                    'SOAPAction': '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"',
+                  },
+                  body: testBody,
+                ).timeout(const Duration(seconds: 2));
+                if (testResp.statusCode == 200) {
+                  _dlnaControlUrl = testUrl;
+                  _log('  ✅ AVTransport encontrado en ruta conocida: $_dlnaControlUrl');
+                  break;
+                }
+              } catch (_) {}
+            }
+          }
+        }
+        
+        if (_dlnaControlUrl == null) {
+          _logErr('  ❌ No se pudo obtener AVTransport Control URL de: $location');
+        }
+      } else {
+        _logErr('  Error HTTP ${response.statusCode} al acceder a: $location');
       }
     } catch (e) {
       _logErr('Error extrayendo URLs DLNA: $e');
@@ -590,14 +767,19 @@ class CastService extends ChangeNotifier {
       final response = await http.post(
         Uri.parse(controlUrl),
         headers: {
-          'Content-Type': 'text/xml; charset="utf-8"',
+          'Content-Type': 'text/xml; charset=utf-8',
           'SOAPAction': '"$serviceType#$action"',
+          'User-Agent': 'DLNADOC/1.50',
+          'Connection': 'close',
         },
         body: envelope,
-      ).timeout(const Duration(seconds: 3));
+      ).timeout(const Duration(seconds: 10)); // Samsung TV puede tardar >3s en procesar SetAVTransportURI
       
       if (response.statusCode == 200) return response.body;
-    } catch (_) {}
+      _logErr('⚠️ SOAP [$action] → HTTP ${response.statusCode}: ${response.body.substring(0, response.body.length.clamp(0, 300))}');
+    } catch (e) {
+      _logErr('⚠️ SOAP [$action] → Exception: $e');
+    }
     return null;
   }
 
@@ -669,23 +851,31 @@ class CastService extends ChangeNotifier {
       mimeType = 'video/mp2t';
     }
 
-    // DIDL-Lite Metadata (Clave para Samsung/LG/Sony)
-    // DLNA.ORG_OP=01 -> Habilita SEEK (Adelantar/Atrasar)
-    // DLNA.ORG_CI=0  -> No es transcodificado
-    // DLNA.ORG_FLAGS -> 01700000... indica soporte de streaming y pausa/seek
-    final String protocolInfo = 'http-get:*:$mimeType:*';
+    // DIDL-Lite: formato estándar compatible con Samsung/LG/Sony
+    // DLNA.ORG_OP=01 → Habilita seek por byte-range (adelantar/atrasar)
+    // DLNA.ORG_FLAGS → Bits de capacidades: Streaming + Time-based seek
+    // DLNA.ORG_PN → Profile Name (Samsung lo requiere para reconocer el codec)
+    String dlnaProfile = 'AVC_MP4_HP_HD_AAC';
+    if (mimeType.contains('mp2t')) dlnaProfile = 'MPEG_TS_HD_NA_ISO';
     
-    final metadata = '''
-<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">
-  <item id="0" parentID="-1" restricted="1">
-    <dc:title>${_escapeXml(sanitizedTitle)}</dc:title>
-    <upnp:class>object.item.videoItem.movie</upnp:class>
-    <res protocolInfo="$protocolInfo">$finalUrl</res>
-  </item>
-</DIDL-Lite>
-'''.trim();
+    final String dlnaFlags = 'DLNA.ORG_PN=$dlnaProfile;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000';
+    final String protocolInfo = 'http-get:*:$mimeType:$dlnaFlags';
+    
+    // El metadata DIDL-Lite DEBE estar escapado dentro del SOAP CurrentURIMetaData.
+    // Samsung requiere xmlns:sec y suele fallar si falta o si hay namespaces extraños como dlna:.
+    // Incluimos pv (PacketVideo) que es un estándar común en DLNA.
+    final metadata = '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" '
+        'xmlns:sec="http://www.sec.co.kr/" '
+        'xmlns:pv="http://www.pv.com/pvns/">'
+        '<item id="0" parentID="0" restricted="0">'
+        '<dc:title>${_escapeXml(sanitizedTitle)}</dc:title>'
+        '<upnp:class>object.item.videoItem</upnp:class>'
+        '<res protocolInfo="$protocolInfo" duration="$durationStr">${_escapeXml(finalUrl)}</res>'
+        '</item></DIDL-Lite>';
 
-    _log('📜 [DLNA_METADATA] Title: $sanitizedTitle | Mime: $mimeType');
+    _log('📜 [DLNA_METADATA] Title: $sanitizedTitle | Mime: $mimeType | Duration: $durationStr');
 
     final success = await _sendDlnaSoapAction(
       controlUrl: _dlnaControlUrl!,
@@ -693,8 +883,8 @@ class CastService extends ChangeNotifier {
       action: 'SetAVTransportURI',
       args: {
         'InstanceID': '0',
-        'CurrentURI': finalUrl,
-        'CurrentURIMetaData': metadata,
+        'CurrentURI': _escapeXml(finalUrl),
+        'CurrentURIMetaData': _escapeXml(metadata),
       },
     );
 
@@ -750,28 +940,46 @@ class CastService extends ChangeNotifier {
     if (_session == null) return;
     _log('play()');
     if (_connectedDevice?.protocol == dc.CastProtocol.dlna && _dlnaControlUrl != null) {
-      await _sendDlnaSoapAction(
-        controlUrl: _dlnaControlUrl!,
-        serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
-        action: 'Play',
-        args: {'InstanceID': '0', 'Speed': '1'},
-      );
+      try {
+        await _sendDlnaSoapAction(
+          controlUrl: _dlnaControlUrl!,
+          serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+          action: 'Play',
+          args: {'InstanceID': '0', 'Speed': '1'},
+        );
+      } catch (e) {
+        if (e.toString().contains('701')) {
+          _log('  ⚠️ TV ocupada (701). Reintentando Play en 1s...');
+          await Future.delayed(const Duration(seconds: 1));
+          return play();
+        }
+        rethrow;
+      }
     }
-    await _session!.play();
+    try { await _session!.play(); } catch(_) {}
   }
 
   Future<void> pause() async {
     if (_session == null) return;
     _log('pause()');
     if (_connectedDevice?.protocol == dc.CastProtocol.dlna && _dlnaControlUrl != null) {
-      await _sendDlnaSoapAction(
-        controlUrl: _dlnaControlUrl!,
-        serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
-        action: 'Pause',
-        args: {'InstanceID': '0'},
-      );
+      try {
+        await _sendDlnaSoapAction(
+          controlUrl: _dlnaControlUrl!,
+          serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+          action: 'Pause',
+          args: {'InstanceID': '0'},
+        );
+      } catch (e) {
+        if (e.toString().contains('701')) {
+          _log('  ⚠️ TV ocupada (701). Reintentando Pause en 1s...');
+          await Future.delayed(const Duration(seconds: 1));
+          return pause();
+        }
+        rethrow;
+      }
     }
-    await _session!.pause();
+    try { await _session!.pause(); } catch(_) {}
   }
 
   Future<void> stop() async {
@@ -785,7 +993,7 @@ class CastService extends ChangeNotifier {
         args: {'InstanceID': '0'},
       );
     }
-    await _session!.stop();
+      try { await _session!.stop(); } catch(_) {}
   }
 
   Future<void> seekTo(Duration position) async {
@@ -793,20 +1001,29 @@ class CastService extends ChangeNotifier {
     _log('seekTo(${position.inSeconds}s)');
     
     if (_connectedDevice?.protocol == dc.CastProtocol.dlna && _dlnaControlUrl != null) {
-      final target = _formatDurationForDlna(position);
-      await _sendDlnaSoapAction(
-        controlUrl: _dlnaControlUrl!,
-        serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
-        action: 'Seek',
-        args: {
-          'InstanceID': '0',
-          'Unit': 'REL_TIME',
-          'Target': target,
-        },
-      );
+      try {
+        final target = _formatDurationForDlna(position);
+        await _sendDlnaSoapAction(
+          controlUrl: _dlnaControlUrl!,
+          serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+          action: 'Seek',
+          args: {
+            'InstanceID': '0',
+            'Unit': 'REL_TIME',
+            'Target': target,
+          },
+        );
+      } catch (e) {
+        if (e.toString().contains('701')) {
+          _log('  ⚠️ TV ocupada (701). Reintentando Seek en 1s...');
+          await Future.delayed(const Duration(seconds: 1));
+          return seekTo(position);
+        }
+        rethrow;
+      }
     }
     
-    await _session!.seek(position);
+    try { await _session!.seek(position); } catch(_) {}
   }
 
   Future<void> setVolume(double volume) => _session?.setVolume(volume) ?? Future.value();

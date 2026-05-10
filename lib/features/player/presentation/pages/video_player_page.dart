@@ -754,7 +754,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
         }
 
        // 1. REFINAMIENTO DE SCRAPER VIDEASY: NAVEGACION HUMANA EMULADA
-       _webViewController?.evaluateJavascript(source: """
+       if (!mounted || _webViewController == null) return;
+       try {
+         await _webViewController?.evaluateJavascript(source: """
           (function() {
             var loc = window.location.href;
             console.log('🕵️ Scraper Videasy v7 en: ' + loc);
@@ -884,8 +886,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
             }
           })();
        """);
+     } catch (e) {
+       print("⚠️ Scraper JS Error: $e");
+     }
 
-       // 2. Sniffer Video Directo
+     // 2. Sniffer Video Directo
        _webViewController?.evaluateJavascript(source: "(function(){ var v=document.querySelector('video'); return (v && v.src) ? v.src : null; })();").then((v) {
          final threshold = (_effectiveAlgorithm == 3) ? 15 : 25;
          // Fallback si: 1. No hay URL inicial, 2. Hay error, o 3. Estamos cargando por demasiado tiempo
@@ -902,7 +907,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
         }
         _autoClickCount++;
        });
-    });
 
 
      // --- ALGORITMO 2 y 3: EXTRACCIÓN CON CLICKS NATIVOS ---
@@ -1294,7 +1298,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
       }
     } catch (e) {
       if (mounted) setState(() => _isSwitchingStream = false);
-    }
+       }
+    });
   }
 
   /// Maneja URLs de video detectadas por el monitor de red (Algoritmo 2 y 3)
@@ -1445,11 +1450,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
       await MediaProxyService().start();
       final headers = _getHeadersForCast();
       
-      // La URL para el reproductor INTERNO usa localhost (127.0.0.1)
-      effectiveUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: true, algorithm: _effectiveAlgorithm);
+      // La URL para el reproductor INTERNO usa localhost (127.0.0.1) y NO remuxa por defecto
+      effectiveUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: true, algorithm: _effectiveAlgorithm, remux: false);
       
-      // La URL para CAST/VLC usa la IP de la red (172.16.x.x)
-      _extractedVideoUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: false, algorithm: _effectiveAlgorithm);
+      // La URL para CAST/VLC usa la IP de la red (172.16.x.x) y SÍ remuxa a MP4 para compatibilidad
+      _extractedVideoUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: false, algorithm: _effectiveAlgorithm, remux: true);
       
       print("🛡️ [PROXY_MODE] Player URL (Local): $effectiveUrl");
       print("🛡️ [PROXY_MODE] Cast URL (Network): $_extractedVideoUrl");
@@ -1481,13 +1486,17 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
       if (widget.isLocal) {
         _controller = VideoPlayerController.file(File(videoUrl));
       } else {
-        // Intercept 4meplayer (.txt but it is HLS) and Videasy (.js/.txt masking)
-        final bool isHls = videoUrl.contains('cf-master') || 
-                           videoUrl.contains('.m3u8') || 
-                           videoUrl.contains('.js') || 
-                           videoUrl.contains('.txt') || 
-                           videoUrl.contains('/stream/') ||
-                           videoUrl.contains('playlist');
+        bool isHls = videoUrl.contains('cf-master') || 
+                     videoUrl.contains('.m3u8') || 
+                     videoUrl.contains('.m3u') ||
+                     videoUrl.contains('.js') || 
+                     videoUrl.contains('.txt') || 
+                     videoUrl.contains('/stream/') ||
+                     videoUrl.contains('playlist') ||
+                     videoUrl.contains('master');
+        
+        // El modo Bridge ha sido desactivado en favor del modo dinámico (HLS reescrito)
+        // para asegurar que la duración se detecte correctamente tanto localmente como en Cast.
         
         // --- NUEVA LÓGICA DE HEADERS DINÁMICOS ---
         final initialHost = Uri.tryParse(_currentOption.videoUrl)?.host ?? 'vidsrc.to';
