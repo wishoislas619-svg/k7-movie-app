@@ -48,6 +48,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   static const _webviewTouchChannel = MethodChannel('com.luis.movieapp/webview_touch');
   final GlobalKey _webViewKey = GlobalKey();
   Map<String, String>? _lastCapturedHeaders;
+  final List<String> _blacklistedExtractServers = [];
+  String? _currentAttemptedServer;
+  int _currentServerAttempts = 0;
 
   final List<ContentBlocker> _contentBlockers = [
     ContentBlocker(
@@ -336,6 +339,24 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                               callback: (args) {
                                 if (mounted) {
                                   final serverName = args.isNotEmpty ? args.first.toString() : 'desconocido';
+                                  
+                                  if (_currentAttemptedServer != serverName) {
+                                    _currentAttemptedServer = serverName;
+                                    _currentServerAttempts = 1;
+                                  } else {
+                                    _currentServerAttempts++;
+                                    if (_currentServerAttempts > 2) {
+                                      print('[SNIFFER] ❌ Servidor "$serverName" no respondió después de 2 intentos. Añadiendo a lista negra para avanzar.');
+                                      setState(() {
+                                        _blacklistedExtractServers.add(serverName.toLowerCase());
+                                        _currentAttemptedServer = null;
+                                        _currentServerAttempts = 0;
+                                        _statusText = "Buscando servidor alternativo...";
+                                      });
+                                      return; 
+                                    }
+                                  }
+
                                   print('[SNIFFER] ✅ Servidor seleccionado: $serverName — limpiando streams del servidor anterior...');
                                   setState(() {
                                     _isSpanishSelected = true;
@@ -828,7 +849,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
         
         print('[SNIFFER] Calidades encontradas: ${explodedQualities.length}');
         for (var q in explodedQualities) {
-           print('[SNIFFER] Calidad -> res:${q.resolution} url:${q.url}');
+           print('[SNIFFER] Calidad -> res:${q.resolution} url:${q.url} audio:${q.audioUrl}');
            // Manifest sub-tracks (.txt/.m3u8) don't need size probing — add immediately
            _addFoundMedia(
              url: q.url,
@@ -836,6 +857,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
              size: "Streaming (HLS)",
              headers: headersForProbe,
              cookies: cookieString,
+             audioUrl: q.audioUrl, // <--- PASAR AUDIO AQUÍ
            );
            print('[SNIFFER] Calidad agregada: ${q.url.split('/').last}');
         }
@@ -920,6 +942,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
     String? size,
     required Map<String, String> headers,
     String? cookies,
+    String? audioUrl, // <--- NUEVO PARÁMETRO
   }) {
     if (_isDisposed || !mounted) return;
     
@@ -934,7 +957,11 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
       if (_foundMedia.any((m) => m.videoUrl == url)) return;
       _foundMedia.add(VideoExtractionData(
         videoUrl: url,
-        qualities: [VideoQuality(resolution: size != null ? "$resolution ($size)" : resolution, url: url)],
+        qualities: [VideoQuality(
+          resolution: size != null ? "$resolution ($size)" : resolution, 
+          url: url,
+          audioUrl: audioUrl, // <--- GUARDAR EN LA CALIDAD
+        )],
         cookies: cookies,
         userAgent: headers['user-agent'] ?? headers['User-Agent'],
         headers: headers,
@@ -1202,8 +1229,16 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
       final box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
       
       // 1. Clics JS (Copiados del reproductor para asegurar activación de Videasy)
-      _webViewController?.evaluateJavascript(source: r"""
+      final blacklistJsArray = "['" + _blacklistedExtractServers.join("','") + "']";
+
+      // 1. Clics JS (Copiados del reproductor para asegurar activación de Videasy)
+      _webViewController?.evaluateJavascript(source: """
           (function() {
+            var blacklist = $blacklistJsArray;
+            function isBlacklisted(btn) {
+               var text = btn.textContent.toLowerCase().replace(/\s+/g, '');
+               return blacklist.some(b => text.includes(b.replace(/\s+/g, '')));
+            }
             function isVisible(el) {
                if (!el) return false;
                var r = el.getBoundingClientRect();
@@ -1256,12 +1291,12 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                      var panel = document.querySelector('[role="tabpanel"][data-state="active"]') || serversTab.parentElement.parentElement;
                      var serverBtns = Array.from(panel.querySelectorAll('button, [role="radio"], [role="menuitem"]'));
                      
-                     var target = serverBtns.find(b => b.textContent.toLowerCase().includes('gekko'));
+                     var target = serverBtns.find(b => b.textContent.toLowerCase().includes('omen') && !isBlacklisted(b));
                      if (!target) {
-                        target = serverBtns.find(b => {
-                           var t = b.textContent.toLowerCase();
-                           return t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano');
-                        });
+                        target = serverBtns.find(b => b.textContent.toLowerCase().includes('yoru') && !isBlacklisted(b));
+                     }
+                     if (!target) {
+                        target = serverBtns.find(b => !isBlacklisted(b));
                      }
                      if (target) {
                         console.log('🎯 [AUTO-SELECT] Seleccionando servidor prioritario: ' + target.textContent);
@@ -1291,14 +1326,20 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                   var allButtons = document.querySelectorAll('button, [role="radio"], [role="menuitem"]');
                   var fallbackTarget = null;
                   for (var b of allButtons) {
-                     if (b.textContent.toLowerCase().includes('gekko') && isVisible(b)) {
+                     if (b.textContent.toLowerCase().includes('omen') && isVisible(b) && !isBlacklisted(b)) {
                         fallbackTarget = b; break;
                      }
                   }
                   if (!fallbackTarget) {
                      for (var b of allButtons) {
-                        var t = b.textContent.toLowerCase();
-                        if ((t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano')) && isVisible(b)) {
+                        if (b.textContent.toLowerCase().includes('yoru') && isVisible(b) && !isBlacklisted(b)) {
+                           fallbackTarget = b; break;
+                        }
+                     }
+                  }
+                  if (!fallbackTarget) {
+                     for (var b of allButtons) {
+                        if (isVisible(b) && !isBlacklisted(b)) {
                            fallbackTarget = b; break;
                         }
                      }

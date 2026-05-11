@@ -165,6 +165,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
   static const _pipControlChannel = MethodChannel('com.luis.movieapp/pip_control');
 
   bool _isSwitchingStream = false;
+  String? _lastDetectedVideoUrl;
   bool _isScrapingSubtitles = false;
   final ValueNotifier<bool> _isFetchingSubtitlesNotifier = ValueNotifier<bool>(false);
   final ValueNotifier<List<String>> _extractedSubtitlesNotifier = ValueNotifier<List<String>>([]);
@@ -747,8 +748,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
     _autoClickCount = 0;
     _scraperTimer?.cancel();
     _scraperTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
-        final bool shouldKeepRunning = _isWebViewExtracting || _isSwitchingStream || _effectiveAlgorithm == 3;
-        if (!mounted || !shouldKeepRunning) {
+        final bool isWebViewAlive = _useWebViewPlayer || _isWebViewExtracting || _isScrapingSubtitles || _isSwitchingStream || _effectiveAlgorithm == 3;
+        if (!mounted || !isWebViewAlive) {
           timer.cancel();
           return;
         }
@@ -847,10 +848,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
                               // Modo Manual: Solo intentamos el servidor elegido por el usuario
                               target = results.find(s => s.label.toLowerCase() === window._manualServerLabel.toLowerCase());
                            } else if (!window._isManualMode) {
-                              // Modo Automático: Priorizamos Gekko -> Latino/Castellano
-                              target = results.find(s => s.label.toLowerCase().includes('gekko'));
+                              // Modo Automático: Priorizamos Omen -> Yoru -> Latino/Castellano
+                              target = results.find(s => s.label.toLowerCase().includes('omen'));
+                              if (!target) target = results.find(s => s.label.toLowerCase().includes('yoru'));
                               if (!target) {
-                                 target = results.find(s => s.language === 'Latino' || s.language === 'Castellano');
+                                 target = results.find(s => s.language === 'Latino' || s.language === 'Castellano' || s.label.toLowerCase().includes('spanish audio') || s.label.toLowerCase().includes('spanish') || s.label.toLowerCase().includes('español'));
                               }
                            }
                            
@@ -891,7 +893,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
      }
 
      // 2. Sniffer Video Directo
+     try {
        _webViewController?.evaluateJavascript(source: "(function(){ var v=document.querySelector('video'); return (v && v.src) ? v.src : null; })();").then((v) {
+         if (!mounted) return;
+         if (v != null && v is String && v.isNotEmpty && v.startsWith('http')) {
+           _handleDetectedVideoUrl(v);
+         }
          final threshold = (_effectiveAlgorithm == 3) ? 15 : 25;
          // Fallback si: 1. No hay URL inicial, 2. Hay error, o 3. Estamos cargando por demasiado tiempo
          final bool isStuck = !_hasInitialUrl || _errorMessage != null || (_isLoading && _autoClickCount > threshold + 5);
@@ -906,7 +913,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
           _autoClickCount = 0;
         }
         _autoClickCount++;
+       }).catchError((e) {
+         // Silently ignore MissingPluginException since it happens when the widget is disposed
        });
+     } catch (e) {
+       // Silently ignore
+     }
 
 
      // --- ALGORITMO 2 y 3: EXTRACCIÓN CON CLICKS NATIVOS ---
@@ -1304,14 +1316,18 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
 
   /// Maneja URLs de video detectadas por el monitor de red (Algoritmo 2 y 3)
   Future<void> _handleDetectedVideoUrl(String url) async {
-    if (!mounted || _hasInitialUrl) return;
+    if (!mounted) return;
+    if (_hasInitialUrl && !_isSwitchingStream) return;
     
     // Filtros de analíticas y basura
     final lcUrl = url.toLowerCase();
     if (lcUrl.contains('analytics') || lcUrl.contains('doubleclick') || lcUrl.contains('ads')) return;
 
+    if (_hasInitialUrl && _isSwitchingStream && _lastDetectedVideoUrl == url) return;
+
     print("🎯 [NET_MONITOR] URL detectada: $url");
     _hasInitialUrl = true; 
+    _lastDetectedVideoUrl = url;
     setState(() { 
       _isInitialLoading = false; 
       _isWebViewExtracting = false; 
@@ -1445,19 +1461,63 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
   Future<void> _initializeVideoPlayer(String videoUrl) async {
     String effectiveUrl = videoUrl;
     
+    // 🧹 LIMPIAR ESTADO PREVIO
+    setState(() {
+      _internalQualities = [];
+      _currentQuality = null;
+    });
+
+
+    // 🕵️ AUTO-DETECCIÓN DE CALIDADES Y AUDIO PARA CAST
+    if (videoUrl.contains('.m3u8') && _internalQualities.isEmpty) {
+       try {
+         print("🕵️ [HLS_SCAN] Detectado HLS en init, analizando manifest para buscar audio...");
+         final headers = _getHeadersForCast(targetUrl: videoUrl);
+         final q = await VideoService.getHlsQualities(videoUrl, headers: headers);
+         if (q.isNotEmpty) {
+           setState(() {
+             _internalQualities = q;
+             _currentQuality = q.first;
+           });
+           print("🕵️ [HLS_SCAN] Se encontraron ${q.length} calidades. Audio detectado: ${q.first.audioUrl != null}");
+         }
+       } catch (e) {
+         print("⚠️ [HLS_SCAN] Error analizando calidades: $e");
+       }
+    }
+
     // Si el modo proxy está activo, envolvemos la URL en nuestro proxy local
     if (_useProxy && !videoUrl.startsWith('http://127.0.0.1') && !videoUrl.startsWith('http://localhost')) {
-      await MediaProxyService().start();
-      final headers = _getHeadersForCast();
+      final headersMap = _getHeadersForCast(targetUrl: videoUrl);
       
-      // La URL para el reproductor INTERNO usa localhost (127.0.0.1) y NO remuxa por defecto
-      effectiveUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: true, algorithm: _effectiveAlgorithm, remux: false);
+      // 🕵️ EXTRAER AUDIO EXPLÍCITO (Estrategia Algoritmo 2)
+      String? explicitAudioUrl;
+      for (var q in _internalQualities) {
+        if (q.audioUrl != null) {
+          explicitAudioUrl = q.audioUrl;
+          break;
+        }
+      }
+
+      // 🕵️ CRÍTICO: Disparar Pre-Resolución de audio de inmediato
+      print("🕵️ [CAST_PREP] Solicitando pre-resolución al Proxy para: $videoUrl");
+      MediaProxyService().preResolve(videoUrl, headersMap, explicitAudioUrl: explicitAudioUrl);
+
+      // La URL para el reproductor INTERNO
+      effectiveUrl = MediaProxyService().getProxiedUrl(videoUrl, headersMap, useLocalhost: true, algorithm: _effectiveAlgorithm, remux: false);
       
-      // La URL para CAST/VLC usa la IP de la red (172.16.x.x) y SÍ remuxa a MP4 para compatibilidad
-      _extractedVideoUrl = MediaProxyService().getProxiedUrl(videoUrl, headers, useLocalhost: false, algorithm: _effectiveAlgorithm, remux: true);
+      // La URL para CAST con Bridge y Audio Explícito
+      _extractedVideoUrl = MediaProxyService().getProxiedUrl(
+        videoUrl, 
+        headersMap, 
+        useLocalhost: false, 
+        algorithm: _effectiveAlgorithm, 
+        useBridge: true,
+        explicitAudioUrl: explicitAudioUrl
+      );
       
       print("🛡️ [PROXY_MODE] Player URL (Local): $effectiveUrl");
-      print("🛡️ [PROXY_MODE] Cast URL (Network): $_extractedVideoUrl");
+      print("🛡️ [PROXY_MODE] Cast URL (Bridge): $_extractedVideoUrl");
     } else {
       _extractedVideoUrl = effectiveUrl;
     }
@@ -1890,6 +1950,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
     _hideTimer?.cancel();
     _labelHideTimer?.cancel();
     _pipHideTimer?.cancel();
+    _scraperTimer?.cancel();
+    _videasyTimeoutTimer?.cancel();
+    _skipFadeTimer?.cancel();
     _controller?.removeListener(_onVideoTick);
     if (!_switchingToFloatingMode) {
       _controller?.dispose();
@@ -2352,7 +2415,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
                ),
 
             // Extractor Interactivo para Depuración (Visible en la capa más externa)
-            if (!_useWebViewPlayer && (_isWebViewExtracting || _isScrapingSubtitles))
+            if (!_useWebViewPlayer && (_isWebViewExtracting || _isScrapingSubtitles || _effectiveAlgorithm == 3))
                Positioned(
                  top: 40, 
                  left: 20,
@@ -2439,16 +2502,21 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
                                     final availableServers = newServers.where((s) => !_failedVideasyServers.contains(s.id)).toList();
                                     
                                     if (availableServers.isNotEmpty) {
-                                      // 1. Intentar Gekko primero
+                                      // 1. Intentar Omen primero
                                       try {
-                                        target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
+                                        target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('omen'));
                                       } catch (_) {
-                                        // 2. Intentar Omen segundo
+                                        // 2. Intentar Yoru segundo
                                         try {
-                                          target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('omen'));
+                                          target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('yoru'));
                                         } catch (_) {
-                                          // 3. Si no hay nada especial, el primero disponible
-                                          target = availableServers.first;
+                                          // 3. Intentar audio en español
+                                          try {
+                                            target = availableServers.firstWhere((s) => s.label.toLowerCase().contains('spanish') || s.label.toLowerCase().contains('latino') || s.label.toLowerCase().contains('castellano'));
+                                          } catch (_) {
+                                            // 4. Si no hay nada especial, el primero disponible
+                                            target = availableServers.first;
+                                          }
                                         }
                                       }
 
@@ -3512,9 +3580,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
       _currentVideasyServer = server;
       _hasAutoSelectedServer = true;
       
-      // Si el servidor seleccionado tiene "gekko" o algo en español, marcamos como Premium encontrado
+      // Si el servidor seleccionado tiene "omen", "yoru", o algo en español, marcamos como Premium encontrado
       final sLow = server.label.toLowerCase();
-      if (sLow.contains('gekko') || sLow.contains('spanish') || sLow.contains('latino') || sLow.contains('español') || sLow.contains('castellano')) {
+      if (sLow.contains('omen') || sLow.contains('yoru') || sLow.contains('spanish') || sLow.contains('latino') || sLow.contains('español') || sLow.contains('castellano')) {
         _hasFoundPremiumServer = true;
       }
       
@@ -3591,17 +3659,21 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
     final available = _videasyServers.where((s) => !_failedVideasyServers.contains(s.id)).toList();
     
     if (available.isNotEmpty) {
-      // Intentar mantener preferencia Gekko/Spanish si el anterior falló
+      // Intentar mantener preferencia Omen/Yoru/Spanish si el anterior falló
       try {
-        target = available.firstWhere((s) => s.label.toLowerCase().contains('gekko'));
+        target = available.firstWhere((s) => s.label.toLowerCase().contains('omen'));
       } catch (_) {
-        final spanish = available.where((s) => 
-          s.label.toLowerCase().contains('spanish') || 
-          s.label.toLowerCase().contains('latino') ||
-          s.label.toLowerCase().contains('español') ||
-          s.label.toLowerCase().contains('castellano')
-        ).toList();
-        target = spanish.isNotEmpty ? spanish.last : available.first;
+        try {
+          target = available.firstWhere((s) => s.label.toLowerCase().contains('yoru'));
+        } catch (_) {
+          final spanish = available.where((s) => 
+            s.label.toLowerCase().contains('spanish') || 
+            s.label.toLowerCase().contains('latino') ||
+            s.label.toLowerCase().contains('español') ||
+            s.label.toLowerCase().contains('castellano')
+          ).toList();
+          target = spanish.isNotEmpty ? spanish.last : available.first;
+        }
       }
       
       if (target != null) {
@@ -4105,7 +4177,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
     );
   }
 
-  Map<String, String> _getHeadersForCast() {
+  Map<String, String> _getHeadersForCast({String? targetUrl}) {
     final Map<String, String> h = {};
     
     // Si el widget original traía headers, los respetamos
@@ -4113,7 +4185,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
       h.addAll(widget.headers!);
     }
 
-    final currentUrl = _extractedVideoUrl ?? _currentOption.videoUrl;
+    final currentUrl = targetUrl ?? _extractedVideoUrl ?? _currentOption.videoUrl;
     
     // Cálculo de Origin base para Algoritmo 2 u otros
     final initialHost = Uri.tryParse(_currentOption.videoUrl)?.host ?? 'vidsrc.to';
@@ -4122,11 +4194,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage> with WidgetsB
         : 'https://$initialHost';
 
     // Lógica específica para Algoritmo 3 (Embed.su / Videasy)
-    if (_effectiveAlgorithm == 3 || currentUrl.contains('videasy') || currentUrl.contains('embed.su') || currentUrl.contains('vidplus') || currentUrl.contains('workers.dev')) {
+    if (_effectiveAlgorithm == 3 || currentUrl.contains('videasy') || currentUrl.contains('embed.su') || currentUrl.contains('vidplus') || currentUrl.contains('workers.dev') || currentUrl.contains('speedsterwave') || currentUrl.contains('vimeos') || currentUrl.contains('midwesteagle')) {
       // Identidad Android para evitar bloqueos
       h['User-Agent'] = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
       
-      if (currentUrl.contains('videasy') || currentUrl.contains('vidplus') || currentUrl.contains('workers.dev')) {
+      if (currentUrl.contains('videasy') || currentUrl.contains('vidplus') || currentUrl.contains('workers.dev') || currentUrl.contains('speedsterwave') || currentUrl.contains('vimeos') || currentUrl.contains('midwesteagle')) {
         h['Referer'] = 'https://player.videasy.net/';
         h['Origin'] = 'https://player.videasy.net';
       } else {

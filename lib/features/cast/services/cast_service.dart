@@ -295,18 +295,17 @@ class CastService extends ChangeNotifier {
     // Usamos una variable mutable para poder cambiar el tipo si usamos el Puente
     dc.CastMediaType mediaType = _detectMediaType(effectiveUrl);
 
-    // --- LÓGICA DE PUENTE HLS-A-MP4 (SOLO PARA ALGORITMO 3 EN CAST) ---
-    // El Algoritmo 3 sigue usando el bridge por su complejidad de interceptación.
-    // El Algoritmo 2 ahora usa el modo dinámico (como el 1) para igualar su formato compatible con Samsung.
-    if (algorithm == 3 && (mediaType == dc.CastMediaType.hls || effectiveUrl.contains('.m3u8') || effectiveUrl.contains('master') || effectiveUrl.contains('playlist'))) {
-      _log('🚀 CAST: Activando PUENTE HLS-a-MP4 (Modo Bridge) para Algoritmo 3');
+    // --- LÓGICA DE PUENTE HLS (ALGORITMO 2 Y 3 EN CAST) ---
+    // El Algoritmo 2 y 3 ahora usan el bridge para máxima compatibilidad con Smart TVs.
+    if ((algorithm == 2 || algorithm == 3) && (mediaType == dc.CastMediaType.hls || effectiveUrl.contains('.m3u8') || effectiveUrl.contains('master') || effectiveUrl.contains('playlist'))) {
+      _log('🚀 CAST: Activando PUENTE HLS (Modo Bridge) para Algoritmo $algorithm');
       await MediaProxyService().start();
       
-      mediaType = dc.CastMediaType.mp4; 
+      mediaType = dc.CastMediaType.mp4; // Engañamos a la TV para que crea que es un archivo único
       finalUrl = MediaProxyService().getProxiedUrl(effectiveUrl, combinedHeaders, useLocalhost: false, algorithm: algorithm, useBridge: true);
       
       if (duration == null || duration == Duration.zero) {
-        _log('⏱️ CAST: Calculando duración del puente (Alg 3) para habilitar SEEK...');
+        _log('⏱️ CAST: Calculando duración del puente (Alg $algorithm) para habilitar SEEK...');
         final double dSeconds = await MediaProxyService().getHlsDuration(effectiveUrl, headers: combinedHeaders);
         if (dSeconds > 0) {
           duration = Duration(milliseconds: (dSeconds * 1000).toInt());
@@ -314,9 +313,9 @@ class CastService extends ChangeNotifier {
         }
       }
     }
-    // --- LÓGICA DE PROXY DINÁMICO (ALGORITMO 1 Y 2) ---
-    else if ((algorithm == 1 || algorithm == 2) && (mediaType == dc.CastMediaType.hls || effectiveUrl.contains('.m3u8'))) {
-       _log('🚀 CAST: Usando Modo Dinámico (HLS Nativo) para Algoritmo $algorithm (Formato Alg 1)');
+    // --- LÓGICA DE PROXY DINÁMICO (SOLO ALGORITMO 1) ---
+    else if (algorithm == 1 && (mediaType == dc.CastMediaType.hls || effectiveUrl.contains('.m3u8'))) {
+       _log('🚀 CAST: Usando Modo Dinámico (HLS Nativo) para Algoritmo 1');
        await MediaProxyService().start();
        finalUrl = MediaProxyService().getProxiedUrl(effectiveUrl, combinedHeaders, useLocalhost: false, algorithm: algorithm);
        

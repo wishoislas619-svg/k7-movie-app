@@ -62,9 +62,11 @@ class VideoOption {
 class VideoQuality {
   final String resolution;
   final String url;
+  final String? audioUrl;
 
   VideoQuality({
     required this.resolution,
     required this.url,
+    this.audioUrl,
   });
 }

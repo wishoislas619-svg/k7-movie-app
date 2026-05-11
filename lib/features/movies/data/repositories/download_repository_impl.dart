@@ -274,7 +274,9 @@ class DownloadRepository {
     }
     print('[DL] finalUrl=$finalUrl ext=$finalExt (after conversion attempt)');
 
-    final fileName = '${task.movieName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}_${task.resolution}.$finalExt';
+    final hlsRegex = RegExp(r'\(?HLS\)?', caseSensitive: false);
+    final cleanMovieName = task.movieName.replaceAll(hlsRegex, '').trim().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
+    final fileName = '${cleanMovieName}_${task.resolution.replaceAll(hlsRegex, '').trim()}.$finalExt';
 
     await updateDownloadTask(task.copyWith(status: my.DownloadStatus.downloading, videoUrl: finalUrl));
 
@@ -634,7 +636,10 @@ class DownloadRepository {
   }
 
   String _buildSafeFileBase(my.DownloadTask task) {
-    return '${task.movieName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}_${task.resolution.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}';
+    final hlsRegex = RegExp(r'\(?HLS\)?', caseSensitive: false);
+    final cleanName = task.movieName.replaceAll(hlsRegex, '').trim().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
+    final cleanRes = task.resolution.replaceAll(hlsRegex, '').trim().replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
+    return '${cleanName}_$cleanRes';
   }
 
   Future<String?> _updateTaskMediaInfo(my.DownloadTask task, String path) async {
@@ -805,7 +810,7 @@ class DownloadRepository {
     onProgress?.call(0.0, 'Convirtiendo...');
 
     final remuxCmd =
-        '-y -i \"$inputPath\" -c copy -bsf:a aac_adtstoasc -movflags +faststart -f mp4 \"$tempOutputPath\"';
+        '-y -i \"$inputPath\" -c:v copy -c:a aac -b:a 128k -movflags +faststart -f mp4 \"$tempOutputPath\"';
     final session = await FFmpegKit.execute(remuxCmd);
     final sessionId = session.getSessionId();
     final rc = await Future.any([
@@ -839,6 +844,7 @@ class DownloadRepository {
       if (await inputFile.exists()) {
         await inputFile.delete();
       }
+      print('✅ [CONVERSION] Success: $inputPath -> $outputPath');
       onProgress?.call(1.0, '');
       NotificationService.showDownloadNotification(
         id: inputPath.hashCode & 0x7fffffff,
@@ -1121,12 +1127,12 @@ class DownloadRepository {
     
     // Multiple conversion attempts with different ffmpeg flags
     final attempts = [
-      // Attempt 1: Copy all streams (fastest)
-      '-y -i "$inputPath" -c copy -bsf:a aac_adtstoasc -movflags +faststart -f mp4 "$outputPath.tmp"',
-      // Attempt 2: Re-encode video & audio (slower but more compatible)
-      '-y -i "$inputPath" -c:v libx264 -preset ultrafast -crf 23 -c:a aac -b:a 128k -movflags +faststart -f mp4 "$outputPath.tmp"',
-      // Attempt 3: Just copy video, re-encode audio
+      // Attempt 1: Copy video, re-encode audio to AAC (Ideal for TV)
       '-y -i "$inputPath" -c:v copy -c:a aac -b:a 128k -movflags +faststart -f mp4 "$outputPath.tmp"',
+      // Attempt 2: Re-encode video & audio (Slower but safest)
+      '-y -i "$inputPath" -c:v libx264 -preset ultrafast -crf 23 -c:a aac -b:a 128k -movflags +faststart -f mp4 "$outputPath.tmp"',
+      // Attempt 3: Just copy (Fastest, might fail on some TVs if audio is not AAC)
+      '-y -i "$inputPath" -c copy -bsf:a aac_adtstoasc -movflags +faststart -f mp4 "$outputPath.tmp"',
     ];
     
     onProgress?.call(0.0, 'Convirtiendo...');

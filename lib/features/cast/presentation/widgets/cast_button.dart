@@ -235,7 +235,14 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
     headers['Referer'] = url;
 
     await MediaProxyService().start();
-    return MediaProxyService().getProxiedUrl(result.videoUrl, headers, algorithm: widget.algorithm);
+    
+    // Extraer audio si está disponible en la primera calidad
+    final audioUrl = result.qualities.isNotEmpty ? result.qualities.first.audioUrl : null;
+    
+    // Disparar pre-resolución para que el bridge de FFmpeg arranque de inmediato
+    MediaProxyService().preResolve(result.videoUrl, headers, explicitAudioUrl: audioUrl);
+    
+    return MediaProxyService().getProxiedUrl(result.videoUrl, headers, algorithm: widget.algorithm, explicitAudioUrl: audioUrl);
   }
 
   Future<void> _checkAdAndProceed(VoidCallback onDone) async {

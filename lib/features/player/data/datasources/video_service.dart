@@ -136,7 +136,27 @@ class VideoService {
 
       final lines = body.split('\n');
       String? currentRes;
+      String? firstAudioUrl;
+
+      // 1. Primer pase: Buscar pistas de audio
+      for (var line in lines) {
+        if (line.contains('TYPE=AUDIO') && line.contains('URI=')) {
+          final uriMatch = RegExp(r'URI="([^"]+)"').firstMatch(line);
+          if (uriMatch != null) {
+            String audioUri = uriMatch.group(1)!;
+            if (!audioUri.startsWith('http')) {
+              final baseUri = Uri.parse(masterUrl);
+              final parentPath = baseUri.path.substring(0, baseUri.path.lastIndexOf('/') + 1);
+              audioUri = baseUri.replace(path: '$parentPath$audioUri', query: null, fragment: null).toString();
+            }
+            firstAudioUrl = audioUri;
+            print('DEBUG: Audio track found: $firstAudioUrl');
+            break; // Tomamos la primera disponible
+          }
+        }
+      }
       
+      // 2. Segundo pase: Calidades de video
       for (var i = 0; i < lines.length; i++) {
         final line = lines[i].trim();
         if (line.startsWith('#EXT-X-STREAM-INF')) {
@@ -147,7 +167,6 @@ class VideoService {
         } else if (line.isNotEmpty && !line.startsWith('#') && currentRes != null) {
           String qualityUrl = line.trim();
           if (!qualityUrl.startsWith('http')) {
-            // Use proper URI resolution to avoid double-slash bugs
             final baseUri = Uri.parse(masterUrl);
             final parentPath = baseUri.path.substring(0, baseUri.path.lastIndexOf('/') + 1);
             final resolved = baseUri.replace(path: '$parentPath$qualityUrl', query: null, fragment: null);
@@ -158,6 +177,7 @@ class VideoService {
           qualities.add(VideoQuality(
             resolution: _formatResolution(currentRes),
             url: qualityUrl,
+            audioUrl: firstAudioUrl, // <--- ASIGNAR AUDIO AQUÍ
           ));
           currentRes = null;
         }
