@@ -7,7 +7,7 @@ import Foundation
 
 import app_links
 import device_info_plus
-import ffmpeg_kit_flutter_new_min_gpl
+import ffmpeg_kit_flutter_new_https_gpl
 import file_picker
 import flutter_inappwebview_macos
 import flutter_local_notifications
