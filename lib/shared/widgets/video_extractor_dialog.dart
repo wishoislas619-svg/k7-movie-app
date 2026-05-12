@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -15,7 +16,7 @@ class VideoExtractionData {
   final Map<String, String>? headers;
 
   VideoExtractionData({
-    required this.videoUrl, 
+    required this.videoUrl,
     this.qualities = const [],
     this.cookies,
     this.userAgent,
@@ -26,26 +27,37 @@ class VideoExtractionData {
 class VideoExtractorDialog extends StatefulWidget {
   final String url;
   final int extractionAlgorithm;
-  const VideoExtractorDialog({super.key, required this.url, this.extractionAlgorithm = 1});
+  const VideoExtractorDialog({
+    super.key,
+    required this.url,
+    this.extractionAlgorithm = 1,
+  });
 
   @override
   State<VideoExtractorDialog> createState() => _VideoExtractorDialogState();
 }
 
-class _VideoExtractorDialogState extends State<VideoExtractorDialog> with SingleTickerProviderStateMixin {
+class _VideoExtractorDialogState extends State<VideoExtractorDialog>
+    with SingleTickerProviderStateMixin {
   late AnimationController _borderController;
   InAppWebViewController? _webViewController;
   String? _statusText = "Localizando video...";
   final List<String> _detectedUrls = [];
-  bool _showWebView = false; 
+  bool _showWebView = false;
   int _timerCount = 0;
   bool _isDisposed = false;
   final List<VideoExtractionData> _foundMedia = [];
   bool _isSpanishSelected = false;
-  bool _serverSwitchDone = false; // true once algo 3 has confirmed server switch
+  bool _serverSwitchDone =
+      false; // true once algo 3 has confirmed server switch
+  String? _lastAlgo3ServerSelected;
+  final Set<String> _failedAlgo3Servers = {};
   bool _snifferInjected = false;
-  Timer? _algo3Timer; // Keeps reference to prevent duplicate timers on page reload
-  static const _webviewTouchChannel = MethodChannel('com.luis.movieapp/webview_touch');
+  Timer?
+  _algo3Timer; // Keeps reference to prevent duplicate timers on page reload
+  static const _webviewTouchChannel = MethodChannel(
+    'com.luis.movieapp/webview_touch',
+  );
   final GlobalKey _webViewKey = GlobalKey();
   Map<String, String>? _lastCapturedHeaders;
 
@@ -53,12 +65,16 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
     ContentBlocker(
       trigger: ContentBlockerTrigger(urlFilter: ".*"),
       action: ContentBlockerAction(
-        type: ContentBlockerActionType.CSS_DISPLAY_NONE, 
-        selector: ".ad, .ads, .advertisement, [id^='ad-'], [class^='ad-'], .popup, .overlay"
+        type: ContentBlockerActionType.CSS_DISPLAY_NONE,
+        selector:
+            ".ad, .ads, .advertisement, [id^='ad-'], [class^='ad-'], .popup, .overlay",
       ),
     ),
     ContentBlocker(
-      trigger: ContentBlockerTrigger(urlFilter: ".*(google-analytics|doubleclick|popads|adnium|popcash|exoclick|juicyads|propellerads|clonamp).*"),
+      trigger: ContentBlockerTrigger(
+        urlFilter:
+            ".*(google-analytics|doubleclick|popads|adnium|popcash|exoclick|juicyads|propellerads|clonamp).*",
+      ),
       action: ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
     ),
   ];
@@ -111,31 +127,36 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   Widget build(BuildContext context) {
     final filteredMedia = _foundMedia.where((m) {
       final url = m.videoUrl.toLowerCase();
-      
+
       // We allow direct extensions now as requested for better download support
       bool isProblematic = false;
-      
+
       // If we're using Algorithm 2, we should be EXTRA strict about hiding direct links
       // as they are likely ads or non-HLS streams that won't work in the background.
       // BUT allow .txt manifests from known HLS CDN domains
-      final isTxtManifest = url.contains('.txt') && 
-          (url.contains('goldenfieldproductionworks') || 
-           url.contains('/v4/db/') ||
-           url.contains('index-f') ||
-           url.contains('cf-master'));
-      if (widget.extractionAlgorithm == 2 && !url.contains('.m3u8') && !isTxtManifest) {
+      final isTxtManifest =
+          url.contains('.txt') &&
+          (url.contains('goldenfieldproductionworks') ||
+              url.contains('/v4/db/') ||
+              url.contains('index-f') ||
+              url.contains('cf-master'));
+      if (widget.extractionAlgorithm == 2 &&
+          !url.contains('.m3u8') &&
+          !isTxtManifest) {
         isProblematic = true;
       }
 
       // Filtro de extensiones avanzado para evadir bloqueos
-      final isVideo = url.contains('.m3u8') || 
-                      url.contains('.mp4') || 
-                      url.contains('.mkv') ||
-                      url.contains('.webm') ||
-                      url.contains('ecotechproducts.shop') ||
-                      isTxtManifest ||
-                      (url.contains('.txt') && (url.contains('master') || url.contains('playlist')));
-      
+      final isVideo =
+          url.contains('.m3u8') ||
+          url.contains('.mp4') ||
+          url.contains('.mkv') ||
+          url.contains('.webm') ||
+          url.contains('ecotechproducts.shop') ||
+          isTxtManifest ||
+          (url.contains('.txt') &&
+              (url.contains('master') || url.contains('playlist')));
+
       if (!isVideo) return false;
 
       return !isProblematic;
@@ -146,7 +167,10 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
       builder: (context, child) {
         return AlertDialog(
           backgroundColor: const Color(0xFF0F0F0F),
-          insetPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 20),
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 20,
+          ),
           clipBehavior: Clip.antiAlias,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(20),
@@ -163,76 +187,90 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
               borderRadius: BorderRadius.circular(20),
               child: Stack(
                 children: [
-                // Animated Iridescent Border Effect (Energy Flowing)
-                Positioned.fill(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
-                      gradient: SweepGradient(
-                        center: Alignment.center,
-                        transform: GradientRotation(_borderController.value * 2 * 3.14159),
-                        colors: const [
-                          Color(0xFF00A3FF),
-                          Color(0xFFD400FF),
-                          Color(0xFF00FFD1),
-                          Color(0xFF4A90FF),
-                          Color(0xFFBC00FF),
-                          Color(0xFF00FFD1),
-                          Color(0xFF00A3FF),
-                        ],
+                  // Animated Iridescent Border Effect (Energy Flowing)
+                  Positioned.fill(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(20),
+                        gradient: SweepGradient(
+                          center: Alignment.center,
+                          transform: GradientRotation(
+                            _borderController.value * 2 * 3.14159,
+                          ),
+                          colors: const [
+                            Color(0xFF00A3FF),
+                            Color(0xFFD400FF),
+                            Color(0xFF00FFD1),
+                            Color(0xFF4A90FF),
+                            Color(0xFFBC00FF),
+                            Color(0xFF00FFD1),
+                            Color(0xFF00A3FF),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-                // Inner content background to hide the center of the gradient
-                Positioned.fill(
-                  child: Container(
-                    margin: const EdgeInsets.all(2), // Matches border width
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0F0F0F),
-                      borderRadius: BorderRadius.circular(18),
+                  // Inner content background to hide the center of the gradient
+                  Positioned.fill(
+                    child: Container(
+                      margin: const EdgeInsets.all(2), // Matches border width
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F0F0F),
+                        borderRadius: BorderRadius.circular(18),
+                      ),
                     ),
                   ),
-                ),
-            // Background WebView for Algorithm 2 (Full size but hidden if requested)
-            // We use OverflowBox to allow it to be larger than the dialog
-            Positioned.fill(
-              child: OverflowBox(
-                minWidth: 0,
-                maxWidth: double.infinity,
-                minHeight: 0,
-                maxHeight: double.infinity,
-                alignment: Alignment.center,
-                child: SizedBox(
-                  // Use screen size if Alg 2 or 3 to match player exactly
-                  width: (widget.extractionAlgorithm == 2 || widget.extractionAlgorithm == 3) ? MediaQuery.of(context).size.width : 500,
-                  height: (widget.extractionAlgorithm == 2 || widget.extractionAlgorithm == 3) ? MediaQuery.of(context).size.height : 280,
-                  child: Opacity(
-                    opacity: _showWebView ? 1.0 : 0.01,
-                    child: IgnorePointer(
-                      ignoring: !_showWebView, // When hidden, don't block dialog touches
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: InAppWebView(
-                          key: _webViewKey,
-                          initialUrlRequest: URLRequest(url: WebUri(widget.url)),
-                          initialSettings: InAppWebViewSettings(
-                            javaScriptEnabled: true,
-                            domStorageEnabled: true,
-                            mediaPlaybackRequiresUserGesture: false,
-                            useShouldInterceptRequest: true,
-                            contentBlockers: _contentBlockers,
-                            javaScriptCanOpenWindowsAutomatically: false,
-                            supportMultipleWindows: false,
-                            useShouldOverrideUrlLoading: true,
-                            isInspectable: true,
-                            userAgent: widget.extractionAlgorithm == 1 
-                                ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-                                : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-                          ),
-                          initialUserScripts: UnmodifiableListView<UserScript>([
-                            UserScript(
-                              source: r'''
+                  // Background WebView for Algorithm 2 (Full size but hidden if requested)
+                  // We use OverflowBox to allow it to be larger than the dialog
+                  Positioned.fill(
+                    child: OverflowBox(
+                      minWidth: 0,
+                      maxWidth: double.infinity,
+                      minHeight: 0,
+                      maxHeight: double.infinity,
+                      alignment: Alignment.center,
+                      child: SizedBox(
+                        // Use screen size if Alg 2 or 3 to match player exactly
+                        width:
+                            (widget.extractionAlgorithm == 2 ||
+                                widget.extractionAlgorithm == 3)
+                            ? MediaQuery.of(context).size.width
+                            : 500,
+                        height:
+                            (widget.extractionAlgorithm == 2 ||
+                                widget.extractionAlgorithm == 3)
+                            ? MediaQuery.of(context).size.height
+                            : 280,
+                        child: Opacity(
+                          opacity: _showWebView ? 1.0 : 0.01,
+                          child: IgnorePointer(
+                            ignoring:
+                                !_showWebView, // When hidden, don't block dialog touches
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: InAppWebView(
+                                key: _webViewKey,
+                                initialUrlRequest: URLRequest(
+                                  url: WebUri(widget.url),
+                                ),
+                                initialSettings: InAppWebViewSettings(
+                                  javaScriptEnabled: true,
+                                  domStorageEnabled: true,
+                                  mediaPlaybackRequiresUserGesture: false,
+                                  useShouldInterceptRequest: true,
+                                  contentBlockers: _contentBlockers,
+                                  javaScriptCanOpenWindowsAutomatically: false,
+                                  supportMultipleWindows: false,
+                                  useShouldOverrideUrlLoading: true,
+                                  isInspectable: true,
+                                  userAgent: widget.extractionAlgorithm == 1
+                                      ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+                                      : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                                ),
+                                initialUserScripts:
+                                    UnmodifiableListView<UserScript>([
+                                      UserScript(
+                                        source: r'''
                               (function() {
                                 console.log('[DEBUG_JS] GHOST_SNIFFER_v4.5_SHADOW_PIERCE');
                                 
@@ -317,295 +355,479 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                                 notify('READY_SIGNAL', {status: 'v4.5_active'});
                               })();
                             ''',
-                              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                            ),
-                          ]),
-                          onConsoleMessage: (controller, consoleMessage) {
-                            print("[WEBVIEW_CONSOLE] ${consoleMessage.message}");
-                          },
-                          onWebViewCreated: (controller) {
-                            _webViewController = controller;
-                            
-                            // Debug Handler
-                            controller.addJavaScriptHandler(handlerName: 'debugLog', callback: (args) {
-                               print("[SNIFFER_DEBUG_JS] ${args.first}");
-                            });
+                                        injectionTime: UserScriptInjectionTime
+                                            .AT_DOCUMENT_START,
+                                      ),
+                                    ]),
+                                onConsoleMessage: (controller, consoleMessage) {
+                                  print(
+                                    "[WEBVIEW_CONSOLE] ${consoleMessage.message}",
+                                  );
+                                },
+                                onWebViewCreated: (controller) {
+                                  _webViewController = controller;
 
-            controller.addJavaScriptHandler(
-                              handlerName: 'onServerSelected',
-                              callback: (args) {
-                                if (mounted) {
-                                  final serverName = args.isNotEmpty ? args.first.toString() : 'desconocido';
-                                  print('[SNIFFER] ✅ Servidor seleccionado: $serverName — limpiando streams del servidor anterior...');
-                                  setState(() {
-                                    _isSpanishSelected = true;
-                                    _serverSwitchDone = true;
-                                    // *** Clave: limpiar el stream del servidor default ***
-                                    // para que el sniffer capture el stream del nuevo servidor
-                                    _foundMedia.clear();
-                                    _statusText = "Servidor '$serverName' seleccionado. Extrayendo...";
-                                  });
-                                }
-                              },
-                            );
+                                  // Debug Handler
+                                  controller.addJavaScriptHandler(
+                                    handlerName: 'debugLog',
+                                    callback: (args) {
+                                      print("[SNIFFER_DEBUG_JS] ${args.first}");
+                                    },
+                                  );
 
-                            controller.addJavaScriptHandler(
-                              handlerName: 'snifferUrl',
-                              callback: (args) {
-                                if (args.isEmpty) return;
-                                final String url = args[0].toString();
-                                if (url == "READY_SIGNAL") {
-                                  print("[DEBUG_SNIFFER] JS Sniper Ready Signal Received");
-                                  return;
-                                }
-                                Map<String, String>? headers;
-                                if (args.length > 1 && args[1] is Map) {
-                                  headers = Map<String, String>.from(args[1]);
-                                }
-                                print("[DEBUG_SNIFFER] Captured: $url");
-                                if (url.isNotEmpty) _handleFoundVideo(url, customHeaders: headers);
-                              },
-                            );
-                          },
-                          onLoadResource: (controller, resource) {
-                            final url = resource.url.toString();
-                            if (_isVideoUrl(url)) _handleFoundVideo(url);
-                          },
-                          shouldInterceptRequest: (controller, request) async {
-                            final url = request.url.toString();
-                            final lower = url.toLowerCase();
-                            
-                            // Si es un fragmento de video, capturamos sus cabeceras pero no bloqueamos la petición
-                            // para que el reproductor web siga funcionando y validando el anuncio.
-                            if (lower.contains('.ts') || lower.contains('.m4s') || lower.contains('.mp4/')) {
-                               _handleFoundVideo(url, customHeaders: request.headers);
-                               return null; 
-                            }
+                                  controller.addJavaScriptHandler(
+                                    handlerName: 'onServerSelected',
+                                    callback: (args) {
+                                      if (mounted) {
+                                        final serverName = args.isNotEmpty
+                                            ? args.first.toString()
+                                            : 'desconocido';
+                                        print(
+                                          '[SNIFFER] ✅ Servidor seleccionado: $serverName — limpiando streams del servidor anterior...',
+                                        );
+                                        setState(() {
+                                          _isSpanishSelected = true;
+                                          _serverSwitchDone = true;
+                                          _lastAlgo3ServerSelected = serverName;
+                                          // *** Clave: limpiar el stream del servidor default ***
+                                          // para que el sniffer capture el stream del nuevo servidor
+                                          _foundMedia.clear();
+                                          _statusText =
+                                              "Servidor '$serverName' seleccionado. Extrayendo...";
+                                        });
+                                      }
+                                    },
+                                  );
 
-                            if (_isVideoUrl(url)) _handleFoundVideo(url, customHeaders: request.headers);
-                            return null;
-                          },
-                           onProgressChanged: (controller, progress) {
-                             // _injectNetworkSniffer eliminado por redundancia con initialUserScripts
-                           },
-                          onLoadStart: (controller, url) {
-                            print("[WEBVIEW] Iniciando carga: $url");
-                            // Inyección redundante para asegurar presencia
-                            controller.evaluateJavascript(source: r'''(function(){ console.log('SNIFFER_RE-INJECT'); })();''');
-                          },
-                          onLoadStop: (controller, url) async {
-                              print("[WEBVIEW] Carga finalizada: $url");
-                              controller.evaluateJavascript(source: _cleanerJs);
+                                  controller.addJavaScriptHandler(
+                                    handlerName: 'snifferUrl',
+                                    callback: (args) {
+                                      if (args.isEmpty) return;
+                                      final String url = args[0].toString();
+                                      if (url == "READY_SIGNAL") {
+                                        print(
+                                          "[DEBUG_SNIFFER] JS Sniper Ready Signal Received",
+                                        );
+                                        return;
+                                      }
+                                      Map<String, String>? headers;
+                                      if (args.length > 1 && args[1] is Map) {
+                                        headers = Map<String, String>.from(
+                                          args[1],
+                                        );
+                                      }
+                                      print("[DEBUG_SNIFFER] Captured: $url");
+                                      if (url.isNotEmpty)
+                                        _handleFoundVideo(
+                                          url,
+                                          customHeaders: headers,
+                                        );
+                                    },
+                                  );
+                                },
+                                onLoadResource: (controller, resource) {
+                                  final url = resource.url.toString();
+                                  if (_isVideoUrl(url)) _handleFoundVideo(url);
+                                },
+                                shouldInterceptRequest: (controller, request) async {
+                                  final url = request.url.toString();
+                                  final lower = url.toLowerCase();
 
-                            if (widget.extractionAlgorithm == 2) {
-                              await Future.delayed(const Duration(milliseconds: 1500));
-                              if (!_isDisposed) {
-                                _runAlgorithm2();
-                              }
-                            }
-                            if (widget.extractionAlgorithm == 3) {
-                              await Future.delayed(const Duration(milliseconds: 1500));
-                              if (!_isDisposed) {
-                                _algo3Timer?.cancel(); // Cancel any previous timer on page reload
-                                _runAlgorithm3();
-                                // Bucle de re-clics: continuar hasta confirmar cambio de servidor Y tener media
-                                _algo3Timer = Timer.periodic(const Duration(seconds: 4), (timer) {
-                                  if (_isDisposed || (_serverSwitchDone && _foundMedia.isNotEmpty)) {
-                                    timer.cancel();
-                                    return;
+                                  // Si es un fragmento de video, capturamos sus cabeceras pero no bloqueamos la petición
+                                  // para que el reproductor web siga funcionando y validando el anuncio.
+                                  if (lower.contains('.ts') ||
+                                      lower.contains('.m4s') ||
+                                      lower.contains('.mp4/')) {
+                                    _handleFoundVideo(
+                                      url,
+                                      customHeaders: request.headers,
+                                    );
+                                    return null;
                                   }
-                                  _runAlgorithm3();
-                                });
-                              }
-                            }
-                          },
-                          shouldOverrideUrlLoading: (controller, navigationAction) async {
-                            var uri = navigationAction.request.url;
-                            if (uri != null) {
-                              final initialHost = Uri.parse(widget.url).host;
-                              if (uri.host != initialHost && !uri.host.contains('google') && !uri.host.contains('facebook')) {
-                                return NavigationActionPolicy.CANCEL;
-                              }
-                            }
-                            return NavigationActionPolicy.ALLOW;
-                          },
+
+                                  if (_isVideoUrl(url))
+                                    _handleFoundVideo(
+                                      url,
+                                      customHeaders: request.headers,
+                                    );
+                                  return null;
+                                },
+                                onProgressChanged: (controller, progress) {
+                                  // _injectNetworkSniffer eliminado por redundancia con initialUserScripts
+                                },
+                                onLoadStart: (controller, url) {
+                                  print("[WEBVIEW] Iniciando carga: $url");
+                                  // Inyección redundante para asegurar presencia
+                                  controller.evaluateJavascript(
+                                    source:
+                                        r'''(function(){ console.log('SNIFFER_RE-INJECT'); })();''',
+                                  );
+                                },
+                                onLoadStop: (controller, url) async {
+                                  print("[WEBVIEW] Carga finalizada: $url");
+                                  controller.evaluateJavascript(
+                                    source: _cleanerJs,
+                                  );
+
+                                  if (widget.extractionAlgorithm == 2) {
+                                    await Future.delayed(
+                                      const Duration(milliseconds: 1500),
+                                    );
+                                    if (!_isDisposed) {
+                                      _runAlgorithm2();
+                                    }
+                                  }
+                                  if (widget.extractionAlgorithm == 3) {
+                                    await Future.delayed(
+                                      const Duration(milliseconds: 1500),
+                                    );
+                                    if (!_isDisposed) {
+                                      _algo3Timer
+                                          ?.cancel(); // Cancel any previous timer on page reload
+                                      _runAlgorithm3();
+                                      // Bucle de re-clics: continuar hasta confirmar cambio de servidor Y tener media
+                                      _algo3Timer = Timer.periodic(
+                                        const Duration(seconds: 4),
+                                        (timer) {
+                                          if (_isDisposed ||
+                                              (_serverSwitchDone &&
+                                                  _foundMedia.isNotEmpty)) {
+                                            timer.cancel();
+                                            return;
+                                          }
+                                          if (_serverSwitchDone &&
+                                              _foundMedia.isEmpty &&
+                                              _lastAlgo3ServerSelected !=
+                                                  null) {
+                                            final failed =
+                                                _lastAlgo3ServerSelected!
+                                                    .trim()
+                                                    .toLowerCase();
+                                            if (failed.isNotEmpty) {
+                                              _failedAlgo3Servers.add(failed);
+                                              print(
+                                                "[SNIFFER] ⚠️ Servidor sin stream: $_lastAlgo3ServerSelected. Probando siguiente...",
+                                              );
+                                            }
+                                            _serverSwitchDone = false;
+                                            _isSpanishSelected = false;
+                                          }
+                                          _runAlgorithm3();
+                                        },
+                                      );
+                                    }
+                                  }
+                                },
+                                shouldOverrideUrlLoading:
+                                    (controller, navigationAction) async {
+                                      var uri = navigationAction.request.url;
+                                      if (uri != null) {
+                                        final initialHost = Uri.parse(
+                                          widget.url,
+                                        ).host;
+                                        if (uri.host != initialHost &&
+                                            !uri.host.contains('google') &&
+                                            !uri.host.contains('facebook')) {
+                                          return NavigationActionPolicy.CANCEL;
+                                        }
+                                      }
+                                      return NavigationActionPolicy.ALLOW;
+                                    },
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              ),
-            ),
 
-            // Opaque Background Layer to hide the process and the app behind
-            // Only active when the WebView is hidden to allow manual browser interaction
-            if (!_showWebView)
-              Positioned.fill(
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0F0F0F),
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                ),
-              ),
-
-            // Visible UI Layer
-            Column(
-              children: [
-                // K7 Branding & Status
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [const Color(0xFF00A3FF).withOpacity(0.1), const Color(0xFFD400FF).withOpacity(0.1)],
-                    ),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: Colors.white.withOpacity(0.05)),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min, // Avoid overflow
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                              gradient: const LinearGradient(colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)]),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: const Text('K7', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white)),
-                          ),
-                          const SizedBox(width: 10),
-                          const Text('EXTRACTOR INTELIGENTE', style: TextStyle(letterSpacing: 2, fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF00A3FF)),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              _statusText ?? "Localizando...",
-                              style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-            
-                // Results List / Status
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.orange.withOpacity(0.3)),
-                  ),
-                  child: const Row(
-                    children: [
-                       Icon(Icons.info_outline, color: Colors.orange, size: 16),
-                       SizedBox(width: 8),
-                       Expanded(
-                         child: Text(
-                           "Selecciona un enlace HLS para descargar sin errores.",
-                           style: TextStyle(color: Colors.orange, fontSize: 11, fontWeight: FontWeight.bold),
-                         ),
-                       ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // Toggle visibility in Alg 1 (In Alg 2 it's better to keep it hidden/fixed)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        TextButton.icon(
-                          onPressed: () => setState(() => _showWebView = !_showWebView),
-                          icon: Icon(_showWebView ? Icons.visibility_off_rounded : Icons.visibility_rounded, size: 14, color: Colors.white38),
-                          label: Text(_showWebView ? "OCULTAR" : "MOSTRAR ", style: const TextStyle(color: Colors.white38, fontSize: 9, fontWeight: FontWeight.bold)),
+                  // Opaque Background Layer to hide the process and the app behind
+                  // Only active when the WebView is hidden to allow manual browser interaction
+                  if (!_showWebView)
+                    Positioned.fill(
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F0F0F),
+                          borderRadius: BorderRadius.circular(18),
                         ),
-                        const SizedBox(width: 8),
-                        if (widget.extractionAlgorithm == 1 && filteredMedia.isEmpty)
-                          TextButton.icon(
-                            onPressed: () {
-                              Navigator.pop(context); // Cierra este
-                              // El MovieOptionsPage ya maneja la lógica de re-lanzar con Alg 2 si es necesario 
-                              // pero aquí podemos ofrecer un acceso directo
-                            },
-                            icon: const Icon(Icons.bolt_rounded, size: 14, color: Colors.amber),
-                            label: const Text("PROBAR ALGORITMO 2", style: TextStyle(color: Colors.amber, fontSize: 9, fontWeight: FontWeight.bold)),
-                          ),
-                      ],
+                      ),
                     ),
-                  ),
 
-                Expanded(
-                  child: filteredMedia.isEmpty
-                      ? Center(
-                          child: SingleChildScrollView(
-                            child: Column(
+                  // Visible UI Layer
+                  Column(
+                    children: [
+                      // K7 Branding & Status
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              const Color(0xFF00A3FF).withOpacity(0.1),
+                              const Color(0xFFD400FF).withOpacity(0.1),
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.05),
+                          ),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min, // Avoid overflow
+                          children: [
+                            Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 Container(
-                                  width: 60,
-                                  height: 60,
+                                  padding: const EdgeInsets.all(6),
                                   decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    border: Border.all(color: const Color(0xFF00A3FF).withOpacity(0.1), width: 4),
+                                    gradient: const LinearGradient(
+                                      colors: [
+                                        Color(0xFF4A90FF),
+                                        Color(0xFFBC00FF),
+                                      ],
+                                    ),
+                                    borderRadius: BorderRadius.circular(6),
                                   ),
-                                  child: const Center(
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00A3FF)),
+                                  child: const Text(
+                                    'K7',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                      color: Colors.white,
+                                    ),
                                   ),
                                 ),
-                                const SizedBox(height: 20),
-                                const Text("Analizando protocolos de red...",
-                                    style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.w500)),
-                                const SizedBox(height: 4),
-                                if (widget.extractionAlgorithm == 3 && !_isSpanishSelected)
-                                  const Text("Buscando servidor en español...", style: TextStyle(color: Color(0xFFD400FF), fontSize: 10, fontWeight: FontWeight.bold))
-                                else
-                                  const Text("Esto puede tardar unos segundos", style: TextStyle(color: Colors.white12, fontSize: 10)),
+                                const SizedBox(width: 10),
+                                const Text(
+                                  'EXTRACTOR INTELIGENTE',
+                                  style: TextStyle(
+                                    letterSpacing: 2,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                    color: Colors.white,
+                                  ),
+                                ),
                               ],
                             ),
-                          ),
-                        )
-                      : widget.extractionAlgorithm == 3 && !_isSpanishSelected
-                        ? Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
+                            const SizedBox(height: 16),
+                            Row(
                               children: [
-                                const Icon(Icons.language, color: Color(0xFFD400FF), size: 40),
-                                const SizedBox(height: 16),
-                                const Text("SERVIDOR NO VALIDADO", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 8),
-                                const Padding(
-                                  padding: EdgeInsets.symmetric(horizontal: 40),
-                                  child: Text(
-                                    "Esperando a que el sistema seleccione el servidor en español para garantizar el idioma correcto.",
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(color: Colors.white54, fontSize: 11),
+                                const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.5,
+                                    color: Color(0xFF00A3FF),
                                   ),
                                 ),
-                                const SizedBox(height: 20),
-                                const CircularProgressIndicator(color: Color(0xFFD400FF), strokeWidth: 2),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    _statusText ?? "Localizando...",
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
                               ],
                             ),
-                          )
-                        : ListView.builder(
+                          ],
+                        ),
+                      ),
+
+                      // Results List / Status
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: Colors.orange.withOpacity(0.3),
+                          ),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              color: Colors.orange,
+                              size: 16,
+                            ),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                "Selecciona un enlace Streaming para descargar sin errores.",
+                                style: TextStyle(
+                                  color: Colors.orange,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Toggle visibility in Alg 1 (In Alg 2 it's better to keep it hidden/fixed)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            TextButton.icon(
+                              onPressed: () =>
+                                  setState(() => _showWebView = !_showWebView),
+                              icon: Icon(
+                                _showWebView
+                                    ? Icons.visibility_off_rounded
+                                    : Icons.visibility_rounded,
+                                size: 14,
+                                color: Colors.white38,
+                              ),
+                              label: Text(
+                                _showWebView ? "OCULTAR" : "MOSTRAR ",
+                                style: const TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            if (widget.extractionAlgorithm == 1 &&
+                                filteredMedia.isEmpty)
+                              TextButton.icon(
+                                onPressed: () {
+                                  Navigator.pop(context); // Cierra este
+                                  // El MovieOptionsPage ya maneja la lógica de re-lanzar con Alg 2 si es necesario
+                                  // pero aquí podemos ofrecer un acceso directo
+                                },
+                                icon: const Icon(
+                                  Icons.bolt_rounded,
+                                  size: 14,
+                                  color: Colors.amber,
+                                ),
+                                label: const Text(
+                                  "PROBAR ALGORITMO 2",
+                                  style: TextStyle(
+                                    color: Colors.amber,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+
+                      Expanded(
+                        child: filteredMedia.isEmpty
+                            ? Center(
+                                child: SingleChildScrollView(
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Container(
+                                        width: 60,
+                                        height: 60,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color: const Color(
+                                              0xFF00A3FF,
+                                            ).withOpacity(0.1),
+                                            width: 4,
+                                          ),
+                                        ),
+                                        child: const Center(
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Color(0xFF00A3FF),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 20),
+                                      const Text(
+                                        "Analizando protocolos de red...",
+                                        style: TextStyle(
+                                          color: Colors.white38,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      if (widget.extractionAlgorithm == 3 &&
+                                          !_isSpanishSelected)
+                                        const Text(
+                                          "Buscando servidor en español...",
+                                          style: TextStyle(
+                                            color: Color(0xFFD400FF),
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        )
+                                      else
+                                        const Text(
+                                          "Esto puede tardar unos segundos",
+                                          style: TextStyle(
+                                            color: Colors.white12,
+                                            fontSize: 10,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              )
+                            : widget.extractionAlgorithm == 3 &&
+                                  !_isSpanishSelected
+                            ? Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(
+                                      Icons.language,
+                                      color: Color(0xFFD400FF),
+                                      size: 40,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    const Text(
+                                      "SERVIDOR NO VALIDADO",
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    const Padding(
+                                      padding: EdgeInsets.symmetric(
+                                        horizontal: 40,
+                                      ),
+                                      child: Text(
+                                        "Esperando a que el sistema seleccione el servidor en español para garantizar el idioma correcto.",
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 20),
+                                    const CircularProgressIndicator(
+                                      color: Color(0xFFD400FF),
+                                      strokeWidth: 2,
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : ListView.builder(
                                 padding: EdgeInsets.zero,
                                 itemCount: filteredMedia.length,
                                 itemBuilder: (context, index) {
@@ -619,11 +841,16 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                                         Positioned.fill(
                                           child: Container(
                                             decoration: BoxDecoration(
-                                              borderRadius: BorderRadius.circular(16),
+                                              borderRadius:
+                                                  BorderRadius.circular(16),
                                               gradient: LinearGradient(
                                                 begin: Alignment.topLeft,
                                                 end: Alignment.bottomRight,
-                                                transform: GradientRotation(_borderController.value * 2 * 3.14159),
+                                                transform: GradientRotation(
+                                                  _borderController.value *
+                                                      2 *
+                                                      3.14159,
+                                                ),
                                                 colors: const [
                                                   Color(0xFF00A3FF),
                                                   Color(0xFFD400FF),
@@ -641,32 +868,83 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                                           margin: const EdgeInsets.all(1.5),
                                           decoration: BoxDecoration(
                                             color: const Color(0xFF161616),
-                                            borderRadius: BorderRadius.circular(15),
+                                            borderRadius: BorderRadius.circular(
+                                              15,
+                                            ),
                                           ),
                                           child: ListTile(
-                                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                            contentPadding:
+                                                const EdgeInsets.symmetric(
+                                                  horizontal: 16,
+                                                  vertical: 8,
+                                                ),
                                             leading: Container(
                                               padding: const EdgeInsets.all(10),
                                               decoration: BoxDecoration(
                                                 gradient: LinearGradient(
                                                   colors: isHls
-                                                      ? [Colors.orange.withOpacity(0.2), Colors.deepOrange.withOpacity(0.2)]
-                                                      : [const Color(0xFF00A3FF).withOpacity(0.2), const Color(0xFFD400FF).withOpacity(0.2)],
+                                                      ? [
+                                                          Colors.orange
+                                                              .withOpacity(0.2),
+                                                          Colors.deepOrange
+                                                              .withOpacity(0.2),
+                                                        ]
+                                                      : [
+                                                          const Color(
+                                                            0xFF00A3FF,
+                                                          ).withOpacity(0.2),
+                                                          const Color(
+                                                            0xFFD400FF,
+                                                          ).withOpacity(0.2),
+                                                        ],
                                                 ),
                                                 shape: BoxShape.circle,
                                               ),
-                                              child: Icon(isHls ? Icons.waves_rounded : Icons.play_arrow_rounded, color: isHls ? Colors.orange : const Color(0xFF00A3FF), size: 24),
+                                              child: Icon(
+                                                isHls
+                                                    ? Icons.waves_rounded
+                                                    : Icons.play_arrow_rounded,
+                                                color: isHls
+                                                    ? Colors.orange
+                                                    : const Color(0xFF00A3FF),
+                                                size: 24,
+                                              ),
                                             ),
                                             title: Text(
-                                              item.qualities.isNotEmpty ? item.qualities.first.resolution : "Multimedia Detectada",
-                                              style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                                              item.qualities.isNotEmpty
+                                                  ? item
+                                                        .qualities
+                                                        .first
+                                                        .resolution
+                                                  : "Multimedia Detectada",
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 15,
+                                                fontWeight: FontWeight.bold,
+                                              ),
                                             ),
                                             subtitle: Text(
-                                              isHls ? "Streaming Adaptativo (HLS)" : "Archivo Directo (MP4/MKV)",
-                                              style: TextStyle(color: isHls ? Colors.orange.withOpacity(0.6) : const Color(0xFF00A3FF).withOpacity(0.6), fontSize: 11),
+                                              isHls
+                                                  ? "Streaming Adaptativo"
+                                                  : "Archivo Directo (MP4/MKV)",
+                                              style: TextStyle(
+                                                color: isHls
+                                                    ? Colors.orange.withOpacity(
+                                                        0.6,
+                                                      )
+                                                    : const Color(
+                                                        0xFF00A3FF,
+                                                      ).withOpacity(0.6),
+                                                fontSize: 11,
+                                              ),
                                             ),
-                                            trailing: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white12, size: 14),
-                                            onTap: () => Navigator.pop(context, item),
+                                            trailing: const Icon(
+                                              Icons.arrow_forward_ios_rounded,
+                                              color: Colors.white12,
+                                              size: 14,
+                                            ),
+                                            onTap: () =>
+                                                Navigator.pop(context, item),
                                           ),
                                         ),
                                       ],
@@ -684,7 +962,14 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text("CANCELAR", style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
+              child: const Text(
+                "CANCELAR",
+                style: TextStyle(
+                  color: Colors.white38,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ],
         );
@@ -694,52 +979,64 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
 
   bool _isVideoUrl(String url) {
     final lower = url.toLowerCase();
-    
+
     // Media Extensions (Prioritize these)
-    if (lower.contains(".m3u8") || 
-        lower.contains(".mp4") || 
-        lower.contains(".mpd") || 
-        lower.contains(".mkv") || 
+    if (lower.contains(".m3u8") ||
+        lower.contains(".mp4") ||
+        lower.contains(".mpd") ||
+        lower.contains(".mkv") ||
         lower.contains(".webm") ||
-        lower.contains("/master.") || 
+        lower.contains("/master.") ||
         lower.contains("/playlist.") ||
-        lower.contains("googlevideo.com/videoplayback")) return true;
+        lower.contains("googlevideo.com/videoplayback"))
+      return true;
 
     // Ad/Analytics block (Less restrictive regex)
-    if (lower.contains('googleads') || 
-        lower.contains('analytics') || 
+    if (lower.contains('googleads') ||
+        lower.contains('analytics') ||
         lower.contains('telemetry') ||
         lower.contains('doubleclick') ||
-        lower.contains('taboola')) return false;
+        lower.contains('taboola'))
+      return false;
 
     // Common Video paths
-    if (lower.contains("/video/") || 
+    if (lower.contains("/video/") ||
         lower.contains("/embed/") ||
-        lower.contains("delivery")) return true;
+        lower.contains("delivery"))
+      return true;
 
     return false;
   }
 
-  void _handleFoundVideo(String url, {Map<String, String>? customHeaders}) async {
+  void _handleFoundVideo(
+    String url, {
+    Map<String, String>? customHeaders,
+  }) async {
     // Avoid processing duplicates
     if (_detectedUrls.contains(url)) return;
-    
+
     // Ignorar URLs obvias de anuncios para no saturar la lista
-    if (url.contains('googleads') || url.contains('imasdk') || url.contains('doubleclick')) {
+    if (url.contains('googleads') ||
+        url.contains('imasdk') ||
+        url.contains('doubleclick')) {
       return;
     }
 
     _detectedUrls.add(url);
-    print("[SNIFFER] Analizando flujos para: ${url.substring(0, url.length > 50 ? 50 : url.length)}...");
-    
+    print(
+      "[SNIFFER] Analizando flujos para: ${url.substring(0, url.length > 50 ? 50 : url.length)}...",
+    );
+
     // FILTRO CRÍTICO: ¿Es esto un video real?
-    bool isVideo = url.contains('.m3u8') || 
-                   url.contains('.mp4') || 
-                   url.contains('.mpd') ||
-                   url.contains('ecotechproducts.shop') ||
-                   url.contains('cf-master') ||
-                   (url.contains('.txt') && (url.contains('master') || url.contains('playlist')));
-                   
+    bool isVideo =
+        url.contains('.m3u8') ||
+        url.contains('.mp4') ||
+        url.contains('.mpd') ||
+        url.contains('ecotechproducts.shop') ||
+        url.contains('cf-master') ||
+        (url.contains('.txt') &&
+            (url.contains('master') || url.contains('playlist')));
+
     if (!isVideo) return;
 
     setState(() => _statusText = "Capturando stream oficial...");
@@ -748,20 +1045,26 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
     String? cookieString;
     try {
       final cookieManager = CookieManager.instance();
-      
+
       // Sincronización agresiva: Obtenemos cookies de la URL del video Y de la página original
-      final pageCookies = await cookieManager.getCookies(url: WebUri(widget.url));
+      final pageCookies = await cookieManager.getCookies(
+        url: WebUri(widget.url),
+      );
       final mediaCookies = await cookieManager.getCookies(url: WebUri(url));
-      
+
       final all = [...pageCookies, ...mediaCookies];
       final cookieMap = <String, String>{};
       for (var c in all) {
         cookieMap[c.name] = c.value;
       }
-      cookieString = cookieMap.entries.map((e) => '${e.key}=${e.value}').join('; ');
-      
+      cookieString = cookieMap.entries
+          .map((e) => '${e.key}=${e.value}')
+          .join('; ');
+
       if (customHeaders != null) {
-        final lowerHeaders = customHeaders.map((k, v) => MapEntry(k.toLowerCase(), v));
+        final lowerHeaders = customHeaders.map(
+          (k, v) => MapEntry(k.toLowerCase(), v),
+        );
         if (lowerHeaders.containsKey('cookie')) {
           cookieString = lowerHeaders['cookie'];
         }
@@ -770,11 +1073,15 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
       print("[SNIFFER] Error capturando cookies: $e");
     }
 
-    final String ua = customHeaders?['user-agent'] ?? customHeaders?['User-Agent'] ?? "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36";
-    final String referer = customHeaders?['referer'] ?? customHeaders?['Referer'] ?? widget.url;
+    final String ua =
+        customHeaders?['user-agent'] ??
+        customHeaders?['User-Agent'] ??
+        "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36";
+    final String referer =
+        customHeaders?['referer'] ?? customHeaders?['Referer'] ?? widget.url;
 
     final headersForProbe = <String, String>{};
-    
+
     // Persistencia de tokens: Si capturamos cabeceras en esta sesión, las mantenemos como base
     if (customHeaders != null) {
       _lastCapturedHeaders ??= {};
@@ -785,30 +1092,39 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
       for (final entry in _lastCapturedHeaders!.entries) {
         // Clonamos cabeceras de seguridad críticas para evitar el error 403
         final keyLower = entry.key.toLowerCase();
-        if (keyLower.startsWith('sec-') || keyLower == 'x-auth' || keyLower == 'authorization' || keyLower == 'range' || keyLower == 'origin') {
+        if (keyLower.startsWith('sec-') ||
+            keyLower == 'x-auth' ||
+            keyLower == 'authorization' ||
+            keyLower == 'range' ||
+            keyLower == 'origin') {
           headersForProbe[entry.key] = entry.value;
         }
       }
     }
-    
+
     if (cookieString != null) headersForProbe['Cookie'] = cookieString;
     headersForProbe['User-Agent'] = ua;
     headersForProbe['Referer'] = referer;
     // Si no hay Origin, lo derivamos del Referer para mayor credibilidad
-    headersForProbe['Origin'] = headersForProbe['Origin'] ?? referer.split('/').take(3).join('/');
+    headersForProbe['Origin'] =
+        headersForProbe['Origin'] ?? referer.split('/').take(3).join('/');
     headersForProbe['Accept'] = '*/*';
     headersForProbe['Accept-Language'] = 'es-ES,es;q=0.9,en;q=0.8';
 
     // 2. Identify qualities & Explode (Like 1DM)
     try {
-      if (url.contains(".m3u8") || url.contains(".txt") || url.contains(".mpd")) {
-        print("[SNIFFER] Desglosando lista HLS/TXT para encontrar todas las calidades...");
-        
+      if (url.contains(".m3u8") ||
+          url.contains(".txt") ||
+          url.contains(".mpd")) {
+        print(
+          "[SNIFFER] Desglosando lista HLS/TXT para encontrar todas las calidades...",
+        );
+
         // Add the main HLS entry immediately WITHOUT probing size (manifests are always tiny)
         _addFoundMedia(
           url: url,
-          resolution: "Resolución Auto (HLS)",
-          size: "Streaming (HLS)",
+          resolution: "Resolución Auto",
+          size: "Streaming",
           headers: headersForProbe,
           cookies: cookieString,
         );
@@ -816,28 +1132,38 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
         // Fetch qualities in background so dialog populates fast
         final masterUrl = await _resolveHlsMasterUrl(url, headersForProbe);
         final targetUrl = masterUrl ?? url;
-        List<VideoQuality> explodedQualities = await VideoService.getHlsQualities(targetUrl, headers: headersForProbe);
-        
+        List<VideoQuality> explodedQualities =
+            await VideoService.getHlsQualities(
+              targetUrl,
+              headers: headersForProbe,
+            );
+
         if (explodedQualities.isEmpty) {
-          print('[SNIFFER] HTTP falló para obtener calidades, usando WebView fetch...');
+          print(
+            '[SNIFFER] HTTP falló para obtener calidades, usando WebView fetch...',
+          );
           final webViewText = await _fetchWithWebView(targetUrl);
           if (webViewText != null && webViewText.isNotEmpty) {
-            explodedQualities = await VideoService.getHlsQualities(targetUrl, headers: headersForProbe, masterText: webViewText);
+            explodedQualities = await VideoService.getHlsQualities(
+              targetUrl,
+              headers: headersForProbe,
+              masterText: webViewText,
+            );
           }
         }
-        
+
         print('[SNIFFER] Calidades encontradas: ${explodedQualities.length}');
         for (var q in explodedQualities) {
-           print('[SNIFFER] Calidad -> res:${q.resolution} url:${q.url}');
-           // Manifest sub-tracks (.txt/.m3u8) don't need size probing — add immediately
-           _addFoundMedia(
-             url: q.url,
-             resolution: "Streaming ${q.resolution}",
-             size: "Streaming (HLS)",
-             headers: headersForProbe,
-             cookies: cookieString,
-           );
-           print('[SNIFFER] Calidad agregada: ${q.url.split('/').last}');
+          print('[SNIFFER] Calidad -> res:${q.resolution} url:${q.url}');
+          // Manifest sub-tracks (.txt/.m3u8) don't need size probing — add immediately
+          _addFoundMedia(
+            url: q.url,
+            resolution: "Streaming ${q.resolution}",
+            size: "Streaming",
+            headers: headersForProbe,
+            cookies: cookieString,
+          );
+          print('[SNIFFER] Calidad agregada: ${q.url.split('/').last}');
         }
       } else if (url.contains(".ts") || url.contains(".m4s")) {
         print("[BYPASS] Sesión refrescada mediante fragmento de video.");
@@ -861,9 +1187,13 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
 
   Future<void> _handleManifestText(String url, String body) async {
     if (_isDisposed || !mounted) return;
-    if (!body.contains('#EXTM3U') && !body.contains('#EXT-X-STREAM-INF')) return;
+    if (!body.contains('#EXTM3U') && !body.contains('#EXT-X-STREAM-INF'))
+      return;
 
-    final headers = <String, String>{'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'};
+    final headers = <String, String>{
+      'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    };
     final qualities = <VideoQuality>[];
     try {
       final lines = body.split('\\n');
@@ -875,7 +1205,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
           if (resMatch != null) {
             currentRes = _formatResolution(resMatch.group(1) ?? '');
           }
-        } else if (line.isNotEmpty && !line.startsWith('#') && currentRes != null) {
+        } else if (line.isNotEmpty &&
+            !line.startsWith('#') &&
+            currentRes != null) {
           final qUrl = _resolveUrl(url, line);
           qualities.add(VideoQuality(resolution: currentRes, url: qUrl));
           currentRes = null;
@@ -922,23 +1254,34 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
     String? cookies,
   }) {
     if (_isDisposed || !mounted) return;
-    
+
     // Skip tiny files (likely error pages) EXCEPT for manifests (.m3u8, .mpd) which are just text files
-    final isManifest = url.contains('.m3u8') || url.contains('.mpd') || url.contains('.txt');
-    if (!isManifest && size != null && size.contains('KB') && !size.contains('Streaming')) {
-       final kb = double.tryParse(size.split(' ').first) ?? 0;
-       if (kb < 100) return; // Discard anything < 100KB
+    final isManifest =
+        url.contains('.m3u8') || url.contains('.mpd') || url.contains('.txt');
+    if (!isManifest &&
+        size != null &&
+        size.contains('KB') &&
+        !size.contains('Streaming')) {
+      final kb = double.tryParse(size.split(' ').first) ?? 0;
+      if (kb < 100) return; // Discard anything < 100KB
     }
 
     setState(() {
       if (_foundMedia.any((m) => m.videoUrl == url)) return;
-      _foundMedia.add(VideoExtractionData(
-        videoUrl: url,
-        qualities: [VideoQuality(resolution: size != null ? "$resolution ($size)" : resolution, url: url)],
-        cookies: cookies,
-        userAgent: headers['user-agent'] ?? headers['User-Agent'],
-        headers: headers,
-      ));
+      _foundMedia.add(
+        VideoExtractionData(
+          videoUrl: url,
+          qualities: [
+            VideoQuality(
+              resolution: size != null ? "$resolution ($size)" : resolution,
+              url: url,
+            ),
+          ],
+          cookies: cookies,
+          userAgent: headers['user-agent'] ?? headers['User-Agent'],
+          headers: headers,
+        ),
+      );
       _statusText = "¡Nuevo medio detectado!";
     });
   }
@@ -946,7 +1289,8 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   Future<String?> _fetchWithWebView(String url) async {
     if (_webViewController == null) return null;
     try {
-      final js = '''
+      final js =
+          '''
         (async function() {
           try {
             const resp = await fetch("$url");
@@ -964,9 +1308,14 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
     }
   }
 
-  Future<String?> _resolveHlsMasterUrl(String mediaUrl, Map<String, String> headers) async {
+  Future<String?> _resolveHlsMasterUrl(
+    String mediaUrl,
+    Map<String, String> headers,
+  ) async {
     try {
-      final mediaText = await _fetchText(mediaUrl, headers) ?? await _fetchWithWebView(mediaUrl);
+      final mediaText =
+          await _fetchText(mediaUrl, headers) ??
+          await _fetchWithWebView(mediaUrl);
       if (mediaText != null && mediaText.contains('#EXT-X-STREAM-INF')) {
         return mediaUrl;
       }
@@ -978,9 +1327,11 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
 
     final candidates = <String>{
       _replaceQualitySuffix(baseUrl) + query,
-      _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/master.m3u8') + query,
+      _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/master.m3u8') +
+          query,
       _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/index.m3u8') + query,
-      _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/playlist.m3u8') + query,
+      _replaceQualitySuffix(baseUrl).replaceAll('.m3u8', '/playlist.m3u8') +
+          query,
       '${uri.scheme}://${uri.host}${uri.pathSegments.take(uri.pathSegments.length - 1).join('/')}/master.m3u8$query',
       '${uri.scheme}://${uri.host}${uri.pathSegments.take(uri.pathSegments.length - 1).join('/')}/index.m3u8$query',
       '${uri.scheme}://${uri.host}${uri.pathSegments.take(uri.pathSegments.length - 1).join('/')}/playlist.m3u8$query',
@@ -999,12 +1350,20 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
   }
 
   String _replaceQualitySuffix(String url) {
-    return url.replaceAll(RegExp(r'(-microframe-(ld|sd|hd)|-(ld|sd|hd)|_(ld|sd|hd)|-\\d+p)\\.m3u8$', caseSensitive: false), '.m3u8');
+    return url.replaceAll(
+      RegExp(
+        r'(-microframe-(ld|sd|hd)|-(ld|sd|hd)|_(ld|sd|hd)|-\\d+p)\\.m3u8$',
+        caseSensitive: false,
+      ),
+      '.m3u8',
+    );
   }
 
   Future<String?> _fetchText(String url, Map<String, String> headers) async {
     try {
-      final res = await http.get(Uri.parse(url), headers: headers).timeout(const Duration(seconds: 4));
+      final res = await http
+          .get(Uri.parse(url), headers: headers)
+          .timeout(const Duration(seconds: 4));
       if (res.statusCode == 200) return res.body;
     } catch (_) {}
     return null;
@@ -1012,8 +1371,10 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
 
   Future<String?> _tryFindMp4InDialog(String hlsUrl) async {
     final String baseUrl = hlsUrl.split('?').first;
-    final String query = hlsUrl.contains('?') ? '?${hlsUrl.split('?').last}' : '';
-    
+    final String query = hlsUrl.contains('?')
+        ? '?${hlsUrl.split('?').last}'
+        : '';
+
     // Probing variations (Common patterns in PeliculaPlay, Akamai, and pirate CDNs)
     final variations = [
       baseUrl.replaceAll(RegExp(r'-microframe-(ld|sd|hd)\.m3u8$'), '.mp4'),
@@ -1032,24 +1393,33 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
     return null;
   }
 
-  Future<String?> _probeFileSize(String url, Map<String, String> headers) async {
+  Future<String?> _probeFileSize(
+    String url,
+    Map<String, String> headers,
+  ) async {
     try {
-      final response = await http.head(Uri.parse(url), headers: headers).timeout(const Duration(seconds: 4));
-      
+      final response = await http
+          .head(Uri.parse(url), headers: headers)
+          .timeout(const Duration(seconds: 4));
+
       if (response.statusCode == 200) {
         final cl = response.headers['content-length'];
         final ct = response.headers['content-type']?.toLowerCase();
-        
-        if (ct != null && (ct.contains('mpegurl') || ct.contains('apple.mpegurl'))) return "Streaming (HLS)";
+
+        if (ct != null &&
+            (ct.contains('mpegurl') || ct.contains('apple.mpegurl')))
+          return "Streaming";
 
         if (cl != null) {
           final bytes = int.tryParse(cl) ?? 0;
           if (bytes <= 0) return null;
-          
-          if (bytes < 40960) return "Streaming (HLS)"; 
 
-          if (bytes < 1024 * 1024) return "${(bytes / 1024).toStringAsFixed(1)} KB";
-          if (bytes < 1024 * 1024 * 1024) return "${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB";
+          if (bytes < 40960) return "Streaming";
+
+          if (bytes < 1024 * 1024)
+            return "${(bytes / 1024).toStringAsFixed(1)} KB";
+          if (bytes < 1024 * 1024 * 1024)
+            return "${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB";
           return "${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB";
         }
       }
@@ -1059,18 +1429,24 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
 
   Future<bool> _probeUrl(String url, {String? customReferer}) async {
     try {
-      final response = await http.head(Uri.parse(url), headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        if (customReferer != null) 'Referer': customReferer,
-      }).timeout(const Duration(seconds: 3));
-      
+      final response = await http
+          .head(
+            Uri.parse(url),
+            headers: {
+              'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              if (customReferer != null) 'Referer': customReferer,
+            },
+          )
+          .timeout(const Duration(seconds: 3));
+
       if (response.statusCode == 200) {
         final cl = response.headers['content-length'];
         if (cl != null) {
           final size = int.tryParse(cl) ?? 0;
           return size > 20 * 1024 * 1024; // Must be > 20MB for a movie
         }
-        return true; 
+        return true;
       }
     } catch (_) {}
     return false;
@@ -1078,7 +1454,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
 
   void _startSniffingTimer() async {
     if (_isDisposed || !mounted) return;
-    
+
     // JS Injection check (ES5 compatible + safer regex)
     const js = '''
       (function() {
@@ -1130,21 +1506,24 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
         return results.join('|||');
       })();
     ''';
-    
+
     try {
       if (_webViewController != null && !_isDisposed) {
         final result = await _webViewController?.evaluateJavascript(source: js);
-        if (result != null && result is String && result.isNotEmpty && !_isDisposed) {
+        if (result != null &&
+            result is String &&
+            result.isNotEmpty &&
+            !_isDisposed) {
           final urls = result.split('|||');
           for (var u in urls) {
-             if (u != "null" && u.length > 5) _handleFoundVideo(u);
+            if (u != "null" && u.length > 5) _handleFoundVideo(u);
           }
         }
       }
     } catch (e) {}
 
     _timerCount++;
-    
+
     if (!_isDisposed && mounted) {
       await Future.delayed(const Duration(seconds: 2));
       _startSniffingTimer();
@@ -1168,14 +1547,14 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
           Offset(w / 2, h / 2),
           Offset(w / 2 + 20, h / 2),
           Offset(w / 2, h / 2 + 20),
-          Offset(w / 2, h / 2)
+          Offset(w / 2, h / 2),
         ];
 
         for (var p in points) {
           if (_isDisposed) break;
           await _webviewTouchChannel.invokeMethod('tapAt', {
             'x': (offset.dx + p.dx) * dpr,
-            'y': (offset.dy + p.dy) * dpr
+            'y': (offset.dy + p.dy) * dpr,
           });
           // Un poco más de tiempo entre clics para dejar que el sitio procese el anuncio
           await Future.delayed(const Duration(milliseconds: 800));
@@ -1186,7 +1565,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
         if (!_isDisposed) {
           await _webviewTouchChannel.invokeMethod('tapAt', {
             'x': (offset.dx + w / 2) * dpr,
-            'y': (offset.dy + h / 2) * dpr
+            'y': (offset.dy + h / 2) * dpr,
           });
         }
       }
@@ -1200,10 +1579,14 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
     try {
       final dpr = MediaQuery.of(context).devicePixelRatio;
       final box = _webViewKey.currentContext?.findRenderObject() as RenderBox?;
-      
+      final failedServersJson = jsonEncode(_failedAlgo3Servers.toList());
+
       // 1. Clics JS (Copiados del reproductor para asegurar activación de Videasy)
-      _webViewController?.evaluateJavascript(source: r"""
+      _webViewController?.evaluateJavascript(
+        source:
+            """
           (function() {
+            window._failedVideasyServers = $failedServersJson;
             function isVisible(el) {
                if (!el) return false;
                var r = el.getBoundingClientRect();
@@ -1255,16 +1638,23 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                      // === PASO 2: Extracción y Auto-Selección ===
                      var panel = document.querySelector('[role="tabpanel"][data-state="active"]') || serversTab.parentElement.parentElement;
                      var serverBtns = Array.from(panel.querySelectorAll('button, [role="radio"], [role="menuitem"]'));
+                     var failed = Array.isArray(window._failedVideasyServers) ? window._failedVideasyServers : [];
+                     var usableServerBtns = serverBtns.filter(b => !failed.includes(b.textContent.trim().toLowerCase()));
                      
-                     var target = serverBtns.find(b => b.textContent.toLowerCase().includes('gekko'));
+                     // Prioridad: Omen -> Yoru -> Latino/Castellano -> Primero disponible
+                     var target = usableServerBtns.find(b => b.textContent.toLowerCase().includes('omen'));
                      if (!target) {
-                        target = serverBtns.find(b => {
+                        target = usableServerBtns.find(b => b.textContent.toLowerCase().includes('yoru'));
+                     }
+                     if (!target) {
+                        target = usableServerBtns.find(b => {
                            var t = b.textContent.toLowerCase();
                            return t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano');
                         });
                      }
+                     if (!target && usableServerBtns.length > 0) target = usableServerBtns[0];
                      if (target) {
-                        console.log('🎯 [AUTO-SELECT] Seleccionando servidor prioritario: ' + target.textContent);
+                        console.log('🎯 [AUTO-SELECT] Seleccionando servidor: ' + target.textContent);
                         if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServerSelected', target.textContent);
                         forceClick(target);
                      } else {
@@ -1289,20 +1679,31 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                } else {
                   // Fallback: Si no hay engranaje pero hay botones de servers directamente
                   var allButtons = document.querySelectorAll('button, [role="radio"], [role="menuitem"]');
+                  var failed = Array.isArray(window._failedVideasyServers) ? window._failedVideasyServers : [];
+                  var usableButtons = Array.from(allButtons).filter(b => !failed.includes(b.textContent.trim().toLowerCase()));
                   var fallbackTarget = null;
-                  for (var b of allButtons) {
-                     if (b.textContent.toLowerCase().includes('gekko') && isVisible(b)) {
+                  // Prioridad Fallback: Omen -> Yoru -> Latino/Castellano
+                  for (var b of usableButtons) {
+                     if (b.textContent.toLowerCase().includes('omen') && isVisible(b)) {
                         fallbackTarget = b; break;
                      }
                   }
                   if (!fallbackTarget) {
-                     for (var b of allButtons) {
+                     for (var b of usableButtons) {
+                        if (b.textContent.toLowerCase().includes('yoru') && isVisible(b)) {
+                           fallbackTarget = b; break;
+                        }
+                     }
+                  }
+                  if (!fallbackTarget) {
+                     for (var b of usableButtons) {
                         var t = b.textContent.toLowerCase();
                         if ((t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano')) && isVisible(b)) {
                            fallbackTarget = b; break;
                         }
                      }
                   }
+                  if (!fallbackTarget && usableButtons.length > 0) fallbackTarget = usableButtons[0];
                   if (fallbackTarget) {
                      console.log('🎯 [AUTO-SELECT] Fallback clic: ' + fallbackTarget.textContent);
                      if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServerSelected', fallbackTarget.textContent);
@@ -1311,7 +1712,8 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
                }
             }
           })();
-      """);
+      """,
+      );
 
       // 2. Clics Nativos (Copiados exactamente del reproductor)
       if (box != null && box.hasSize) {
@@ -1319,20 +1721,22 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog> with Single
         final w = box.size.width;
         final h = box.size.height;
 
-        print("[SNIFFER] Ejecutando Algoritmo 3 de Clics Humanos para descarga...");
+        print(
+          "[SNIFFER] Ejecutando Algoritmo 3 de Clics Humanos para descarga...",
+        );
 
         final points = [
           Offset(w / 2, h / 2),
           Offset(w / 2 + 20, h / 2),
           Offset(w / 2, h / 2 + 20),
-          Offset(w / 2 - 25, h / 2 - 25)
+          Offset(w / 2 - 25, h / 2 - 25),
         ];
 
         for (var p in points) {
           if (_isDisposed) break; // Solo parar si el widget fue destruido
           await _webviewTouchChannel.invokeMethod('tapAt', {
             'x': (offset.dx + p.dx) * dpr,
-            'y': (offset.dy + p.dy) * dpr
+            'y': (offset.dy + p.dy) * dpr,
           });
           await Future.delayed(const Duration(milliseconds: 600));
         }

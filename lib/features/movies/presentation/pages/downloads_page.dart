@@ -156,7 +156,7 @@ class _DownloadsPageState extends ConsumerState<DownloadsPage> {
                           TextSpan(text: ', abre el reproductor y presiona el icono '),
                           TextSpan(text: '⬇ Descargar', style: TextStyle(color: Color(0xFFD400FF), fontWeight: FontWeight.w600)),
                           TextSpan(text: ' en el enlace de tu preferencia. '),
-                          TextSpan(text: '(De preferencia HLS)', style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold)),
+                          TextSpan(text: '(De preferencia Streaming)', style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold)),
                         ],
                       ),
                     ),
@@ -283,8 +283,10 @@ class _DownloadsPageState extends ConsumerState<DownloadsPage> {
                 ),
                 Builder(
                   builder: (context) {
-                    String label = task.resolution.contains('Resolución Auto (HLS)') 
-                        ? 'HLS Adaptive' 
+                    String label = task.resolution.toLowerCase().contains('streaming') || 
+                                   task.resolution.toLowerCase().contains('hls') ||
+                                   task.videoUrl.contains('.m3u8')
+                        ? 'Streaming Adaptativo' 
                         : task.resolution;
                     
                     if (task.status == DownloadStatus.completed && task.savePath != null) {

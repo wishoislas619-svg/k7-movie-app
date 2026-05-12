@@ -1,0 +1,144 @@
+Analyzing video_player_page.dart...                             
+
+warning • Unused import: 'package:movie_app/features/movies/presentation/providers/movie_provider.dart' • lib/features/player/presentation/pages/video_player_page.dart:2:8 • unused_import
+warning • Unused import: '../../data/datasources/video_service.dart' • lib/features/player/presentation/pages/video_player_page.dart:17:8 • unused_import
+warning • Unused import: 'package:movie_app/features/movies/domain/entities/watch_history.dart' • lib/features/player/presentation/pages/video_player_page.dart:28:8 • unused_import
+warning • Unused import: 'package:movie_app/main.dart' • lib/features/player/presentation/pages/video_player_page.dart:30:8 • unused_import
+warning • Duplicate import • lib/features/player/presentation/pages/video_player_page.dart:35:8 • duplicate_import
+warning • The value of the field '_isDraggingBrightness' isn't used • lib/features/player/presentation/pages/video_player_page.dart:146:8 • unused_field
+   info • The private field _switchingToFloatingMode could be 'final' • lib/features/player/presentation/pages/video_player_page.dart:151:8 • prefer_final_fields
+   info • The private field _internalQualities could be 'final' • lib/features/player/presentation/pages/video_player_page.dart:154:22 • prefer_final_fields
+warning • The value of the field '_internalQualities' isn't used • lib/features/player/presentation/pages/video_player_page.dart:154:22 • unused_field
+warning • The value of the field '_currentQuality' isn't used • lib/features/player/presentation/pages/video_player_page.dart:155:17 • unused_field
+   info • The private field _internalSubtitles could be 'final' • lib/features/player/presentation/pages/video_player_page.dart:157:22 • prefer_final_fields
+   info • The private field _qualityToUrl could be 'final' • lib/features/player/presentation/pages/video_player_page.dart:165:23 • prefer_final_fields
+warning • The value of the field '_qualityToUrl' isn't used • lib/features/player/presentation/pages/video_player_page.dart:165:23 • unused_field
+   info • The private field _isQualityMenuOpen could be 'final' • lib/features/player/presentation/pages/video_player_page.dart:166:8 • prefer_final_fields
+warning • The value of the field '_isQualityMenuOpen' isn't used • lib/features/player/presentation/pages/video_player_page.dart:166:8 • unused_field
+warning • The value of the field '_hasAttemptedQualityOptimization' isn't used • lib/features/player/presentation/pages/video_player_page.dart:168:8 • unused_field
+   info • The private field _isExtractingServers could be 'final' • lib/features/player/presentation/pages/video_player_page.dart:208:8 • prefer_final_fields
+warning • The value of the field '_isExtractingServers' isn't used • lib/features/player/presentation/pages/video_player_page.dart:208:8 • unused_field
+   info • The private field _failedVideasyServers could be 'final' • lib/features/player/presentation/pages/video_player_page.dart:211:15 • prefer_final_fields
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:364:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:385:15 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:390:15 • avoid_print
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:477:13 • curly_braces_in_flow_control_structures
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:553:9 • curly_braces_in_flow_control_structures
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:632:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:638:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:644:5 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:651:9 • avoid_print
+   info • Unnecessary braces in a string interpolation • lib/features/player/presentation/pages/video_player_page.dart:652:62 • unnecessary_brace_in_string_interps
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:671:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:678:11 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:683:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:692:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:714:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:767:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:770:11 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:778:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:787:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1025:11 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1046:15 • avoid_print
+   info • Don't use 'BuildContext's across async gaps • lib/features/player/presentation/pages/video_player_page.dart:1065:39 • use_build_context_synchronously
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1098:11 • avoid_print
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:1130:15 • curly_braces_in_flow_control_structures
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1132:15 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1164:17 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1176:17 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1210:11 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1219:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1315:15 • avoid_print
+   info • Don't use 'BuildContext's across async gaps • lib/features/player/presentation/pages/video_player_page.dart:1332:42 • use_build_context_synchronously
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1336:15 • avoid_print
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:1341:17 • curly_braces_in_flow_control_structures
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1356:9 • avoid_print
+   info • Don't use 'BuildContext's across async gaps • lib/features/player/presentation/pages/video_player_page.dart:1423:25 • use_build_context_synchronously
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1428:15 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1438:17 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1490:19 • avoid_print
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:1515:7 • curly_braces_in_flow_control_structures
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1521:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1530:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1538:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1542:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1545:5 • avoid_print
+   info • 'current' is deprecated and shouldn't be used. refactored to application (will be remove after version 2.1.0) • lib/features/player/presentation/pages/video_player_page.dart:1675:36 • deprecated_member_use
+   info • 'setScreenBrightness' is deprecated and shouldn't be used. refactored to setApplicationScreenBrightness (will be remove after version 2.1.0) • lib/features/player/presentation/pages/video_player_page.dart:1687:28 • deprecated_member_use
+warning • The declaration '_loadCaptions' isn't referenced • lib/features/player/presentation/pages/video_player_page.dart:1699:29 • unused_element
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1728:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1746:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1747:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1906:15 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1928:15 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1934:21 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1942:15 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1951:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1956:11 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:1976:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:2018:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:2023:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:2088:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:2091:11 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:2094:11 • avoid_print
+   info • 'setScreenBrightness' is deprecated and shouldn't be used. refactored to setApplicationScreenBrightness (will be remove after version 2.1.0) • lib/features/player/presentation/pages/video_player_page.dart:2203:26 • deprecated_member_use
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:2230:9 • avoid_print
+   info • Unnecessary override • lib/features/player/presentation/pages/video_player_page.dart:2269:8 • unnecessary_overrides
+   info • 'setScreenBrightness' is deprecated and shouldn't be used. refactored to setApplicationScreenBrightness (will be remove after version 2.1.0) • lib/features/player/presentation/pages/video_player_page.dart:2303:28 • deprecated_member_use
+warning • The declaration '_togglePipControls' isn't referenced • lib/features/player/presentation/pages/video_player_page.dart:2331:8 • unused_element
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:2401:25 • curly_braces_in_flow_control_structures
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:2404:25 • curly_braces_in_flow_control_structures
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:2541:45 • curly_braces_in_flow_control_structures
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:2551:69 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:2584:46 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:2616:51 • deprecated_member_use
+   info • Use the null-aware marker '?' rather than a null check via an 'if' • lib/features/player/presentation/pages/video_player_page.dart:2752:37 • use_null_aware_elements
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:2765:59 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:2788:61 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:2843:65 • deprecated_member_use
+   info • 'clearCache' is deprecated and shouldn't be used. Use InAppWebViewController.clearAllCache instead • lib/features/player/presentation/pages/video_player_page.dart:3047:58 • deprecated_member_use
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:3059:47 • avoid_print
+warning • The operand can't be 'null', so the condition is always 'true' • lib/features/player/presentation/pages/video_player_page.dart:3162:64 • unnecessary_null_comparison
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:3163:55 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:3184:45 • avoid_print
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:3329:49 • curly_braces_in_flow_control_structures
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:3402:49 • avoid_print
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:3410:47 • curly_braces_in_flow_control_structures
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:3421:47 • avoid_print
+warning • The value of the local variable 'currentSeasonId' isn't used • lib/features/player/presentation/pages/video_player_page.dart:3506:15 • unused_local_variable
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:3732:33 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:3737:37 • deprecated_member_use
+warning • The declaration '_handleCreditsAction' isn't referenced • lib/features/player/presentation/pages/video_player_page.dart:3801:8 • unused_element
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:3843:52 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:3845:54 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:3928:29 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:4082:32 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:4111:33 • deprecated_member_use
+   info • Statements in an if should be enclosed in a block • lib/features/player/presentation/pages/video_player_page.dart:4143:21 • curly_braces_in_flow_control_structures
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:4173:33 • deprecated_member_use
+   info • Use the null-aware marker '?' rather than a null check via an 'if' • lib/features/player/presentation/pages/video_player_page.dart:4185:19 • use_null_aware_elements
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:4292:41 • deprecated_member_use
+   info • Unnecessary use of 'toList' in a spread • lib/features/player/presentation/pages/video_player_page.dart:4483:22 • unnecessary_to_list_in_spreads
+   info • Unnecessary use of 'toList' in a spread • lib/features/player/presentation/pages/video_player_page.dart:4549:22 • unnecessary_to_list_in_spreads
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:4595:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:4603:5 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:4647:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:4725:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:4779:7 • avoid_print
+   info • Unnecessary use of multiple underscores • lib/features/player/presentation/pages/video_player_page.dart:4830:51 • unnecessary_underscores
+   info • Unnecessary use of multiple underscores • lib/features/player/presentation/pages/video_player_page.dart:4830:55 • unnecessary_underscores
+warning • The declaration '_showVideasyServersDialog' isn't referenced • lib/features/player/presentation/pages/video_player_page.dart:4872:8 • unused_element
+   info • Unnecessary escape in string literal • lib/features/player/presentation/pages/video_player_page.dart:4936:64 • unnecessary_string_escapes
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:4978:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:5184:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:5202:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:5230:9 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:5238:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:5294:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:5340:7 • avoid_print
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:5356:7 • avoid_print
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/features/player/presentation/pages/video_player_page.dart:5372:31 • deprecated_member_use
+   info • Don't use 'BuildContext's across async gaps • lib/features/player/presentation/pages/video_player_page.dart:5478:26 • use_build_context_synchronously
+   info • Don't invoke 'print' in production code • lib/features/player/presentation/pages/video_player_page.dart:5585:11 • avoid_print
+
+140 issues found. (ran in 2.4s)

@@ -136,7 +136,18 @@ class VideoService {
 
       final lines = body.split('\n');
       String? currentRes;
-      
+
+      // Si es un Media Playlist (tiene segmentos TS o seg-) pero no tiene variantes,
+      // añadimos la URL original como única calidad para que el extractor no de error de "0 calidades".
+      if (!body.contains('#EXT-X-STREAM-INF') &&
+          (body.contains('.ts') ||
+              body.contains('seg-') ||
+              body.contains('.mp4') ||
+              body.contains('/stream/'))) {
+        qualities.add(VideoQuality(resolution: 'Auto', url: masterUrl));
+        return qualities;
+      }
+
       for (var i = 0; i < lines.length; i++) {
         final line = lines[i].trim();
         if (line.startsWith('#EXT-X-STREAM-INF')) {

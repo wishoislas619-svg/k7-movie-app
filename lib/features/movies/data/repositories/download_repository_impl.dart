@@ -274,7 +274,8 @@ class DownloadRepository {
     }
     print('[DL] finalUrl=$finalUrl ext=$finalExt (after conversion attempt)');
 
-    final fileName = '${task.movieName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}_${task.resolution}.$finalExt';
+    final baseName = _buildSafeFileBase(task);
+    final fileName = '$baseName.$finalExt';
 
     await updateDownloadTask(task.copyWith(status: my.DownloadStatus.downloading, videoUrl: finalUrl));
 
@@ -566,6 +567,13 @@ class DownloadRepository {
             
             // Forzar extensión .mp4 para el archivo público
             String publicName = finalPath.split('/').last;
+
+            // Asegurar que el nombre público sea descriptivo y sin marcas de HLS crudo
+            publicName = publicName
+                .replaceAll('_HLS_', '_Streaming_')
+                .replaceAll('(HLS)', '(Streaming)')
+                .replaceAll('HLS', 'Streaming');
+
             if (publicName.toLowerCase().endsWith('.ts')) {
               publicName = publicName.substring(0, publicName.length - 3) + '.mp4';
             } else if (publicName.toLowerCase().endsWith('.m3u8')) {
@@ -576,9 +584,9 @@ class DownloadRepository {
 
             final publicFile = await File(finalPath).copy('${pubDir.path}/$publicName');
             pPath = publicFile.path;
-            await File(finalPath).delete(); // Borramos el oculto
+            await File(finalPath).delete(); // Borramos el archivo temporal/original
         } catch(e) {
-            print("[PUBLIC DL] Error copiando HLS a público: $e");
+            print("[PUBLIC DL] Error copiando archivo a público: $e");
         }
     }
 
@@ -634,7 +642,15 @@ class DownloadRepository {
   }
 
   String _buildSafeFileBase(my.DownloadTask task) {
-    return '${task.movieName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}_${task.resolution.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_')}';
+    // Reemplazamos (HLS) por (Streaming) en el nombre base del archivo
+    String res = task.resolution
+        .replaceAll('(HLS)', '(Streaming)')
+        .replaceAll('HLS', 'Streaming');
+        
+    String movie = task.movieName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
+    String resolution = res.replaceAll(RegExp(r'[^a-zA-Z0-9()]'), '_');
+    
+    return '${movie}_$resolution';
   }
 
   Future<String?> _updateTaskMediaInfo(my.DownloadTask task, String path) async {
@@ -805,7 +821,7 @@ class DownloadRepository {
     onProgress?.call(0.0, 'Convirtiendo...');
 
     final remuxCmd =
-        '-y -i \"$inputPath\" -c copy -bsf:a aac_adtstoasc -movflags +faststart -f mp4 \"$tempOutputPath\"';
+        '-y -i \"$inputPath\" -c:v copy -c:a aac -b:a 128k -movflags +faststart -f mp4 \"$tempOutputPath\"';
     final session = await FFmpegKit.execute(remuxCmd);
     final sessionId = session.getSessionId();
     final rc = await Future.any([
@@ -1122,7 +1138,7 @@ class DownloadRepository {
     // Multiple conversion attempts with different ffmpeg flags
     final attempts = [
       // Attempt 1: Copy all streams (fastest)
-      '-y -i "$inputPath" -c copy -bsf:a aac_adtstoasc -movflags +faststart -f mp4 "$outputPath.tmp"',
+      '-y -i "$inputPath" -c:v copy -c:a aac -b:a 128k -movflags +faststart -f mp4 "$outputPath.tmp"',
       // Attempt 2: Re-encode video & audio (slower but more compatible)
       '-y -i "$inputPath" -c:v libx264 -preset ultrafast -crf 23 -c:a aac -b:a 128k -movflags +faststart -f mp4 "$outputPath.tmp"',
       // Attempt 3: Just copy video, re-encode audio

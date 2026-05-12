@@ -44,7 +44,8 @@ class CastButton extends ConsumerStatefulWidget {
   ConsumerState<CastButton> createState() => _CastButtonState();
 }
 
-class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProviderStateMixin {
+class _CastButtonState extends ConsumerState<CastButton>
+    with SingleTickerProviderStateMixin {
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
   final _castService = CastService();
@@ -84,7 +85,11 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
   void _openCastSelection() {
     if (widget.videoUrl.isEmpty && widget.localFilePath == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Espera a que el video comience a reproducirse para transmitir.')),
+        const SnackBar(
+          content: Text(
+            'Espera a que el video comience a reproducirse para transmitir.',
+          ),
+        ),
       );
       return;
     }
@@ -93,11 +98,14 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
       context: context,
       backgroundColor: const Color(0xFF141414),
       isScrollControlled: true, // Permite que el sheet crezca si es necesario
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (context) => Container(
         padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
         constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.8, // Límite de seguridad
+          maxHeight:
+              MediaQuery.of(context).size.height * 0.8, // Límite de seguridad
         ),
         child: SingleChildScrollView(
           child: Column(
@@ -106,12 +114,19 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
               Container(
                 width: 40,
                 height: 4,
-                decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
               const SizedBox(height: 24),
               const Text(
                 '¿Cómo quieres transmitir?',
-                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               const SizedBox(height: 8),
               const Text(
@@ -120,9 +135,15 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
               ),
               const SizedBox(height: 28),
               _buildSelectionOption(
-                icon: _castService.isConnected ? Icons.settings_remote : Icons.cast,
-                title: _castService.isConnected ? 'Control Remoto (K7-MOVIE)' : 'Cast Interno (K7-MOVIE)',
-                subtitle: _castService.isConnected ? 'Controlar reproducción en la TV' : 'Protocolos DLNA, Chromecast y AirPlay',
+                icon: _castService.isConnected
+                    ? Icons.settings_remote
+                    : Icons.cast,
+                title: _castService.isConnected
+                    ? 'Control Remoto (K7-MOVIE)'
+                    : 'Cast Interno (K7-MOVIE)',
+                subtitle: _castService.isConnected
+                    ? 'Controlar reproducción en la TV'
+                    : 'Protocolos DLNA, Chromecast y AirPlay',
                 color: const Color(0xFF00A3FF),
                 onTap: () {
                   Navigator.pop(context);
@@ -175,7 +196,10 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
           children: [
             Container(
               padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: color.withOpacity(0.15), shape: BoxShape.circle),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.15),
+                shape: BoxShape.circle,
+              ),
               child: Icon(icon, color: color, size: 24),
             ),
             const SizedBox(width: 16),
@@ -183,9 +207,19 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                  ),
                   const SizedBox(height: 2),
-                  Text(subtitle, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
                 ],
               ),
             ),
@@ -199,17 +233,34 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
   Future<String?> _extractIfNeeded(String url) async {
     // Si la URL ya es un video directo (m3u8, mp4, etc) o ya está proxeada, no extraemos
     final lower = url.toLowerCase();
-    final isDirectVideo = lower.contains('.m3u8') || 
-                         lower.contains('.mp4') || 
-                         lower.contains('.mpd') || 
-                         lower.contains('.mkv') ||
-                         url.startsWith('http://127.0.0.1');
+    final isDirectVideo =
+        lower.contains('.m3u8') ||
+        lower.contains('.mp4') ||
+        lower.contains('.mpd') ||
+        lower.contains('.mkv') ||
+        url.startsWith('http://127.0.0.1');
 
     if (isDirectVideo || widget.algorithm <= 0) {
       // Si ya es video pero queremos proxearlo para limpiar anuncios
-      if (!url.startsWith('http://127.0.0.1') && !url.startsWith('https://127.0.0.1')) {
-         await MediaProxyService().start();
-         return MediaProxyService().getProxiedUrl(url, widget.headers);
+      if (!url.startsWith('http://127.0.0.1') &&
+          !url.startsWith('https://127.0.0.1')) {
+        await MediaProxyService().start();
+
+        // Si es HLS y estamos en algoritmo 2 o 3, forzamos el modo puente (bridge)
+        // para remuxear a MP4. Esto soluciona los errores de carga en WVC y TVs.
+        final bool shouldBridge =
+            (widget.algorithm == 4 || widget.algorithm == 5) &&
+            (lower.contains('.m3u8') ||
+                lower.contains('.txt') ||
+                lower.contains('playlist'));
+
+        return MediaProxyService().getProxiedUrl(
+          url,
+          widget.headers,
+          useLocalhost: false,
+          algorithm: widget.algorithm,
+          useBridge: shouldBridge,
+        );
       }
       return url;
     }
@@ -219,10 +270,8 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
     final VideoExtractionData? result = await showDialog<VideoExtractionData>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => VideoExtractorDialog(
-        url: url,
-        extractionAlgorithm: widget.algorithm,
-      ),
+      builder: (_) =>
+          VideoExtractorDialog(url: url, extractionAlgorithm: widget.algorithm),
     );
 
     if (result == null || result.videoUrl.isEmpty) return null;
@@ -235,7 +284,19 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
     headers['Referer'] = url;
 
     await MediaProxyService().start();
-    return MediaProxyService().getProxiedUrl(result.videoUrl, headers, algorithm: widget.algorithm);
+    final bool shouldBridge =
+        (widget.algorithm == 3) &&
+        (result.videoUrl.toLowerCase().contains('.m3u8') ||
+            result.videoUrl.toLowerCase().contains('.txt') ||
+            result.videoUrl.toLowerCase().contains('playlist'));
+
+    return MediaProxyService().getProxiedUrl(
+      result.videoUrl,
+      headers,
+      useLocalhost: false,
+      algorithm: widget.algorithm,
+      useBridge: shouldBridge,
+    );
   }
 
   Future<void> _checkAdAndProceed(VoidCallback onDone) async {
@@ -254,7 +315,8 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
-        if (!loadingDialogContext.isCompleted) loadingDialogContext.complete(ctx);
+        if (!loadingDialogContext.isCompleted)
+          loadingDialogContext.complete(ctx);
         return Center(
           child: Container(
             padding: const EdgeInsets.all(24),
@@ -267,19 +329,24 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
               children: [
                 CircularProgressIndicator(color: Color(0xFF00A3FF)),
                 SizedBox(height: 16),
-                Text('Cargando anuncio...', style: TextStyle(color: Colors.white, fontSize: 14)),
+                Text(
+                  'Cargando anuncio...',
+                  style: TextStyle(color: Colors.white, fontSize: 14),
+                ),
               ],
             ),
           ),
         );
       },
     ).then((_) {
-      if (!loadingDialogContext.isCompleted) loadingDialogContext.completeError("Dialog dismissed or failed");
+      if (!loadingDialogContext.isCompleted)
+        loadingDialogContext.completeError("Dialog dismissed or failed");
     });
 
     // Timeout de seguridad para el contexto del diálogo (2 segundos)
     Timer(const Duration(seconds: 2), () {
-      if (!loadingDialogContext.isCompleted) loadingDialogContext.completeError("Dialog timeout");
+      if (!loadingDialogContext.isCompleted)
+        loadingDialogContext.completeError("Dialog timeout");
     });
 
     final ticketId = const Uuid().v4();
@@ -299,7 +366,7 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
     );
 
     final result = await adCompleter.future;
-    
+
     // Cerrar el diálogo usando su propio context para asegurar que cerramos el correcto
     try {
       final ctxToClose = await loadingDialogContext.future;
@@ -307,7 +374,9 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
         Navigator.pop(ctxToClose);
       }
     } catch (e) {
-      debugPrint("No se pudo cerrar el diálogo de carga (posiblemente no se mostró): $e");
+      debugPrint(
+        "No se pudo cerrar el diálogo de carga (posiblemente no se mostró): $e",
+      );
     }
 
     if (result) {
@@ -316,7 +385,9 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Debes ver el anuncio completo para usar la función de Cast.'),
+            content: Text(
+              'Debes ver el anuncio completo para usar la función de Cast.',
+            ),
             backgroundColor: Colors.redAccent,
           ),
         );
@@ -343,7 +414,9 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
       // MÉTODO 1: Esquema de URL oficial de WVC (Recomendado para apps externas)
       final encodedUrl = Uri.encodeComponent(videoUrl);
       final encodedTitle = Uri.encodeComponent(widget.title);
-      final Uri wvcSchemeUri = Uri.parse('wvc-x-callback://open?url=$encodedUrl&title=$encodedTitle');
+      final Uri wvcSchemeUri = Uri.parse(
+        'wvc-x-callback://open?url=$encodedUrl&title=$encodedTitle',
+      );
 
       final bool launchedScheme = await launchUrl(
         wvcSchemeUri,
@@ -357,23 +430,22 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
         action: 'android.intent.action.VIEW',
         data: videoUrl,
         package: wvcPackage,
-        arguments: {
-          'title': widget.title,
-          'secure_uri': true,
-        },
+        arguments: {'title': widget.title, 'secure_uri': true},
       );
-      
+
       await intent.launch();
     } catch (e) {
       print('--- [WVC_ERROR] Error lanzando WVC: $e ---');
-      
+
       // Fallback: Intentar con el tipo de video si lo anterior falla
       try {
         final intentFallback = AndroidIntent(
           action: 'android.intent.action.VIEW',
           data: videoUrl,
           package: wvcPackage,
-          type: videoUrl.contains('.m3u8') ? 'application/x-mpegURL' : 'video/*',
+          type: videoUrl.contains('.m3u8')
+              ? 'application/x-mpegURL'
+              : 'video/*',
         );
         await intentFallback.launch();
       } catch (e2) {
@@ -389,7 +461,10 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('Web Video Caster no instalada', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Web Video Caster no instalada',
+          style: TextStyle(color: Colors.white),
+        ),
         content: const Text(
           'Para usar esta opción necesitas descargar Web Video Caster desde la Play Store. ¿Deseas ir ahora?',
           style: TextStyle(color: Colors.white70),
@@ -397,18 +472,26 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('CANCELAR', style: TextStyle(color: Colors.white38)),
+            child: const Text(
+              'CANCELAR',
+              style: TextStyle(color: Colors.white38),
+            ),
           ),
           TextButton(
             onPressed: () {
               Navigator.pop(context);
-              final Uri playStoreUri = Uri.parse('https://play.google.com/store/apps/details?id=com.instantbits.cast.webvideo');
-              launchUrl(
-                playStoreUri,
-                mode: LaunchMode.externalApplication,
+              final Uri playStoreUri = Uri.parse(
+                'https://play.google.com/store/apps/details?id=com.instantbits.cast.webvideo',
               );
+              launchUrl(playStoreUri, mode: LaunchMode.externalApplication);
             },
-            child: const Text('DESCARGAR', style: TextStyle(color: Color(0xFF00FF87), fontWeight: FontWeight.bold)),
+            child: const Text(
+              'DESCARGAR',
+              style: TextStyle(
+                color: Color(0xFF00FF87),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ),
         ],
       ),
@@ -436,9 +519,9 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
           // Navegar al control remoto una sola vez, después del pop del sheet
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _castService.isConnected) {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const CastRemotePage()),
-              );
+              Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const CastRemotePage()));
             }
           });
         },
@@ -464,7 +547,9 @@ class _CastButtonState extends ConsumerState<CastButton> with SingleTickerProvid
     return AnimatedBuilder(
       animation: _pulseAnimation,
       builder: (context, child) {
-        final scale = (isScanning || isConnecting) ? _pulseAnimation.value : 1.0;
+        final scale = (isScanning || isConnecting)
+            ? _pulseAnimation.value
+            : 1.0;
         return Transform.scale(
           scale: scale,
           child: IconButton(
