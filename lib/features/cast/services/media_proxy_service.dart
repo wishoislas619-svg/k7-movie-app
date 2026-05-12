@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:http/http.dart' as http;
 
 class MediaProxyService {
@@ -21,6 +22,7 @@ class MediaProxyService {
   String _localIp = '';
   final Map<String, _BridgeSession> _activeBridgeSessions = {};
   final Map<String, Map<String, String>> _pendingBridgeHeaders = {};
+  final Map<String, _A3Entry> _a3Registry = {};
   final Map<String, String> _localFileRegistry = {}; // fileId → filePath
   final Map<String, String> _remuxedFiles = {}; // originalPath → remuxedPath
   final Map<String, String> _manifestCache = {}; // url → body
@@ -125,6 +127,8 @@ class MediaProxyService {
           _handleLocalFileRequest(request);
         } else if (request.uri.path.startsWith('/proxy')) {
           _handleProxyRequest(request);
+        } else if (request.uri.path.startsWith('/a3/')) {
+          _handleA3Request(request);
         } else {
           request.response.statusCode = HttpStatus.notFound;
           request.response.close();
@@ -988,6 +992,127 @@ class MediaProxyService {
     _server = null;
     _port = 0;
   }
+
+  // --- NUEVA HERRAMIENTA A3: PROXY POR REGISTRO (SIN URLS LARGAS) ---
+
+  String registerA3(String url, Map<String, String> headers) {
+    final id = url.hashCode.abs().toString();
+    final uri = Uri.parse(url);
+    var baseUrl = uri.replace(pathSegments: uri.pathSegments.take(math.max(0, uri.pathSegments.length - 1)).toList()).toString();
+    if (!baseUrl.endsWith('/')) baseUrl += '/';
+    
+    final proxyUrl = 'http://$_localIp:$_port/a3/$id/index.m3u8';
+    _a3Registry[id] = _A3Entry(url, headers, baseUrl);
+    print('🆔 [A3_REGISTRY] Registrado ID: $id');
+    print('🔗 [A3_PROXY_URL] $proxyUrl');
+    return proxyUrl;
+  }
+
+  Future<void> _handleA3Request(HttpRequest request) async {
+    final pathParts = request.uri.path.split('/');
+    if (pathParts.length < 3) {
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+      return;
+    }
+
+    // 🕵️ DETECTAR ID Y FILENAME (Formato: /a3/{id}/{filename})
+    if (pathParts.length < 4) {
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+      return;
+    }
+
+    final String id = pathParts[2];
+    final String filename = pathParts.skip(3).join('/'); // Captura index.m3u8 o seg-1.ts
+    
+    final entry = _a3Registry[id];
+    if (entry == null) {
+      print('❌ [A3_PROXY] ID no encontrado: $id');
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+      return;
+    }
+
+    String targetUrl;
+    if (filename == 'index.m3u8' || filename.isEmpty) {
+      targetUrl = entry.url;
+    } else {
+      targetUrl = Uri.parse(entry.baseUrl).resolve(filename).toString();
+    }
+
+    print('📡 [A3_PROXY] Solicitando: $filename -> $targetUrl');
+
+    final Map<String, String> headers = Map<String, String>.from(entry.headers);
+
+    // Copiar cabeceras de la petición (Excepto Host y Connection)
+    request.headers.forEach((name, values) {
+      final n = name.toLowerCase();
+      if (n != 'host' && n != 'connection') {
+         headers[name] = values.join(', ');
+      }
+    });
+
+    final requestId = 'A3-${id.substring(math.max(0, id.length - 4))}-${DateTime.now().millisecondsSinceEpoch.toString().substring(10)}';
+    // print('📡 [A3_PROXY][$requestId] -> $targetUrl');
+
+    try {
+      final client = http.Client();
+      final proxyRequest = http.Request(request.method, Uri.parse(targetUrl));
+      headers.forEach((k, v) => proxyRequest.headers[k] = v);
+      proxyRequest.followRedirects = true;
+
+      final streamedResponse = await client.send(proxyRequest);
+      final finalTargetUrl = streamedResponse.request?.url.toString() ?? targetUrl;
+      
+      // 🔄 ACTUALIZAR BASE URL SI HUBO REDIRECCIÓN (Importante para Videasy)
+      if (streamedResponse.headers.containsKey('location') || (finalTargetUrl != targetUrl)) {
+         final finalUri = Uri.parse(finalTargetUrl);
+         var newBaseUrl = finalUri.replace(pathSegments: finalUri.pathSegments.take(math.max(0, finalUri.pathSegments.length - 1)).toList()).toString();
+         if (!newBaseUrl.endsWith('/')) newBaseUrl += '/';
+         
+         if (entry.baseUrl != newBaseUrl && !targetUrl.contains('/s/')) {
+            _a3Registry[id] = _A3Entry(entry.url, entry.headers, newBaseUrl);
+            // print('🔄 [A3_PROXY] BaseUrl actualizada: $newBaseUrl');
+         }
+      }
+
+      // Pasar status code (importante para 206 Partial Content)
+      request.response.statusCode = streamedResponse.statusCode;
+      
+      // Forzar CORS para evitar bloqueos en navegadores de TV
+      request.response.headers.set('Access-Control-Allow-Origin', '*');
+      request.response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      request.response.headers.set('Access-Control-Allow-Headers', '*');
+      
+      // Forzar Content-Type si es manifiesto (Videasy a veces manda text/plain)
+      if (filename.contains('.m3u8') || filename.isEmpty) {
+        request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
+      } else {
+        request.response.headers.contentType = ContentType.parse(streamedResponse.headers['content-type'] ?? 'application/octet-stream');
+      }
+
+      // PIPE DIRECTO (Transparent Proxy)
+      await request.response.addStream(streamedResponse.stream);
+      await request.response.close();
+      client.close();
+    } catch (e) {
+      // print('❌ [A3_PROXY] Error en $targetUrl: $e');
+      try {
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        await request.response.close();
+      } catch (_) {}
+    }
+  }
+
+  // Se elimina _rewriteM3u8A3 ya que ahora es un proxy transparente
+}
+
+class _A3Entry {
+  final String url;
+  final Map<String, String> headers;
+  final String baseUrl;
+  _A3Entry(this.url, this.headers, this.baseUrl);
 }
 
 class _BridgeSession {

@@ -285,10 +285,14 @@ class _CastButtonState extends ConsumerState<CastButton>
 
     await MediaProxyService().start();
     final bool shouldBridge =
-        (widget.algorithm == 3) &&
+        (widget.algorithm == 4 || widget.algorithm == 5) &&
         (result.videoUrl.toLowerCase().contains('.m3u8') ||
             result.videoUrl.toLowerCase().contains('.txt') ||
             result.videoUrl.toLowerCase().contains('playlist'));
+
+    if (widget.algorithm == 3) {
+      return MediaProxyService().registerA3(result.videoUrl, headers);
+    }
 
     return MediaProxyService().getProxiedUrl(
       result.videoUrl,

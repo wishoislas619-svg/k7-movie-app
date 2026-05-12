@@ -267,7 +267,7 @@ class CastService extends ChangeNotifier {
     final Map<String, String> combinedHeaders = {
       // Por defecto: UA Móvil (Algoritmo 1 / Estándar)
       'User-Agent':
-          'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
       'Accept': '*/*',
       'Accept-Language': 'es-ES,es;q=0.9',
       'Connection': 'keep-alive',
@@ -278,7 +278,7 @@ class CastService extends ChangeNotifier {
         effectiveUrl.contains('embed.su') ||
         effectiveUrl.contains('videasy')) {
       combinedHeaders['User-Agent'] =
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1';
       combinedHeaders['Referer'] =
           effectiveHeaders?['Referer'] ?? 'https://player.videasy.net/';
       combinedHeaders['Origin'] =
