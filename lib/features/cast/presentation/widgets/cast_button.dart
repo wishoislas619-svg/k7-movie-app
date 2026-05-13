@@ -230,7 +230,7 @@ class _CastButtonState extends ConsumerState<CastButton>
     );
   }
 
-  Future<String?> _extractIfNeeded(String url) async {
+  Future<String?> _extractIfNeeded(String url, {bool toCast = false}) async {
     // Si la URL ya es un video directo (m3u8, mp4, etc) o ya está proxeada, no extraemos
     final lower = url.toLowerCase();
     final isDirectVideo =
@@ -253,6 +253,11 @@ class _CastButtonState extends ConsumerState<CastButton>
             (lower.contains('.m3u8') ||
                 lower.contains('.txt') ||
                 lower.contains('playlist'));
+
+
+        if (widget.algorithm == 3 && toCast) {
+          return MediaProxyService().registerA3(url, widget.headers ?? {}, toCast: true);
+        }
 
         return MediaProxyService().getProxiedUrl(
           url,
@@ -284,14 +289,16 @@ class _CastButtonState extends ConsumerState<CastButton>
     headers['Referer'] = url;
 
     await MediaProxyService().start();
+    // Para A3 en Cast: usar el Registro A3 transparente (sin bridge)
+    // Para A3 en Exoplayer: usar bridge para convertir HLS a MP4
     final bool shouldBridge =
-        (widget.algorithm == 4 || widget.algorithm == 5) &&
+        (widget.algorithm == 3 && !toCast) &&
         (result.videoUrl.toLowerCase().contains('.m3u8') ||
             result.videoUrl.toLowerCase().contains('.txt') ||
             result.videoUrl.toLowerCase().contains('playlist'));
 
-    if (widget.algorithm == 3) {
-      return MediaProxyService().registerA3(result.videoUrl, headers);
+    if (widget.algorithm == 3 && toCast) {
+      return MediaProxyService().registerA3(result.videoUrl, headers, toCast: true);
     }
 
     return MediaProxyService().getProxiedUrl(
@@ -400,7 +407,7 @@ class _CastButtonState extends ConsumerState<CastButton>
   }
 
   Future<void> _launchWebVideoCaster() async {
-    final String? finalUrl = await _extractIfNeeded(widget.videoUrl);
+    final String? finalUrl = await _extractIfNeeded(widget.videoUrl, toCast: true);
     if (finalUrl == null || !mounted) return;
 
     final String videoUrl = finalUrl;
@@ -503,7 +510,7 @@ class _CastButtonState extends ConsumerState<CastButton>
   }
 
   Future<void> _openCastSheet() async {
-    final String? finalUrl = await _extractIfNeeded(widget.videoUrl);
+    final String? finalUrl = await _extractIfNeeded(widget.videoUrl, toCast: true);
     if (finalUrl == null || !mounted) return;
 
     showModalBottomSheet(

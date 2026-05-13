@@ -995,28 +995,21 @@ class MediaProxyService {
 
   // --- NUEVA HERRAMIENTA A3: PROXY POR REGISTRO (SIN URLS LARGAS) ---
 
-  String registerA3(String url, Map<String, String> headers) {
+  String registerA3(String url, Map<String, String> headers, {bool toCast = false}) {
     final id = url.hashCode.abs().toString();
     final uri = Uri.parse(url);
     var baseUrl = uri.replace(pathSegments: uri.pathSegments.take(math.max(0, uri.pathSegments.length - 1)).toList()).toString();
     if (!baseUrl.endsWith('/')) baseUrl += '/';
     
     final proxyUrl = 'http://$_localIp:$_port/a3/$id/index.m3u8';
-    _a3Registry[id] = _A3Entry(url, headers, baseUrl);
-    print('🆔 [A3_REGISTRY] Registrado ID: $id');
+    _a3Registry[id] = _A3Entry(url, headers, baseUrl, toCast: toCast);
+    print('🆔 [A3_REGISTRY] Registrado ID: $id (toCast: $toCast)');
     print('🔗 [A3_PROXY_URL] $proxyUrl');
     return proxyUrl;
   }
 
   Future<void> _handleA3Request(HttpRequest request) async {
     final pathParts = request.uri.path.split('/');
-    if (pathParts.length < 3) {
-      request.response.statusCode = HttpStatus.notFound;
-      await request.response.close();
-      return;
-    }
-
-    // 🕵️ DETECTAR ID Y FILENAME (Formato: /a3/{id}/{filename})
     if (pathParts.length < 4) {
       request.response.statusCode = HttpStatus.notFound;
       await request.response.close();
@@ -1024,9 +1017,20 @@ class MediaProxyService {
     }
 
     final String id = pathParts[2];
-    final String filename = pathParts.skip(3).join('/'); // Captura index.m3u8 o seg-1.ts
-    
+    final String filename = pathParts.skip(3).join('/');
     final entry = _a3Registry[id];
+
+    // 🛡️ MANEJAR CORS PRE-FLIGHT (Solo si es para Cast)
+    if (request.method == 'OPTIONS' && (entry?.toCast ?? false)) {
+      request.response.statusCode = HttpStatus.ok;
+      request.response.headers.set('Access-Control-Allow-Origin', '*');
+      request.response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      request.response.headers.set('Access-Control-Allow-Headers', '*');
+      request.response.headers.set('Access-Control-Max-Age', '86400');
+      await request.response.close();
+      return;
+    }
+
     if (entry == null) {
       print('❌ [A3_PROXY] ID no encontrado: $id');
       request.response.statusCode = HttpStatus.notFound;
@@ -1043,13 +1047,24 @@ class MediaProxyService {
 
     print('📡 [A3_PROXY] Solicitando: $filename -> $targetUrl');
 
-    final Map<String, String> headers = Map<String, String>.from(entry.headers);
+    final Map<String, String> proxyHeaders = Map<String, String>.from(entry.headers);
 
-    // Copiar cabeceras de la petición (Excepto Host y Connection)
+    // Copiar cabeceras de la petición (Solo si NO es Cast o si no son sensibles)
     request.headers.forEach((name, values) {
       final n = name.toLowerCase();
-      if (n != 'host' && n != 'connection') {
-         headers[name] = values.join(', ');
+      bool shouldCopy = true;
+      if (entry.toCast) {
+         // En Cast protegemos cabeceras de sesión
+         if (n == 'host' || n == 'connection' || n == 'referer' || n == 'user-agent' || n == 'origin') {
+            shouldCopy = false;
+         }
+      } else {
+         // En Exoplayer copiamos casi todo
+         if (n == 'host' || n == 'connection') shouldCopy = false;
+      }
+      
+      if (shouldCopy) {
+         proxyHeaders[name] = values.join(', ');
       }
     });
 
@@ -1059,7 +1074,7 @@ class MediaProxyService {
     try {
       final client = http.Client();
       final proxyRequest = http.Request(request.method, Uri.parse(targetUrl));
-      headers.forEach((k, v) => proxyRequest.headers[k] = v);
+      proxyHeaders.forEach((k, v) => proxyRequest.headers[k] = v);
       proxyRequest.followRedirects = true;
 
       final streamedResponse = await client.send(proxyRequest);
@@ -1081,9 +1096,13 @@ class MediaProxyService {
       request.response.statusCode = streamedResponse.statusCode;
       
       // Forzar CORS para evitar bloqueos en navegadores de TV
-      request.response.headers.set('Access-Control-Allow-Origin', '*');
-      request.response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      request.response.headers.set('Access-Control-Allow-Headers', '*');
+      // Forzar CORS solo para Cast (WVC/Smart TV)
+      if (entry.toCast) {
+        request.response.headers.set('Access-Control-Allow-Origin', '*');
+        request.response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        request.response.headers.set('Access-Control-Allow-Headers', '*');
+        request.response.headers.set('Access-Control-Expose-Headers', '*');
+      }
       
       // Forzar Content-Type si es manifiesto (Videasy a veces manda text/plain)
       if (filename.contains('.m3u8') || filename.isEmpty) {
@@ -1112,7 +1131,9 @@ class _A3Entry {
   final String url;
   final Map<String, String> headers;
   final String baseUrl;
-  _A3Entry(this.url, this.headers, this.baseUrl);
+  final bool toCast;
+
+  _A3Entry(this.url, this.headers, this.baseUrl, {this.toCast = false});
 }
 
 class _BridgeSession {
