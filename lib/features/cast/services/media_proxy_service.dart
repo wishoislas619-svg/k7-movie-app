@@ -1021,10 +1021,10 @@ class MediaProxyService {
     final entry = _a3Registry[id];
 
     // 🛡️ MANEJAR CORS PRE-FLIGHT (Solo si es para Cast)
-    if (request.method == 'OPTIONS' && (entry?.toCast ?? false)) {
+    if (request.method == 'OPTIONS') {
       request.response.statusCode = HttpStatus.ok;
       request.response.headers.set('Access-Control-Allow-Origin', '*');
-      request.response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      request.response.headers.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
       request.response.headers.set('Access-Control-Allow-Headers', '*');
       request.response.headers.set('Access-Control-Max-Age', '86400');
       await request.response.close();
@@ -1095,25 +1095,38 @@ class MediaProxyService {
       // Pasar status code (importante para 206 Partial Content)
       request.response.statusCode = streamedResponse.statusCode;
       
-      // Forzar CORS para evitar bloqueos en navegadores de TV
-      // Forzar CORS solo para Cast (WVC/Smart TV)
-      if (entry.toCast) {
-        request.response.headers.set('Access-Control-Allow-Origin', '*');
-        request.response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        request.response.headers.set('Access-Control-Allow-Headers', '*');
-        request.response.headers.set('Access-Control-Expose-Headers', '*');
-      }
+      // CORS universal para compatibilidad con WVC, DLNA, Chromecast
+      request.response.headers.set('Access-Control-Allow-Origin', '*');
+      request.response.headers.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+      request.response.headers.set('Access-Control-Allow-Headers', '*');
+      request.response.headers.set('Access-Control-Expose-Headers', '*');
+      // Accept-Ranges requerido por DLNA y algunos Chromecast
+      request.response.headers.set('Accept-Ranges', 'bytes');
       
-      // Forzar Content-Type si es manifiesto (Videasy a veces manda text/plain)
+      // Para manifiestos: reescribir rutas relativas a URLs absolutas del proxy
       if (filename.contains('.m3u8') || filename.isEmpty) {
         request.response.headers.contentType = ContentType.parse('application/vnd.apple.mpegurl');
+        final body = await streamedResponse.stream.bytesToString();
+        final proxyBase = 'http://$_localIp:$_port/a3/$id/';
+        final rewritten = _rewriteM3u8Segments(body, proxyBase);
+        print('📝 [A3_MANIFEST] Reescrito (${rewritten.length} chars). Base: $proxyBase');
+        request.response.headers.set('Content-Length', rewritten.length.toString());
+        if (request.method != 'HEAD') {
+          request.response.write(rewritten);
+        }
+        await request.response.close();
       } else {
-        request.response.headers.contentType = ContentType.parse(streamedResponse.headers['content-type'] ?? 'application/octet-stream');
+        // Para segmentos .ts: pipe directo con content-type correcto
+        request.response.headers.contentType = ContentType.parse(
+            filename.endsWith('.ts') ? 'video/mp2t'
+            : (streamedResponse.headers['content-type'] ?? 'application/octet-stream'));
+        final contentLength = streamedResponse.headers['content-length'];
+        if (contentLength != null) {
+          request.response.headers.set('Content-Length', contentLength);
+        }
+        await request.response.addStream(streamedResponse.stream);
+        await request.response.close();
       }
-
-      // PIPE DIRECTO (Transparent Proxy)
-      await request.response.addStream(streamedResponse.stream);
-      await request.response.close();
       client.close();
     } catch (e) {
       // print('❌ [A3_PROXY] Error en $targetUrl: $e');
@@ -1124,7 +1137,30 @@ class MediaProxyService {
     }
   }
 
-  // Se elimina _rewriteM3u8A3 ya que ahora es un proxy transparente
+  /// Reescribe las rutas relativas de segmentos en un manifiesto HLS
+  /// convirtiéndolas en URLs absolutas del proxy local.
+  /// Esto permite que receptores externos (Chromecast, TV) resuelvan los
+  /// segmentos correctamente sin depender del base URL del manifiesto.
+  String _rewriteM3u8Segments(String body, String proxyBase) {
+    final lines = body.split('\n');
+    final result = <String>[];
+    for (final line in lines) {
+      final trimmed = line.trim();
+      // Líneas vacías, comentarios y directivas → sin cambio
+      if (trimmed.isEmpty || trimmed.startsWith('#')) {
+        result.add(line);
+        continue;
+      }
+      // Líneas que ya son URLs absolutas → sin cambio
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        result.add(line);
+        continue;
+      }
+      // Ruta relativa de segmento → convertir a URL absoluta del proxy
+      result.add('$proxyBase$trimmed');
+    }
+    return result.join('\n');
+  }
 }
 
 class _A3Entry {
