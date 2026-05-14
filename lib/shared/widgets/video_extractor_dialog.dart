@@ -27,10 +27,12 @@ class VideoExtractionData {
 class VideoExtractorDialog extends StatefulWidget {
   final String url;
   final int extractionAlgorithm;
+  final bool isCasting;
   const VideoExtractorDialog({
     super.key,
     required this.url,
     this.extractionAlgorithm = 1,
+    this.isCasting = false,
   });
 
   @override
@@ -46,12 +48,15 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
   bool _showWebView = false;
   int _timerCount = 0;
   bool _isDisposed = false;
+  bool _isPopped = false;
   final List<VideoExtractionData> _foundMedia = [];
   bool _isSpanishSelected = false;
   bool _serverSwitchDone =
       false; // true once algo 3 has confirmed server switch
   String? _lastAlgo3ServerSelected;
   final Set<String> _failedAlgo3Servers = {};
+  final List<String> _availableServers = [];
+  String? _manualServerTarget;
   bool _snifferInjected = false;
   Timer?
   _algo3Timer; // Keeps reference to prevent duplicate timers on page reload
@@ -376,6 +381,20 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
                                   );
 
                                   controller.addJavaScriptHandler(
+                                    handlerName: 'onServersDetected',
+                                    callback: (args) {
+                                      if (mounted && args.isNotEmpty) {
+                                        final List<String> servers =
+                                            List<String>.from(args.first);
+                                        setState(() {
+                                          _availableServers.clear();
+                                          _availableServers.addAll(servers);
+                                        });
+                                      }
+                                    },
+                                  );
+
+                                  controller.addJavaScriptHandler(
                                     handlerName: 'onServerSelected',
                                     callback: (args) {
                                       if (mounted) {
@@ -389,11 +408,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
                                           _isSpanishSelected = true;
                                           _serverSwitchDone = true;
                                           _lastAlgo3ServerSelected = serverName;
-                                          // *** Clave: limpiar el stream del servidor default ***
-                                          // para que el sniffer capture el stream del nuevo servidor
                                           _foundMedia.clear();
                                           _statusText =
-                                              "Servidor '$serverName' seleccionado. Extrayendo...";
+                                              "Servidor '$serverName' activo. Extrayendo...";
                                         });
                                       }
                                     },
@@ -638,6 +655,78 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
                           ],
                         ),
                       ),
+
+                      // Resultados detectados
+                      if (_availableServers.isNotEmpty) ...[
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              "SERVIDORES DISPONIBLES",
+                              style: TextStyle(
+                                color: Colors.white38,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 36,
+                          child: ListView.builder(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            itemCount: _availableServers.length,
+                            itemBuilder: (context, idx) {
+                              final name = _availableServers[idx];
+                              final isSelected =
+                                  _lastAlgo3ServerSelected == name;
+                              final isOmenYoru =
+                                  name.toLowerCase().contains('omen') ||
+                                  name.toLowerCase().contains('yoru');
+
+                              return Container(
+                                margin: const EdgeInsets.only(right: 8),
+                                child: ActionChip(
+                                  backgroundColor: isSelected
+                                      ? (isOmenYoru
+                                          ? const Color(0xFF00FFD1)
+                                          : const Color(0xFFD400FF))
+                                      : const Color(0xFF1A1A1A),
+                                  side: BorderSide(
+                                    color: isSelected
+                                        ? Colors.white
+                                        : Colors.white10,
+                                  ),
+                                  label: Text(
+                                    name.toUpperCase(),
+                                    style: TextStyle(
+                                      color:
+                                          isSelected ? Colors.black : Colors.white60,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  onPressed: () {
+                                    setState(() {
+                                      _manualServerTarget = name;
+                                      _serverSwitchDone = false;
+                                      _isSpanishSelected = false;
+                                      _foundMedia.clear();
+                                      _statusText = "Cambiando a '$name'...";
+                                    });
+                                    _runAlgorithm3();
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
 
                       // Results List / Status
                       const SizedBox(height: 12),
@@ -1120,6 +1209,30 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
           "[SNIFFER] Desglosando lista HLS/TXT para encontrar todas las calidades...",
         );
 
+        // Si es Algoritmo 3 enviamos la url cruda (A3) directamente
+        if (widget.extractionAlgorithm == 3) {
+          final isPlaying = customHeaders?['status'] == 'playing' || customHeaders?['type'] == 'fetch';
+          if (!_serverSwitchDone && !isPlaying) {
+            print("[SNIFFER] Ignorando stream A3 preventivo...");
+            return;
+          }
+
+          print("[SNIFFER] 🎯 URL A3 Capturada: $url");
+          final urlA3 = url;
+          final data = VideoExtractionData(
+            videoUrl: urlA3,
+            qualities: [VideoQuality(resolution: "Resolución Auto", url: urlA3)],
+            headers: headersForProbe,
+            cookies: cookieString,
+          );
+          
+          if (!_isPopped) {
+            _isPopped = true;
+            Navigator.of(context).pop(data);
+          }
+          return;
+        }
+
         // Add the main HLS entry immediately WITHOUT probing size (manifests are always tiny)
         _addFoundMedia(
           url: url,
@@ -1587,6 +1700,8 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
             """
           (function() {
             window._failedVideasyServers = $failedServersJson;
+            window._manualServerTarget = ${_manualServerTarget != null ? "'$_manualServerTarget'" : "null"};
+            
             function isVisible(el) {
                if (!el) return false;
                var r = el.getBoundingClientRect();
@@ -1602,7 +1717,7 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
             function findByText(root, text, exact = false) {
               var all = root.querySelectorAll('*');
               for (var el of all) {
-                var t = el.textContent.trim().toLowerCase();
+                var t = (el.innerText || el.textContent || "").trim().toLowerCase();
                 if (exact ? t === text.toLowerCase() : t.includes(text.toLowerCase())) {
                    if (isVisible(el)) return el;
                 }
@@ -1629,7 +1744,6 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
             // === PASO 1: ¿Menú de pestañas visible? ===
             var tabList = document.querySelector('[role="tablist"]') || document.querySelector('.vds-menu-items') || findByText(document, 'Quality');
             if (tabList) {
-               console.log('🔍 Menú de ajustes detectado en Extractor');
                var serversTab = findByText(document, 'Servers', true) || findByText(document, 'Servidores', true);
                
                if (serversTab) {
@@ -1637,35 +1751,42 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
                   if (state === 'active' || state === 'true') {
                      // === PASO 2: Extracción y Auto-Selección ===
                      var panel = document.querySelector('[role="tabpanel"][data-state="active"]') || serversTab.parentElement.parentElement;
-                     var serverBtns = Array.from(panel.querySelectorAll('button, [role="radio"], [role="menuitem"]'));
-                     var failed = Array.isArray(window._failedVideasyServers) ? window._failedVideasyServers : [];
-                     var usableServerBtns = serverBtns.filter(b => !failed.includes(b.textContent.trim().toLowerCase()));
+                     var serverBtns = Array.from(panel.querySelectorAll('button, [role="radio"], [role="menuitem"], .vds-menu-item'));
                      
-                     // Prioridad: Omen -> Yoru -> Latino/Castellano -> Primero disponible
-                     var target = usableServerBtns.find(b => b.textContent.toLowerCase().includes('omen'));
-                     if (!target) {
-                        target = usableServerBtns.find(b => b.textContent.toLowerCase().includes('yoru'));
+                     // Informar a Flutter de los servidores vistos
+                     var serverNames = serverBtns.map(b => (b.innerText || b.textContent || "").trim()).filter(n => n.length > 0);
+                     if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServersDetected', serverNames);
+
+                     var failed = Array.isArray(window._failedVideasyServers) ? window._failedVideasyServers : [];
+                     var usableServerBtns = serverBtns.filter(b => {
+                        var name = (b.innerText || b.textContent || "").trim().toLowerCase();
+                        return name.length > 0 && !failed.includes(name);
+                     });
+                     
+                     var target = null;
+                     
+                     // Si hay una selección manual, priorizarla
+                     if (window._manualServerTarget) {
+                        target = usableServerBtns.find(b => (b.innerText || b.textContent || "").trim().toLowerCase().includes(window._manualServerTarget.toLowerCase()));
                      }
+
+                     // Prioridad Automática: Omen -> Yoru -> Latino/Castellano -> Primero disponible
+                     if (!target) target = usableServerBtns.find(b => (b.innerText || b.textContent || "").toLowerCase().includes('omen'));
+                     if (!target) target = usableServerBtns.find(b => (b.innerText || b.textContent || "").toLowerCase().includes('yoru'));
                      if (!target) {
                         target = usableServerBtns.find(b => {
-                           var t = b.textContent.toLowerCase();
+                           var t = (b.innerText || b.textContent || "").toLowerCase();
                            return t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano');
                         });
                      }
                      if (!target && usableServerBtns.length > 0) target = usableServerBtns[0];
+                     
                      if (target) {
-                        console.log('🎯 [AUTO-SELECT] Seleccionando servidor: ' + target.textContent);
-                        if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServerSelected', target.textContent);
+                        var finalName = (target.innerText || target.textContent || "").trim();
+                        if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServerSelected', finalName);
                         forceClick(target);
-                     } else {
-                        var firstInPanel = document.querySelector('[role="tabpanel"] button');
-                        if (firstInPanel) {
-                           if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServerSelected', firstInPanel.textContent);
-                           forceClick(firstInPanel);
-                        }
                      }
                   } else {
-                     console.log('🖱️ Pestaña Servers inactiva, clickeando...');
                      forceClick(serversTab);
                      return;
                   }
@@ -1674,40 +1795,13 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
                // === PASO 0: Abrir el engranaje ===
                var gear = findGear(document);
                if (gear) {
-                  console.log('⚙️ Engranaje encontrado, abriendo menú...');
                   forceClick(gear);
                } else {
-                  // Fallback: Si no hay engranaje pero hay botones de servers directamente
-                  var allButtons = document.querySelectorAll('button, [role="radio"], [role="menuitem"]');
-                  var failed = Array.isArray(window._failedVideasyServers) ? window._failedVideasyServers : [];
-                  var usableButtons = Array.from(allButtons).filter(b => !failed.includes(b.textContent.trim().toLowerCase()));
-                  var fallbackTarget = null;
-                  // Prioridad Fallback: Omen -> Yoru -> Latino/Castellano
-                  for (var b of usableButtons) {
-                     if (b.textContent.toLowerCase().includes('omen') && isVisible(b)) {
-                        fallbackTarget = b; break;
-                     }
-                  }
-                  if (!fallbackTarget) {
-                     for (var b of usableButtons) {
-                        if (b.textContent.toLowerCase().includes('yoru') && isVisible(b)) {
-                           fallbackTarget = b; break;
-                        }
-                     }
-                  }
-                  if (!fallbackTarget) {
-                     for (var b of usableButtons) {
-                        var t = b.textContent.toLowerCase();
-                        if ((t.includes('spanish') || t.includes('latino') || t.includes('español') || t.includes('castellano')) && isVisible(b)) {
-                           fallbackTarget = b; break;
-                        }
-                     }
-                  }
-                  if (!fallbackTarget && usableButtons.length > 0) fallbackTarget = usableButtons[0];
-                  if (fallbackTarget) {
-                     console.log('🎯 [AUTO-SELECT] Fallback clic: ' + fallbackTarget.textContent);
-                     if (window.flutter_inappwebview) window.flutter_inappwebview.callHandler('onServerSelected', fallbackTarget.textContent);
-                     forceClick(fallbackTarget);
+                  // Fallback: Botones directos
+                  var allButtons = document.querySelectorAll('button, [role="radio"], [role="menuitem"], .vds-menu-item');
+                  var serverNamesFallback = Array.from(allButtons).map(b => (b.innerText || b.textContent || "").trim()).filter(n => n.length > 3);
+                  if (serverNamesFallback.length > 0 && window.flutter_inappwebview) {
+                     window.flutter_inappwebview.callHandler('onServersDetected', serverNamesFallback);
                   }
                }
             }

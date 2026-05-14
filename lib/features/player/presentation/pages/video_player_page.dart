@@ -1727,19 +1727,19 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         useLocalhost: false,
         algorithm: _effectiveAlgorithm,
         remux: false,
+        toCast: true, // Forzar proxy para la TV
       );
 
       // La URL para el reproductor INTERNO
       if (_effectiveAlgorithm == 3) {
-        // Para ExoPlayer usamos HLS proxeado, no puente MP4. El manifiesto HLS
-        // conserva duración y permite seek libre por segmentos.
-        print("📼 [ALGO 3] Usando HLS local para ExoPlayer con duración/seek");
+        // Para ExoPlayer usamos bypass (URL directa) para evitar latencia/errores de proxy
         effectiveUrl = MediaProxyService().getProxiedUrl(
           videoUrl,
           headers,
           useLocalhost: true,
           algorithm: _effectiveAlgorithm,
           remux: false,
+          toCast: false, // Bypass para ExoPlayer
         );
       } else {
         effectiveUrl = MediaProxyService().getProxiedUrl(
@@ -1748,6 +1748,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
           useLocalhost: true,
           algorithm: _effectiveAlgorithm,
           remux: false,
+          toCast: false,
         );
       }
 
@@ -1932,7 +1933,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
             } else if (_controller != null) {
               final value = _controller!.value;
               final bool didNotStart =
-                  !value.isPlaying && value.position < const Duration(seconds: 1);
+                  !value.isPlaying &&
+                  value.position < const Duration(seconds: 1);
               if (value.hasError || (_hasCheckedResume && didNotStart)) {
                 failed = true;
               }
@@ -2307,6 +2309,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+  }
+
+  void _handleWebViewRenderProcessGone(RenderProcessGoneDetail detail) {
+    print(
+      '[WEBVIEW] Renderer caído (didCrash: ${detail.didCrash}). Removiendo WebView del reproductor.',
+    );
+    _webViewController = null;
+    if (!mounted) return;
+    setState(() {
+      _useWebViewPlayer = false;
+      _isWebViewExtracting = false;
+      _isScrapingSubtitles = false;
+      _isInitialLoading = false;
+    });
   }
 
   @override
@@ -2935,6 +2951,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
                                     userAgent:
                                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                                   ),
+                                  onRenderProcessGone: (controller, detail) {
+                                    _handleWebViewRenderProcessGone(detail);
+                                  },
                                 ),
                                 // Botón Volver/Cerrar
                                 Positioned(
@@ -3270,6 +3289,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
                                         userAgent:
                                             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
                                       ),
+                                      onRenderProcessGone:
+                                          (controller, detail) {
+                                            _handleWebViewRenderProcessGone(
+                                              detail,
+                                            );
+                                          },
                                       initialUserScripts:
                                           UnmodifiableListView<UserScript>([
                                             UserScript(
@@ -4759,7 +4784,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
     if (_currentVideasyServer != null) {
       final key = _videasyServerKey(_currentVideasyServer!);
       _failedVideasyServers.add(key);
-      _failedVideasyServers.add(_currentVideasyServer!.label.trim().toLowerCase());
+      _failedVideasyServers.add(
+        _currentVideasyServer!.label.trim().toLowerCase(),
+      );
       print(
         "❌ [FALLBACK] Servidor fallido en lista negra: ${_currentVideasyServer!.label} (Key: $key)",
       );
@@ -4776,7 +4803,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
 
       // 1. PRIORIDAD ABSOLUTA: Si venimos de un fallo de Omen, ir a Yoru
       if (currentLabel.contains('omen')) {
-        print("⏭️ [FALLBACK] Omen falló. Buscando Yoru como siguiente opción...");
+        print(
+          "⏭️ [FALLBACK] Omen falló. Buscando Yoru como siguiente opción...",
+        );
         for (var s in available) {
           if (s.label.toLowerCase().contains('yoru')) {
             target = s;

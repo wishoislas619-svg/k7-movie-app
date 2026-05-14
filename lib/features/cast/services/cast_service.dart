@@ -8,6 +8,8 @@ import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'cast_device_info.dart';
 import 'media_proxy_service.dart';
+import 'a3_proxy_service.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Helper para emitir logs de cast visibles en logcat con prefijo [CAST]
 void _log(String msg) => debugPrint('🎬 [CAST] $msg');
@@ -351,14 +353,21 @@ class CastService extends ChangeNotifier {
       _log(
         '🚀 CAST: Usando Modo Dinámico (HLS Nativo) para Algoritmo $effectiveAlgorithm',
       );
-      await MediaProxyService().start();
-      finalUrl = MediaProxyService().getProxiedUrl(
-        effectiveUrl,
-        combinedHeaders,
-        useLocalhost: false, toCast: true,
-        algorithm: effectiveAlgorithm,
-        remux: effectiveAlgorithm == 3,
-      );
+      if (effectiveAlgorithm == 3) {
+        final deviceIp = _connectedDevice?.address;
+        await A3ProxyService().start(targetIp: deviceIp);
+        finalUrl = A3ProxyService().getProxiedUrl(effectiveUrl, combinedHeaders);
+      } else {
+        await MediaProxyService().start();
+        finalUrl = MediaProxyService().getProxiedUrl(
+          effectiveUrl,
+          combinedHeaders,
+          useLocalhost: false,
+          toCast: true,
+          algorithm: effectiveAlgorithm,
+          remux: false,
+        );
+      }
 
       if (duration == null || duration == Duration.zero) {
         try {
@@ -434,19 +443,23 @@ class CastService extends ChangeNotifier {
     if (finalUrl.contains('/proxy') || finalUrl.contains('/bridge')) {
       final unproxiedFinal = MediaProxyService.tryUnproxy(finalUrl);
       if (unproxiedFinal != null) {
-        final bool shouldBridge = effectiveAlgorithm == 3;
-        finalUrl = MediaProxyService().getProxiedUrl(
-          unproxiedFinal['url'],
-          minimalHeaders,
-          useLocalhost: false, toCast: true,
-          algorithm: effectiveAlgorithm,
-          remux: effectiveAlgorithm == 3 && !shouldBridge, // Priorizar bridge si está activo
-          
-        );
-        if (shouldBridge) mediaType = dc.CastMediaType.mp4;
+        if (effectiveAlgorithm == 3) {
+          final deviceIp = _connectedDevice?.address;
+          await A3ProxyService().start(targetIp: deviceIp);
+          finalUrl = A3ProxyService().getProxiedUrl(unproxiedFinal['url'], minimalHeaders);
+        } else {
+          finalUrl = MediaProxyService().getProxiedUrl(
+            unproxiedFinal['url'],
+            minimalHeaders,
+            useLocalhost: false,
+            toCast: true,
+            algorithm: effectiveAlgorithm,
+          );
+        }
       }
     }
 
+    _log('--- [CAST_READY] URL Final: $finalUrl ---');
     _log('  Llamando session.loadMedia() con URL: $finalUrl');
 
     try {

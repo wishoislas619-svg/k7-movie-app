@@ -3,7 +3,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 class MetadataScraperDialog extends StatefulWidget {
   final String url;
-  
+
   const MetadataScraperDialog({super.key, required this.url});
 
   @override
@@ -83,14 +83,27 @@ class _MetadataScraperDialogState extends State<MetadataScraperDialog> {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: const BoxDecoration(
-              gradient: LinearGradient(colors: [Color(0xFF00A3FF), Color(0xFFD400FF)]),
+              gradient: LinearGradient(
+                colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+              ),
             ),
             child: Row(
               children: [
                 const Icon(Icons.psychology_alt, color: Colors.white),
                 const SizedBox(width: 12),
-                const Expanded(child: Text('EXTRACCIÓN INTELIGENTE', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
-                IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: () => Navigator.pop(context)),
+                const Expanded(
+                  child: Text(
+                    'EXTRACCIÓN INTELIGENTE',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => Navigator.pop(context),
+                ),
               ],
             ),
           ),
@@ -107,10 +120,22 @@ class _MetadataScraperDialogState extends State<MetadataScraperDialog> {
                           javaScriptEnabled: true,
                           useShouldOverrideUrlLoading: true,
                         ),
-                        onWebViewCreated: (controller) => _webViewController = controller,
+                        onWebViewCreated: (controller) =>
+                            _webViewController = controller,
+                        onRenderProcessGone: (controller, detail) {
+                          debugPrint(
+                            '[WEBVIEW] Metadata renderer caído: ${detail.didCrash}',
+                          );
+                          _webViewController = null;
+                          if (mounted) {
+                            setState(() => _isLoading = false);
+                          }
+                        },
                         onLoadStop: (controller, url) async {
                           setState(() => _isLoading = false);
-                          final result = await controller.evaluateJavascript(source: _metadataJs);
+                          final result = await controller.evaluateJavascript(
+                            source: _metadataJs,
+                          );
                           if (result != null && result is Map) {
                             setState(() {
                               _scrapedName = result['name'];
@@ -122,7 +147,8 @@ class _MetadataScraperDialogState extends State<MetadataScraperDialog> {
                           }
                         },
                       ),
-                      if (_isLoading) const Center(child: CircularProgressIndicator()),
+                      if (_isLoading)
+                        const Center(child: CircularProgressIndicator()),
                     ],
                   ),
                 ),
@@ -134,28 +160,63 @@ class _MetadataScraperDialogState extends State<MetadataScraperDialog> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('VISTA PREVIA', style: TextStyle(color: Color(0xFF00A3FF), fontWeight: FontWeight.bold, fontSize: 12, letterSpacing: 1.5)),
+                      const Text(
+                        'VISTA PREVIA',
+                        style: TextStyle(
+                          color: Color(0xFF00A3FF),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
                       const SizedBox(height: 16),
                       if (_scrapedImage != null)
                         AspectRatio(
-                          aspectRatio: 16/9,
+                          aspectRatio: 16 / 9,
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: Image.network(_scrapedImage!, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white24)),
+                            child: Image.network(
+                              _scrapedImage!,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => const Icon(
+                                Icons.broken_image,
+                                color: Colors.white24,
+                              ),
+                            ),
                           ),
                         ),
                       const SizedBox(height: 12),
-                      Text(_scrapedName ?? 'Cargando nombre...', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                      Text(
+                        _scrapedName ?? 'Cargando nombre...',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       Row(
                         children: [
                           const Icon(Icons.star, color: Colors.amber, size: 16),
                           const SizedBox(width: 4),
-                          Text(_scrapedRating ?? '?', style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                          Text(
+                            _scrapedRating ?? '?',
+                            style: const TextStyle(
+                              color: Colors.amber,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                           const SizedBox(width: 16),
-                          const Icon(Icons.calendar_today, color: Colors.white54, size: 14),
+                          const Icon(
+                            Icons.calendar_today,
+                            color: Colors.white54,
+                            size: 14,
+                          ),
                           const SizedBox(width: 4),
-                          Text(_scrapedYear ?? '?', style: const TextStyle(color: Colors.white54)),
+                          Text(
+                            _scrapedYear ?? '?',
+                            style: const TextStyle(color: Colors.white54),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 12),
@@ -163,7 +224,11 @@ class _MetadataScraperDialogState extends State<MetadataScraperDialog> {
                         child: SingleChildScrollView(
                           child: Text(
                             _scrapedDescription ?? 'Buscando descripción...',
-                            style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.4),
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                              height: 1.4,
+                            ),
                           ),
                         ),
                       ),
@@ -182,9 +247,14 @@ class _MetadataScraperDialogState extends State<MetadataScraperDialog> {
                           backgroundColor: const Color(0xFF00A3FF),
                           foregroundColor: Colors.white,
                           minimumSize: const Size(double.infinity, 50),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
-                        child: const Text('CONFIRMAR Y LLENAR', style: TextStyle(fontWeight: FontWeight.bold)),
+                        child: const Text(
+                          'CONFIRMAR Y LLENAR',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
                       ),
                     ],
                   ),

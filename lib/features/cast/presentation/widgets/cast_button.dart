@@ -6,7 +6,8 @@ import 'cast_device_list_sheet.dart';
 import '../../services/cast_service.dart';
 import '../pages/cast_remote_page.dart';
 import '../../../../core/services/foreground_service.dart';
-import '../../../../shared/widgets/video_extractor_dialog.dart';
+import 'package:movie_app/features/cast/services/a3_proxy_service.dart';
+import 'package:movie_app/shared/widgets/video_extractor_dialog.dart';
 import '../../services/media_proxy_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
@@ -241,6 +242,14 @@ class _CastButtonState extends ConsumerState<CastButton>
         url.startsWith('http://127.0.0.1');
 
     if (isDirectVideo || widget.algorithm <= 0) {
+      if (widget.algorithm == 3) {
+        final deviceIp = CastService().connectedDevice?.address;
+        await A3ProxyService().start(targetIp: deviceIp);
+        final proxied = A3ProxyService().generateSessionUrl(url, widget.headers ?? {});
+        print('--- [CAST] URL A3 generada (Vía Sesión): $proxied ---');
+        return proxied;
+      }
+
       // Si ya es video pero queremos proxearlo para limpiar anuncios
       if (!url.startsWith('http://127.0.0.1') &&
           !url.startsWith('https://127.0.0.1')) {
@@ -277,6 +286,14 @@ class _CastButtonState extends ConsumerState<CastButton>
     if (result.cookies != null) headers['Cookie'] = result.cookies!;
     if (result.userAgent != null) headers['User-Agent'] = result.userAgent!;
     headers['Referer'] = url;
+
+    if (widget.algorithm == 3) {
+      final deviceIp = CastService().connectedDevice?.address;
+      await A3ProxyService().start(targetIp: deviceIp);
+      final proxied = A3ProxyService().generateSessionUrl(result.videoUrl, headers);
+      print('--- [CAST] URL A3 generada (Tras Extracción, Vía Sesión): $proxied ---');
+      return proxied;
+    }
 
     await MediaProxyService().start();
     

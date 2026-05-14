@@ -537,11 +537,13 @@ class MediaProxyService {
     bool remux = false,
     bool toCast = false,
   }) {
-    // Si estamos casteando y es algoritmo 3, devolver url cruda sin proxear
-    if (algorithm == 3 && toCast) {
+    if (algorithm == 3 && !toCast) {
+      // Para reproducción local en algoritmo 3, devolvemos la URL original.
+      // El reproductor (ExoPlayer) manejará las cabeceras directamente.
+      print('⏩ [PROXY] Algoritmo 3 Detectado (Local): Bypass activo');
       return url;
     }
-    
+
     String host = (useLocalhost || _localIp.isEmpty)
         ? '127.0.0.1:$_port'
         : '$_localIp:$_port';
