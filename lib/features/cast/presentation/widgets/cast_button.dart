@@ -230,7 +230,7 @@ class _CastButtonState extends ConsumerState<CastButton>
     );
   }
 
-  Future<String?> _extractIfNeeded(String url, {bool toCast = false}) async {
+  Future<String?> _extractIfNeeded(String url) async {
     // Si la URL ya es un video directo (m3u8, mp4, etc) o ya está proxeada, no extraemos
     final lower = url.toLowerCase();
     final isDirectVideo =
@@ -246,25 +246,12 @@ class _CastButtonState extends ConsumerState<CastButton>
           !url.startsWith('https://127.0.0.1')) {
         await MediaProxyService().start();
 
-        // Si es HLS y estamos en algoritmo 2 o 3, forzamos el modo puente (bridge)
-        // para remuxear a MP4. Esto soluciona los errores de carga en WVC y TVs.
-        final bool shouldBridge =
-            (widget.algorithm == 4 || widget.algorithm == 5) &&
-            (lower.contains('.m3u8') ||
-                lower.contains('.txt') ||
-                lower.contains('playlist'));
-
-
-        if (widget.algorithm == 3 && toCast) {
-          return MediaProxyService().registerA3(url, widget.headers ?? {}, toCast: true);
-        }
-
         return MediaProxyService().getProxiedUrl(
           url,
           widget.headers,
           useLocalhost: false,
           algorithm: widget.algorithm,
-          useBridge: shouldBridge,
+          toCast: true,
         );
       }
       return url;
@@ -276,7 +263,10 @@ class _CastButtonState extends ConsumerState<CastButton>
       context: context,
       barrierDismissible: false,
       builder: (_) =>
-          VideoExtractorDialog(url: url, extractionAlgorithm: widget.algorithm),
+          VideoExtractorDialog(
+            url: url, 
+            extractionAlgorithm: widget.algorithm,
+          ),
     );
 
     if (result == null || result.videoUrl.isEmpty) return null;
@@ -289,24 +279,13 @@ class _CastButtonState extends ConsumerState<CastButton>
     headers['Referer'] = url;
 
     await MediaProxyService().start();
-    // Para A3 en Cast: usar el Registro A3 transparente (sin bridge)
-    // Para A3 en Exoplayer: usar bridge para convertir HLS a MP4
-    final bool shouldBridge =
-        (widget.algorithm == 3 && !toCast) &&
-        (result.videoUrl.toLowerCase().contains('.m3u8') ||
-            result.videoUrl.toLowerCase().contains('.txt') ||
-            result.videoUrl.toLowerCase().contains('playlist'));
-
-    if (widget.algorithm == 3 && toCast) {
-      return MediaProxyService().registerA3(result.videoUrl, headers, toCast: true);
-    }
-
+    
     return MediaProxyService().getProxiedUrl(
       result.videoUrl,
       headers,
       useLocalhost: false,
       algorithm: widget.algorithm,
-      useBridge: shouldBridge,
+      toCast: true,
     );
   }
 
@@ -407,7 +386,7 @@ class _CastButtonState extends ConsumerState<CastButton>
   }
 
   Future<void> _launchWebVideoCaster() async {
-    final String? finalUrl = await _extractIfNeeded(widget.videoUrl, toCast: true);
+    final String? finalUrl = await _extractIfNeeded(widget.videoUrl);
     if (finalUrl == null || !mounted) return;
 
     final String videoUrl = finalUrl;
@@ -510,7 +489,7 @@ class _CastButtonState extends ConsumerState<CastButton>
   }
 
   Future<void> _openCastSheet() async {
-    final String? finalUrl = await _extractIfNeeded(widget.videoUrl, toCast: true);
+    final String? finalUrl = await _extractIfNeeded(widget.videoUrl);
     if (finalUrl == null || !mounted) return;
 
     showModalBottomSheet(

@@ -267,7 +267,7 @@ class CastService extends ChangeNotifier {
     final Map<String, String> combinedHeaders = {
       // Por defecto: UA Móvil (Algoritmo 1 / Estándar)
       'User-Agent':
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+          'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
       'Accept': '*/*',
       'Accept-Language': 'es-ES,es;q=0.9',
       'Connection': 'keep-alive',
@@ -278,7 +278,7 @@ class CastService extends ChangeNotifier {
         effectiveUrl.contains('embed.su') ||
         effectiveUrl.contains('videasy')) {
       combinedHeaders['User-Agent'] =
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1';
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
       combinedHeaders['Referer'] =
           effectiveHeaders?['Referer'] ?? 'https://player.videasy.net/';
       combinedHeaders['Origin'] =
@@ -321,9 +321,9 @@ class CastService extends ChangeNotifier {
       finalUrl = MediaProxyService().getProxiedUrl(
         effectiveUrl,
         combinedHeaders,
-        useLocalhost: false,
+        useLocalhost: false, toCast: true,
         algorithm: effectiveAlgorithm,
-        useBridge: true,
+        
       );
 
       if (duration == null || duration == Duration.zero) {
@@ -355,7 +355,7 @@ class CastService extends ChangeNotifier {
       finalUrl = MediaProxyService().getProxiedUrl(
         effectiveUrl,
         combinedHeaders,
-        useLocalhost: false,
+        useLocalhost: false, toCast: true,
         algorithm: effectiveAlgorithm,
         remux: effectiveAlgorithm == 3,
       );
@@ -388,7 +388,7 @@ class CastService extends ChangeNotifier {
       finalUrl = MediaProxyService().getProxiedUrl(
         effectiveUrl,
         combinedHeaders,
-        useLocalhost: false,
+        useLocalhost: false, toCast: true,
         algorithm: effectiveAlgorithm,
       );
     }
@@ -399,7 +399,7 @@ class CastService extends ChangeNotifier {
       finalUrl = MediaProxyService().getProxiedUrl(
         url,
         combinedHeaders,
-        useLocalhost: false,
+        useLocalhost: false, toCast: true,
         algorithm: effectiveAlgorithm,
       );
     }
@@ -434,14 +434,14 @@ class CastService extends ChangeNotifier {
     if (finalUrl.contains('/proxy') || finalUrl.contains('/bridge')) {
       final unproxiedFinal = MediaProxyService.tryUnproxy(finalUrl);
       if (unproxiedFinal != null) {
-        final bool shouldBridge = effectiveAlgorithm == 2 || effectiveAlgorithm == 3;
+        final bool shouldBridge = effectiveAlgorithm == 3;
         finalUrl = MediaProxyService().getProxiedUrl(
           unproxiedFinal['url'],
           minimalHeaders,
-          useLocalhost: false,
+          useLocalhost: false, toCast: true,
           algorithm: effectiveAlgorithm,
           remux: effectiveAlgorithm == 3 && !shouldBridge, // Priorizar bridge si está activo
-          useBridge: shouldBridge,
+          
         );
         if (shouldBridge) mediaType = dc.CastMediaType.mp4;
       }
@@ -527,22 +527,7 @@ class CastService extends ChangeNotifier {
     // Generamos un ID opaco basado en el hash del path para ocultar el nombre real
     final fileId = filePath.hashCode.abs().toString();
 
-    // 🎬 AUTO-REMUX PREVENTIVO: Si el archivo parece ser un TS disfrazado de MP4 (descargas HLS)
-    // lo remuxeamos a MP4 real ANTES de avisar a la TV para evitar errores 716 por timeout.
     String pathParaServir = filePath;
-    if (filePath.contains('(Streaming)') ||
-        filePath.contains('(HLS)') ||
-        filePath.toLowerCase().endsWith('.ts')) {
-      _log('  🎬 Detectado posible MPEG-TS. Iniciando remuxing preventivo...');
-      final remuxedPath = await MediaProxyService().remuxLocalFile(
-        filePath,
-        fileId,
-      );
-      if (remuxedPath != null) {
-        pathParaServir = remuxedPath;
-        _log('  ✅ Remuxing completado: $pathParaServir');
-      }
-    }
 
     MediaProxyService().registerLocalFile(fileId, pathParaServir);
 
@@ -587,16 +572,6 @@ class CastService extends ChangeNotifier {
 
     // --- OBTENER DURACIÓN SI ES NULL ---
     Duration? effectiveDuration = duration;
-    if (effectiveDuration == null || effectiveDuration == Duration.zero) {
-      _log('⏱️ [LOCAL] Calculando duración del archivo con FFprobe...');
-      final double dSeconds = await MediaProxyService().getFileDuration(
-        filePath,
-      );
-      if (dSeconds > 0) {
-        effectiveDuration = Duration(milliseconds: (dSeconds * 1000).toInt());
-        _log('⏱️ [LOCAL] Duración detectada: ${effectiveDuration.inSeconds}s');
-      }
-    }
 
     final media = dc.CastMedia(
       url: proxyUrl,
@@ -964,7 +939,7 @@ class CastService extends ChangeNotifier {
       final String proxyBase = MediaProxyService().getProxiedUrl(
         '',
         null,
-        useLocalhost: false,
+        useLocalhost: false, toCast: true,
       );
       final String host = proxyBase
           .split('/proxy')[0]
