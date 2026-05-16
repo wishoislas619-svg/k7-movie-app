@@ -136,25 +136,6 @@ class VideoService {
 
       final lines = body.split('\n');
       String? currentRes;
-      String? masterAudioUrl;
-
-      // 1. Buscar pista de audio global en el Master Manifest
-      for (var line in lines) {
-        final trimmed = line.trim();
-        if (trimmed.startsWith('#EXT-X-MEDIA:TYPE=AUDIO')) {
-          final uriMatch = RegExp(r'URI="([^"]+)"').firstMatch(trimmed);
-          if (uriMatch != null) {
-            String audioUri = uriMatch.group(1)!;
-            if (!audioUri.startsWith('http')) {
-              masterAudioUrl = Uri.parse(masterUrl).resolve(audioUri).toString();
-            } else {
-              masterAudioUrl = audioUri;
-            }
-            print('🎯 [VIDEO_SERVICE] Audio detectado: $masterAudioUrl');
-            break; // Tomamos la primera por ahora
-          }
-        }
-      }
 
       // Si es un Media Playlist (tiene segmentos TS o seg-) pero no tiene variantes,
       // añadimos la URL original como única calidad para que el extractor no de error de "0 calidades".
@@ -163,7 +144,7 @@ class VideoService {
               body.contains('seg-') ||
               body.contains('.mp4') ||
               body.contains('/stream/'))) {
-        qualities.add(VideoQuality(resolution: 'Auto', url: masterUrl, audioUrl: masterAudioUrl));
+        qualities.add(VideoQuality(resolution: 'Auto', url: masterUrl));
         return qualities;
       }
 
@@ -188,7 +169,6 @@ class VideoService {
           qualities.add(VideoQuality(
             resolution: _formatResolution(currentRes),
             url: qualityUrl,
-            audioUrl: masterAudioUrl,
           ));
           currentRes = null;
         }

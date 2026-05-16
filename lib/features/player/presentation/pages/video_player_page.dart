@@ -167,7 +167,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   bool _hasInitialUrl = false;
   bool _hasAttemptedQualityOptimization = false;
   String? _extractedVideoUrl;
-  String? _currentAudioUrl;
   static const _webviewTouchChannel = MethodChannel(
     'com.luis.movieapp/webview_touch',
   );
@@ -1553,31 +1552,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
 
     print("🎯 [NET_MONITOR] URL detectada: $playableUrl");
     _hasInitialUrl = true;
-
-    // Inspección de audio separado para Cast (Algoritmo 2)
-    if (playableUrl.contains('.m3u8')) {
-      try {
-        final qualities = await VideoService.getHlsQualities(
-          playableUrl,
-          headers: _getHeadersForCast(),
-        );
-        if (qualities.isNotEmpty) {
-          final qWithAudio = qualities.firstWhere(
-            (q) => q.audioUrl != null,
-            orElse: () => qualities.first,
-          );
-          if (qWithAudio.audioUrl != null) {
-            print("🔊 [NET_MONITOR] Audio separado detectado: ${qWithAudio.audioUrl}");
-            if (mounted) setState(() => _currentAudioUrl = qWithAudio.audioUrl);
-          }
-        }
-      } catch (e) {
-        print("⚠️ [NET_MONITOR] Error inspeccionando HLS: $e");
-      }
-    }
-
-    if (!mounted) return;
-
     setState(() {
       _isInitialLoading = false;
       _isWebViewExtracting = false;
@@ -1756,9 +1730,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         toCast: true, // Forzar proxy para la TV
       );
 
-      // Si la opción actual tiene audioUrl, lo mantenemos para el Cast
-      _currentAudioUrl = _currentOption.audioUrl;
-
       // La URL para el reproductor INTERNO
       if (_effectiveAlgorithm == 3) {
         // Para ExoPlayer usamos bypass (URL directa) para evitar latencia/errores de proxy
@@ -1870,7 +1841,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
           print("📺 [CAST] Actualizando contenido en TV...");
           CastService().castUrl(
             url: _extractedVideoUrl ?? effectiveUrl,
-            audioUrl: _currentAudioUrl,
             title: widget.movieName,
             imageUrl: widget.imagePath,
             headers: _getHeadersForCast(),

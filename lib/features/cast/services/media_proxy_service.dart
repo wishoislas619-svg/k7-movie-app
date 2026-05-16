@@ -3,9 +3,6 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:http/http.dart' as http;
-import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
-import 'package:ffmpeg_kit_flutter_new_https_gpl/session.dart';
 
 class MediaProxyService {
   static final MediaProxyService _instance = MediaProxyService._internal();
@@ -19,8 +16,6 @@ class MediaProxyService {
   int _port = 0;
   String _localIp = '';
   final Map<String, _A3Entry> _a3Registry = {};
-  final Map<String, _BridgeEntry> _bridgeRegistry = {};
-  final Map<String, Map<String, String>> _bridgeInputHeaders = {}; // bridgeId -> headers
   final Map<String, String> _localFileRegistry = {}; // fileId → filePath
   final Map<String, String> _manifestCache = {}; // url → body
   final Map<String, DateTime> _manifestCacheTime = {}; // url → time
@@ -124,8 +119,6 @@ class MediaProxyService {
           _handleProxyRequest(request);
         } else if (request.uri.path.startsWith('/a3/')) {
           _handleA3Request(request);
-        } else if (request.uri.path.startsWith('/bridge/')) {
-          _handleBridgeRequest(request);
         } else {
           request.response.statusCode = HttpStatus.notFound;
           request.response.close();
@@ -146,9 +139,6 @@ class MediaProxyService {
         request.uri.queryParameters['headers'];
     final algoParam = request.uri.queryParameters['a'];
     final remuxParam = request.uri.queryParameters['remux'] == '1';
-    final castParam = request.uri.queryParameters['cast'] == '1';
-    final isAudioPlaylist = request.uri.queryParameters['audio'] == '1';
-    if (isAudioPlaylist) print('🔊 [PROXY] Audio segment/playlist request detected');
 
     if (encodedUrl == null) {
       request.response.statusCode = HttpStatus.badRequest;
@@ -182,12 +172,7 @@ class MediaProxyService {
       }
     });
 
-    // 2. Cabeceras proxiadas (Inyectadas por el extractor o desde el Bridge Registry)
-    final String? bridgeId = request.uri.queryParameters['bid'];
-    if (bridgeId != null && _bridgeInputHeaders.containsKey(bridgeId)) {
-      headers.addAll(_bridgeInputHeaders[bridgeId]!);
-    }
-
+    // 2. Cabeceras proxiadas (Inyectadas por el extractor)
     if (encodedHeaders != null) {
       try {
         final decoded = jsonDecode(
@@ -211,9 +196,6 @@ class MediaProxyService {
       final client = http.Client();
       final proxyRequest = http.Request(request.method, Uri.parse(url));
       headers.forEach((k, v) => proxyRequest.headers[k] = v);
-      
-      // Forzar 'identity' para evitar problemas de descompresión manual en el proxy
-      proxyRequest.headers['accept-encoding'] = 'identity';
       proxyRequest.followRedirects = true;
 
       final streamedResponse = await client.send(proxyRequest);
@@ -237,46 +219,12 @@ class MediaProxyService {
             now.difference(_manifestCacheTime[cacheKey]!) <
                 const Duration(seconds: 3)) {
           fullBody = _manifestCache[cacheKey];
+          // print('♻️ [PROXY][$requestId] Manifest Cache Hit');
         }
 
         if (fullBody == null) {
-          // Leer bytes crudos
-          List<int> rawBytes = await streamedResponse.stream.toBytes();
-          
-          // Manejar descompresión solo si es estrictamente necesario y los datos parecen comprimidos
-          final encoding = streamedResponse.headers['content-encoding']?.toLowerCase();
-          if (encoding == 'gzip') {
-            try {
-              rawBytes = GZipCodec().decode(rawBytes);
-            } catch (e) {
-              print('⚠️ [PROXY] Falló descompresión GZIP, quizás ya estaba descomprimido: $e');
-            }
-          } else if (encoding == 'deflate') {
-            try {
-              rawBytes = ZLibCodec().decode(rawBytes);
-            } catch (e) {
-              print('⚠️ [PROXY] Falló descompresión Deflate: $e');
-            }
-          }
-
-          try {
-            fullBody = utf8.decode(rawBytes);
-          } catch (e) {
-            print('⚠️ [PROXY][$requestId] No es texto válido UTF-8 o error de descompresión, sirviendo como stream binario');
-            request.response.statusCode = streamedResponse.statusCode;
-            streamedResponse.headers.forEach((key, value) {
-              final k = key.toLowerCase();
-              if (k != 'transfer-encoding' && k != 'content-encoding' && k != 'content-length') {
-                request.response.headers.set(key, value);
-              }
-            });
-            request.response.headers.set('Access-Control-Allow-Origin', '*');
-            request.response.add(rawBytes);
-            await request.response.close();
-            client.close();
-            return;
-          }
-          _manifestCache[cacheKey] = fullBody!;
+          fullBody = await streamedResponse.stream.bytesToString();
+          _manifestCache[cacheKey] = fullBody;
           _manifestCacheTime[cacheKey] = now;
         }
 
@@ -289,8 +237,6 @@ class MediaProxyService {
           requestHost,
           algorithm: int.tryParse(algoParam ?? ''),
           remux: remuxParam,
-          toCast: castParam,
-          isAudioPlaylist: isAudioPlaylist,
         );
 
         request.response.headers.contentType = ContentType.parse(
@@ -311,8 +257,6 @@ class MediaProxyService {
           client,
           requestId,
           remux: remuxParam,
-          toCast: castParam,
-          isAudio: isAudioPlaylist,
         );
       }
     } catch (e, stack) {
@@ -338,8 +282,6 @@ class MediaProxyService {
     http.Client client,
     String requestId, {
     bool remux = false,
-    bool toCast = false,
-    bool isAudio = false,
   }) async {
     request.response.statusCode = response.statusCode;
 
@@ -356,12 +298,10 @@ class MediaProxyService {
     request.response.headers.set('Connection', 'keep-alive');
 
     // Flujo normal para otros archivos
-    if (upstreamContentType.contains('image/')) {
-      // El servidor disfraza el video/audio como imagen.
-      // Usamos octet-stream para TODOS los segmentos (video y audio).
-      // ExoPlayer del Chromecast hace byte-sniffing automático con octet-stream
-      // y detecta correctamente si es MPEG-TS, fMP4, AAC, etc.
-      request.response.headers.set('content-type', 'application/octet-stream');
+    if (url.toLowerCase().contains('.ts') ||
+        upstreamContentType.contains('mp2t') ||
+        upstreamContentType.contains('mpegts')) {
+      request.response.headers.set('content-type', 'video/MP2T');
     } else {
       request.response.headers.set('content-type', upstreamContentType);
     }
@@ -385,9 +325,6 @@ class MediaProxyService {
     String requestHost, {
     int? algorithm,
     bool remux = false,
-    bool toCast = false,
-    bool isAudioPlaylist = false,
-    String? bridgeId,
   }) {
     final baseUri = Uri.parse(baseUriStr);
     final lines = body.split('\n');
@@ -418,53 +355,27 @@ class MediaProxyService {
         if (uriMatch != null) {
           final internalUrl = uriMatch.group(1)!;
           final absoluteUri = baseUri.resolve(internalUrl);
-          // Detect if this URI is for an audio track
-          final bool isAudioTrackUri = trimmedLine.contains('TYPE=AUDIO');
           final proxiedUrl = _buildProxiedUrl(
             absoluteUri.toString(),
             headers,
             requestHost,
             algorithm: algorithm,
             remux: remux,
-            toCast: toCast,
-            isAudioTrack: isAudioTrackUri,
-            bridgeId: bridgeId,
           );
-          
-          String newLine = trimmedLine.replaceFirst(internalUrl, proxiedUrl);
-          
-          // Fuerza a que la pista de audio sea reproducida por defecto, 
-          // ya que los reproductores (ExoPlayer) ignoran pistas con DEFAULT=NO
-          if (newLine.contains('TYPE=AUDIO')) {
-            newLine = newLine.replaceAll('DEFAULT=NO', 'DEFAULT=YES');
-            newLine = newLine.replaceAll('AUTOSELECT=NO', 'AUTOSELECT=YES');
-          }
-          
-          rewrittenLines.add(newLine);
+          rewrittenLines.add(trimmedLine.replaceFirst(internalUrl, proxiedUrl));
         } else {
           rewrittenLines.add(trimmedLine);
         }
       } else {
         // Es un fragmento o un sub-manifiesto
         final absoluteUri = baseUri.resolve(trimmedLine);
-        // Para segmentos: 
-        //   - Video con Cast → '.ts' para que Chromecast use parser MPEG-TS
-        //   - Audio con Cast → '' (sin extensión) para byte-sniffing de fMP4
-        //   - Sin Cast (ExoPlayer) → '' (sin extensión, usa byte-sniffing)
-        String? segExtension;
-        if (!isMasterPlaylist) {
-          segExtension = (toCast && !isAudioPlaylist) ? '.ts' : (toCast ? '.m4s' : '');
-        }
         final proxiedUrl = _buildProxiedUrl(
           absoluteUri.toString(),
           headers,
           requestHost,
           algorithm: algorithm,
           remux: remux,
-          toCast: toCast,
-          isAudioTrack: isAudioPlaylist, // Propagar audio=1 a segmentos de audio
-          extensionOverride: segExtension,
-          bridgeId: bridgeId,
+          extensionOverride: isMasterPlaylist ? null : '.ts',
         );
         rewrittenLines.add(proxiedUrl);
       }
@@ -481,17 +392,11 @@ class MediaProxyService {
     String host, {
     int? algorithm,
     bool remux = false,
-    bool toCast = false,
-    bool isAudioTrack = false,
     String? extensionOverride,
-    String? bridgeId,
   }) {
     final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
     String? bHeaders;
-    
-    // Si hay bridgeId, NUNCA meter headers en la URL (los sacaremos del registro interno)
-    // Esto evita URLs gigantes que FFmpeg no puede parsear.
-    if (bridgeId == null && headers != null && headers.isNotEmpty) {
+    if (headers != null && headers.isNotEmpty) {
       bHeaders = base64Url
           .encode(utf8.encode(jsonEncode(headers)))
           .replaceAll('=', '');
@@ -521,9 +426,6 @@ class MediaProxyService {
     if (bHeaders != null) proxyUrl += '&h=$bHeaders';
     if (algorithm != null) proxyUrl += '&a=$algorithm';
     if (remux) proxyUrl += '&remux=1';
-    if (toCast) proxyUrl += '&cast=1';
-    if (isAudioTrack) proxyUrl += '&audio=1';
-    if (bridgeId != null) proxyUrl += '&bid=$bridgeId';
 
     return proxyUrl;
   }
@@ -651,7 +553,6 @@ class MediaProxyService {
       host,
       algorithm: algorithm,
       remux: remux,
-      toCast: toCast,
     );
   }
 
@@ -881,152 +782,6 @@ class MediaProxyService {
     }
     return result.join('\n');
   }
-
-  // --- LÓGICA DE BRIDGE (FUSIÓN VIDEO + AUDIO) ---
-
-  String registerBridge(String videoUrl, String audioUrl, Map<String, String> headers) {
-    final id = (videoUrl + audioUrl).hashCode.abs().toString();
-    _bridgeRegistry[id] = _BridgeEntry(videoUrl, audioUrl, headers);
-    final bridgeUrl = 'http://$_localIp:$_port/bridge/$id/stream.ts';
-    print('🚀 [BRIDGE_REGISTRY] Registrado ID: $id');
-    print('🔗 [BRIDGE_URL] $bridgeUrl');
-    return bridgeUrl;
-  }
-
-  Future<void> _handleBridgeRequest(HttpRequest request) async {
-    final pathParts = request.uri.path.split('/');
-    if (pathParts.length < 3) {
-      request.response.statusCode = HttpStatus.notFound;
-      await request.response.close();
-      return;
-    }
-
-    final String id = pathParts[2];
-    final entry = _bridgeRegistry[id];
-
-    if (request.method == 'OPTIONS') {
-      request.response.statusCode = HttpStatus.ok;
-      request.response.headers.set('Access-Control-Allow-Origin', '*');
-      request.response.headers.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
-      request.response.headers.set('Access-Control-Allow-Headers', '*');
-      await request.response.close();
-      return;
-    }
-
-    if (entry == null) {
-      print('❌ [BRIDGE] ID no encontrado: $id');
-      request.response.statusCode = HttpStatus.notFound;
-      await request.response.close();
-      return;
-    }
-
-    print('🎬🎬🎬 [BRIDGE_REQUEST] RECIBIDA PETICIÓN DE FUSIÓN');
-    print('   ID: $id');
-    
-    final videoUnproxied = MediaProxyService.tryUnproxy(entry.videoUrl);
-    final audioUnproxied = MediaProxyService.tryUnproxy(entry.audioUrl);
-    
-    final originalVideoUrl = videoUnproxied?['url'] ?? entry.videoUrl;
-    final originalAudioUrl = audioUnproxied?['url'] ?? entry.audioUrl;
-    
-    final Map<String, String> combinedHeaders = {};
-    if (videoUnproxied != null) combinedHeaders.addAll(Map<String, String>.from(videoUnproxied['headers'] ?? {}));
-    if (audioUnproxied != null) combinedHeaders.addAll(Map<String, String>.from(audioUnproxied['headers'] ?? {}));
-    combinedHeaders.addAll(entry.headers);
-
-    // Limpiar headers: Si viene un User-Agent de FFmpeg (Lavf), ignorarlo 
-    // y usar uno de navegador real para no ser bloqueados.
-    final String currentUA = combinedHeaders['User-Agent'] ?? combinedHeaders['user-agent'] ?? '';
-    if (currentUA.contains('Lavf')) {
-      combinedHeaders.remove('User-Agent');
-      combinedHeaders.remove('user-agent');
-    }
-
-    // Guardar headers en el registro para el proxy
-    _bridgeInputHeaders[id] = combinedHeaders;
-
-    // Generar URLs de proxy LIMPIAS (sin cabeceras en el path) para FFmpeg
-    // El proxy usará el bridgeId para recuperar las cabeceras.
-    final proxiedVideoUrlForFfmpeg = _buildProxiedUrl(
-      originalVideoUrl,
-      null, // No inyectar headers en la URL
-      '127.0.0.1:$_port',
-      bridgeId: id,
-    );
-    final proxiedAudioUrlForFfmpeg = _buildProxiedUrl(
-      originalAudioUrl,
-      null, // No inyectar headers en la URL
-      '127.0.0.1:$_port',
-      bridgeId: id,
-    );
-
-    ServerSocket? serverSocket;
-    final socketCompleter = Completer<Socket>();
-
-    try {
-      serverSocket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final bridgePort = serverSocket.port;
-      
-      serverSocket.listen((socket) {
-        if (!socketCompleter.isCompleted) {
-          socketCompleter.complete(socket);
-        }
-      }, onError: (e) {
-        if (!socketCompleter.isCompleted) socketCompleter.completeError(e);
-      });
-
-      // Comando FFmpeg con URLs de proxy local cortas y limpias
-      final command = '-y '
-          '-protocol_whitelist file,http,tcp,https,tls,crypto '
-          '-allowed_extensions ALL '
-          '-i "$proxiedVideoUrlForFfmpeg" '
-          '-i "$proxiedAudioUrlForFfmpeg" '
-          '-c:v copy -c:a aac -b:a 192k '
-          '-map 0:v:0 -map 1:a:0 '
-          '-f mpegts '
-          'tcp://127.0.0.1:$bridgePort';
-
-      print('🚀 [BRIDGE] Ejecutando fusión via PROXY LOCAL: ffmpeg $command');
-
-      FFmpegKit.executeAsync(command, (session) async {
-        final state = await session.getState();
-        final returnCode = await session.getReturnCode();
-        
-        if (!ReturnCode.isSuccess(returnCode)) {
-          print('❌ [BRIDGE] FFmpeg Error (Code: $returnCode)');
-          final logs = await session.getLogs();
-          for (var log in logs.take(15)) {
-             print('      [FFMPEG] ${log.getMessage()}');
-          }
-        }
-        
-        print('🏁 [BRIDGE] FFmpeg finalizado: $state');
-        if (!socketCompleter.isCompleted) {
-          socketCompleter.completeError('FFmpeg finalizó antes de conectar');
-        }
-        serverSocket?.close();
-      });
-
-      final ffmpegSocket = await socketCompleter.future.timeout(const Duration(seconds: 20));
-      
-      request.response.statusCode = HttpStatus.ok;
-      request.response.headers.set('Access-Control-Allow-Origin', '*');
-      request.response.headers.contentType = ContentType.parse('video/MP2T');
-      request.response.headers.set('Connection', 'keep-alive');
-      request.response.headers.set('Cache-Control', 'no-cache');
-
-      await request.response.addStream(ffmpegSocket);
-      await request.response.close();
-      print('✅ [BRIDGE] Stream finalizado correctamente');
-    } catch (e) {
-      print('❌ [BRIDGE] Error en flujo: $e');
-      serverSocket?.close();
-      try {
-        request.response.statusCode = HttpStatus.internalServerError;
-        await request.response.close();
-      } catch (_) {}
-    }
-  }
 }
 
 class _A3Entry {
@@ -1036,14 +791,6 @@ class _A3Entry {
   final bool toCast;
 
   _A3Entry(this.url, this.headers, this.baseUrl, {this.toCast = false});
-}
-
-class _BridgeEntry {
-  final String videoUrl;
-  final String audioUrl;
-  final Map<String, String> headers;
-
-  _BridgeEntry(this.videoUrl, this.audioUrl, this.headers);
 }
 
 

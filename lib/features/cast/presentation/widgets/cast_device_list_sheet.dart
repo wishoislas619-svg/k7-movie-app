@@ -14,7 +14,6 @@ import '../pages/cast_remote_page.dart';
 /// Bottom sheet que muestra los dispositivos disponibles en la red y permite conectarse.
 class CastDeviceListSheet extends ConsumerStatefulWidget {
   final String videoUrl;
-  final String? audioUrl;
   final String? localFilePath;
   final String title;
   final String? imageUrl;
@@ -28,7 +27,6 @@ class CastDeviceListSheet extends ConsumerStatefulWidget {
   const CastDeviceListSheet({
     super.key,
     required this.videoUrl,
-    this.audioUrl,
     this.localFilePath,
     required this.title,
     this.imageUrl,
@@ -134,10 +132,8 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
         );
       } else {
         debugPrint('🎬 [SHEET] Transmitiendo URL remota...');
-        print('🔴🔴🔴 [SHEET] castUrl -> audioUrl=${widget.audioUrl} | algorithm=${widget.algorithm}');
         await _castService.castUrl(
           url: widget.videoUrl,
-          audioUrl: widget.audioUrl,
           title: widget.title,
           imageUrl: widget.imageUrl,
           headers: widget.headers,

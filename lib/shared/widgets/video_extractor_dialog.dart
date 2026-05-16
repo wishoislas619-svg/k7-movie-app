@@ -11,7 +11,6 @@ import 'package:movie_app/features/player/data/datasources/video_service.dart';
 class VideoExtractionData {
   final String videoUrl;
   final List<VideoQuality> qualities;
-  final String? audioUrl;
   final String? cookies;
   final String? userAgent;
   final Map<String, String>? headers;
@@ -19,7 +18,6 @@ class VideoExtractionData {
   VideoExtractionData({
     required this.videoUrl,
     this.qualities = const [],
-    this.audioUrl,
     this.cookies,
     this.userAgent,
     this.headers,
@@ -1128,12 +1126,6 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
         (url.contains('.txt') &&
             (url.contains('master') || url.contains('playlist')));
 
-    // Ignorar sub-listas (chunk playlists) para asegurar que solo capturemos el master.m3u8
-    // Si capturamos index-f1-v1.m3u8, perdemos la pista de audio.
-    if (url.contains('index-f') && url.contains('.m3u8')) {
-      return;
-    }
-
     if (!isVideo) return;
 
     setState(() => _statusText = "Capturando stream oficial...");
@@ -1274,47 +1266,12 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
         }
 
         print('[SNIFFER] Calidades encontradas: ${explodedQualities.length}');
-        
-        // Extraer audioUrl del master si alguna calidad lo tiene
-        String? masterAudioUrl;
         for (var q in explodedQualities) {
-          if (q.audioUrl != null) {
-            masterAudioUrl = q.audioUrl;
-            break;
-          }
-        }
-        
-        // Si encontramos audioUrl, actualizar la entrada ya registrada del master
-        if (masterAudioUrl != null) {
-          print('[SNIFFER] 🔊 Audio URL extraído del master: $masterAudioUrl');
-          setState(() {
-            // Actualizar retroactivamente la entrada del master con el audioUrl
-            final idx = _foundMedia.indexWhere((m) => m.videoUrl == url);
-            if (idx >= 0) {
-              final old = _foundMedia[idx];
-              _foundMedia[idx] = VideoExtractionData(
-                videoUrl: old.videoUrl,
-                qualities: old.qualities.map((q) => VideoQuality(
-                  resolution: q.resolution,
-                  url: q.url,
-                  audioUrl: q.audioUrl ?? masterAudioUrl,
-                )).toList(),
-                audioUrl: masterAudioUrl,
-                cookies: old.cookies,
-                userAgent: old.userAgent,
-                headers: old.headers,
-              );
-            }
-          });
-        }
-        
-        for (var q in explodedQualities) {
-          print('[SNIFFER] Calidad -> res:${q.resolution} url:${q.url} audio:${q.audioUrl}');
+          print('[SNIFFER] Calidad -> res:${q.resolution} url:${q.url}');
           // Manifest sub-tracks (.txt/.m3u8) don't need size probing — add immediately
           _addFoundMedia(
             url: q.url,
             resolution: "Streaming ${q.resolution}",
-            audioUrl: q.audioUrl,
             size: "Streaming",
             headers: headersForProbe,
             cookies: cookieString,
@@ -1405,7 +1362,6 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
   void _addFoundMedia({
     required String url,
     required String resolution,
-    String? audioUrl,
     String? size,
     required Map<String, String> headers,
     String? cookies,
@@ -1432,10 +1388,8 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
             VideoQuality(
               resolution: size != null ? "$resolution ($size)" : resolution,
               url: url,
-              audioUrl: audioUrl,
             ),
           ],
-          audioUrl: audioUrl,
           cookies: cookies,
           userAgent: headers['user-agent'] ?? headers['User-Agent'],
           headers: headers,
@@ -1931,6 +1885,46 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
             } catch(e){}
           }
         };
+
+        // 3. Escaneo de reproducción activa (ReadyState > 2)
+        const deepScan = () => {
+          const videos = document.querySelectorAll('video');
+          videos.forEach(v => {
+            if (v.readyState >= 2) { // Video ya tiene datos o está reproduciendo
+               const src = v.src || v.currentSrc;
+               if (src && !src.startsWith('blob:')) notify(src, {status: 'playing', area: 'active_dom'});
+               
+               // Si es un Blob, intentamos buscar el playlist origen en el historial de red
+               if (src && src.startsWith('blob:')) {
+                 console.log('[DEBUG_JS] Video reproduciendo mediante BLOB. Buscando manifiesto...');
+               }
+            }
+          });
+          scanEngine();
+        };
+
+        // Interceptación de Red (Fetch/XHR)
+        const _fetch = window.fetch;
+        window.fetch = function(...args) {
+          let url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
+          if (url && (url.includes('.m3u8') || url.includes('.mp4'))) notify(url, {source: 'fetch_active'});
+          return _fetch.apply(this, args);
+        };
+
+        const _open = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(m, u) {
+          if (u && (u.includes('.m3u8') || u.includes('.mp4'))) notify(u, {source: 'xhr_active'});
+          return _open.apply(this, arguments);
+        };
+
+        setInterval(deepScan, 1000);
+        setInterval(() => window.flutter_inappwebview.callHandler('debugLog', 'GHOST_HEARTBEAT_v5.5'), 3000);
+        
+        notify('READY_SIGNAL', {status: 'v5.5_ready'});
+      })();
+    ''';
+  }
+}
 
         // 3. Escaneo de reproducción activa (ReadyState > 2)
         const deepScan = () => {

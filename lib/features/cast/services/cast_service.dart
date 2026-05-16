@@ -222,7 +222,6 @@ class CastService extends ChangeNotifier {
   Future<void> castUrl({
     required String url,
     required String title,
-    String? audioUrl,
     String? imageUrl,
     Map<String, String>? headers,
     Duration startPosition = Duration.zero,
@@ -241,12 +240,12 @@ class CastService extends ChangeNotifier {
     _currentVideoUrl = url;
 
     _log('══════════════════════════════════════');
-    _log('🚀🚀🚀 [CAST_DEBUG] castUrl() INICIADO');
+    _log('castUrl() iniciado');
     _log('  title    : $title');
     _log('  url      : $url');
-    _log('  audioUrl : $audioUrl');
     _log('  algorithm: $algorithm');
-    _log('══════════════════════════════════════');
+    _log('  startPos : ${startPosition.inSeconds}s');
+    _log('  subtitle : $subtitleUrl');
 
     // --- DESENVOLVER URL SI YA ESTÁ PROXEADA ---
     // Evita el "Doble Proxy" que genera URLs gigantescas incompatibles con TVs (SOAP 500)
@@ -305,57 +304,12 @@ class CastService extends ChangeNotifier {
     // Usamos una variable mutable para poder cambiar el tipo si usamos el Puente
     dc.CastMediaType mediaType = _detectMediaType(effectiveUrl);
 
-    _log('🚨 [BRIDGE_CHECK] Datos finales:');
-    _log('   • audioUrl: "$audioUrl"');
-    _log('   • effectiveAlgorithm: $effectiveAlgorithm');
-    _log('   • mediaType: $mediaType');
-    _log('   • isDlna: $isDlna');
-    
-    // --- LÓGICA DE PUENTE PARA AUDIO SEPARADO (ALGORITMO 2) ---
-    bool usedAudioBridge = false;
-    if (audioUrl != null && audioUrl.isNotEmpty && (effectiveAlgorithm == 2 || effectiveAlgorithm == 1)) {
-      _log('🚀 CAST: Activando PUENTE DE AUDIO SEPARADO (Fusión FFmpeg)');
-      await MediaProxyService().start();
-
-      // ⚠️ CRÍTICO: FFmpeg recibe las URLs directas de TikTok que responden con
-      // Content-Type: image/png. FFmpeg rechaza esas respuestas porque no reconoce
-      // el formato. Solución: enrutar los inputs por el proxy LOCAL que convierte
-      // image/png → octet-stream, permitiendo a FFmpeg hacer byte-sniffing del MPEG-TS.
-      final proxiedVideoUrl = MediaProxyService().getProxiedUrl(
-        effectiveUrl,
-        combinedHeaders,
-        useLocalhost: true, // FFmpeg corre en el dispositivo, usa localhost
-        algorithm: effectiveAlgorithm,
-      );
-      final proxiedAudioUrl = MediaProxyService().getProxiedUrl(
-        audioUrl,
-        combinedHeaders,
-        useLocalhost: true, // FFmpeg corre en el dispositivo, usa localhost
-        algorithm: effectiveAlgorithm,
-      );
-
-      _log('🎬 [BRIDGE] proxiedVideoUrl: ${proxiedVideoUrl.substring(0, proxiedVideoUrl.length > 80 ? 80 : proxiedVideoUrl.length)}...');
-      _log('🎬 [BRIDGE] proxiedAudioUrl: ${proxiedAudioUrl.substring(0, proxiedAudioUrl.length > 80 ? 80 : proxiedAudioUrl.length)}...');
-
-      mediaType = dc.CastMediaType.mp4; // Bridge genera stream continuo (MPEG-TS), no playlist HLS. Lo enviamos como mp4/video.
-      
-      // Pasamos cabeceras vacías al bridge porque las cabeceras ya están
-      // codificadas dentro de la URL proxeada (parámetro 'h')
-      finalUrl = MediaProxyService().registerBridge(
-        proxiedVideoUrl,
-        proxiedAudioUrl,
-        {}, // headers ya embebidos en la URL proxy
-      );
-      usedAudioBridge = true;
-      _log('🔗 [BRIDGE] URL final enviada al Cast: $finalUrl');
-    }
-
     // --- LÓGICA DE PUENTE HLS-A-MP4 (SOLO PARA ALGORITMOS ESPECÍFICOS) ---
     // El Puente convierte el manifiesto HLS en un flujo MP4 continuo con audio AAC.
     // Algoritmo 3 ahora usa Proxy estándar por petición del usuario.
     bool shouldBridgeInternal = false;
     
-    if (!usedAudioBridge && shouldBridgeInternal &&
+    if (shouldBridgeInternal &&
         (mediaType == dc.CastMediaType.hls ||
             effectiveUrl.contains('.m3u8') ||
             effectiveUrl.contains('master') ||
@@ -393,7 +347,7 @@ class CastService extends ChangeNotifier {
       }
     }
     // --- LÓGICA DE PROXY DINÁMICO (ALGORITMO 1 Y 2) ---
-    else if (!usedAudioBridge && (effectiveAlgorithm == 1 || effectiveAlgorithm == 2) &&
+    else if ((effectiveAlgorithm == 1 || effectiveAlgorithm == 2) &&
         (mediaType == dc.CastMediaType.hls ||
             effectiveUrl.contains('.m3u8'))) {
       _log(
@@ -434,8 +388,8 @@ class CastService extends ChangeNotifier {
       }
     }
     // --- LÓGICA DE PROXY UNIFICADO PARA OTROS CASOS ---
-    else if (!usedAudioBridge && (isLocalhost ||
-        (effectiveAlgorithm == 4 || effectiveAlgorithm == 5))) {
+    else if (isLocalhost ||
+        (effectiveAlgorithm == 4 || effectiveAlgorithm == 5)) {
       _log(
         '  CAST: Forzando Proxy de RED para compatibilidad (Alg $effectiveAlgorithm / Localhost)',
       );
@@ -448,7 +402,7 @@ class CastService extends ChangeNotifier {
       );
     }
     // 4. Fallback para DLNA estándar (MP4/MKV) que requiere cabeceras
-    else if (!usedAudioBridge && isDlna && mediaType != dc.CastMediaType.hls && !isAlreadyProxied) {
+    else if (isDlna && mediaType != dc.CastMediaType.hls && !isAlreadyProxied) {
       _log('  DLNA: Proxeando video estándar para inyectar cabeceras');
       await MediaProxyService().start();
       finalUrl = MediaProxyService().getProxiedUrl(
@@ -485,8 +439,8 @@ class CastService extends ChangeNotifier {
     if (combinedHeaders.containsKey('Origin'))
       minimalHeaders['Origin'] = combinedHeaders['Origin']!;
 
-    // Regenerar finalUrl con cabeceras mínimas si es proxy (pero NO si es bridge)
-    if (finalUrl.contains('/proxy')) {
+    // Regenerar finalUrl con cabeceras mínimas si es proxy
+    if (finalUrl.contains('/proxy') || finalUrl.contains('/bridge')) {
       final unproxiedFinal = MediaProxyService.tryUnproxy(finalUrl);
       if (unproxiedFinal != null) {
         if (effectiveAlgorithm == 3) {

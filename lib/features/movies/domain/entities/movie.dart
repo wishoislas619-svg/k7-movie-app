@@ -46,7 +46,6 @@ class VideoOption {
   final String serverImagePath;
   final String resolution;
   final String videoUrl;
-  final String? audioUrl;
   final String? language;
   final int extractionAlgorithm;
 
@@ -56,7 +55,6 @@ class VideoOption {
     required this.serverImagePath,
     required this.resolution,
     required this.videoUrl,
-    this.audioUrl,
     this.language,
     this.extractionAlgorithm = 1,
   });
@@ -64,11 +62,9 @@ class VideoOption {
 class VideoQuality {
   final String resolution;
   final String url;
-  final String? audioUrl;
 
   VideoQuality({
     required this.resolution,
     required this.url,
-    this.audioUrl,
   });
 }

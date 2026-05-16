@@ -480,7 +480,6 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (context) => CastSelectionModal(
         videoUrl: option.videoUrl,
-        audioUrl: option.audioUrl,
         title: widget.movie.name,
         imageUrl: widget.movie.imagePath,
         headers: {
@@ -496,7 +495,6 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
 // Widget auxiliar para reutilizar el modal de selección en varios sitios
 class CastSelectionModal extends StatelessWidget {
   final String videoUrl;
-  final String? audioUrl;
   final String title;
   final String imageUrl;
   final Map<String, String>? headers;
@@ -505,7 +503,6 @@ class CastSelectionModal extends StatelessWidget {
   const CastSelectionModal({
     super.key,
     required this.videoUrl,
-    this.audioUrl,
     required this.title,
     required this.imageUrl,
     this.headers,
@@ -522,7 +519,6 @@ class CastSelectionModal extends StatelessWidget {
     // Mejor: Usamos un CastButton "fantasma" que solo abre el modal
     return CastButton(
       videoUrl: videoUrl,
-      audioUrl: audioUrl,
       title: title,
       imageUrl: imageUrl,
       headers: headers,

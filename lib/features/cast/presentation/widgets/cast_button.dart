@@ -14,14 +14,11 @@ import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../../../core/services/ad_service.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:async';
-import 'package:movie_app/features/player/data/datasources/video_service.dart';
-import 'package:movie_app/features/movies/domain/entities/movie.dart';
 
 /// Botón de Cast que aparece en la barra de controles del reproductor.
 /// Muestra el estado de conexión y abre el selector de dispositivos o el control remoto.
 class CastButton extends ConsumerStatefulWidget {
   final String videoUrl;
-  final String? audioUrl;
   final String? localFilePath;
   final String title;
   final String? imageUrl;
@@ -34,7 +31,6 @@ class CastButton extends ConsumerStatefulWidget {
   const CastButton({
     super.key,
     required this.videoUrl,
-    this.audioUrl,
     this.localFilePath,
     required this.title,
     this.imageUrl,
@@ -235,8 +231,7 @@ class _CastButtonState extends ConsumerState<CastButton>
     );
   }
 
-  Future<({String? video, String? audio})> _extractIfNeeded(String url) async {
-    print('🔴🔴🔴 [EXTRACT_IF_NEEDED] url=$url | widget.audioUrl=${widget.audioUrl} | algorithm=${widget.algorithm}');
+  Future<String?> _extractIfNeeded(String url) async {
     // Si la URL ya es un video directo (m3u8, mp4, etc) o ya está proxeada, no extraemos
     final lower = url.toLowerCase();
     final isDirectVideo =
@@ -252,7 +247,7 @@ class _CastButtonState extends ConsumerState<CastButton>
         await A3ProxyService().start(targetIp: deviceIp);
         final proxied = A3ProxyService().generateSessionUrl(url, widget.headers ?? {});
         print('--- [CAST] URL A3 generada (Vía Sesión): $proxied ---');
-        return (video: proxied, audio: null);
+        return proxied;
       }
 
       // Si ya es video pero queremos proxearlo para limpiar anuncios
@@ -260,54 +255,15 @@ class _CastButtonState extends ConsumerState<CastButton>
           !url.startsWith('https://127.0.0.1')) {
         await MediaProxyService().start();
 
-        String? resolvedAudioUrl = widget.audioUrl;
-        if (resolvedAudioUrl == null &&
-            widget.algorithm == 2 &&
-            lower.contains('.m3u8')) {
-          try {
-            print('--- [CAST] Intentando extraer audioUrl del master HLS...');
-            final qualities = await VideoService.getHlsQualities(
-              url,
-              headers: widget.headers,
-            );
-            if (qualities.isNotEmpty) {
-              final qWithAudio = qualities.firstWhere(
-                (q) => q.audioUrl != null,
-                orElse: () => qualities.first,
-              );
-              resolvedAudioUrl = qWithAudio.audioUrl;
-            }
-          } catch (e) {
-            print('--- [CAST] Error extrayendo audioUrl: $e');
-          }
-        }
-
-        String finalV = url;
-        String? finalA = resolvedAudioUrl;
-
-        // --- FUSIÓN PARA ALGORITMO 2 ---
-        if (widget.algorithm == 2 && finalA != null && finalA.isNotEmpty) {
-           print('🚀 [DIRECT_CAST] Registrando BRIDGE para Algoritmo 2...');
-           final pV = MediaProxyService().getProxiedUrl(finalV, widget.headers, useLocalhost: true, algorithm: widget.algorithm);
-           final pA = MediaProxyService().getProxiedUrl(finalA, widget.headers, useLocalhost: true, algorithm: widget.algorithm);
-           finalV = MediaProxyService().registerBridge(pV, pA, {});
-           finalA = null;
-        }
-
-        final proxied = (finalV.startsWith('http://127.0.0.1') || finalV.contains('/bridge/'))
-          ? finalV
-          : MediaProxyService().getProxiedUrl(
-              finalV,
-              widget.headers,
-              useLocalhost: false,
-              algorithm: widget.algorithm,
-              toCast: true,
-            );
-        
-        print('🔴🔴🔴 [EXTRACT_IF_NEEDED] RETURN -> video=$proxied | audio=$finalA');
-        return (video: proxied, audio: finalA);
+        return MediaProxyService().getProxiedUrl(
+          url,
+          widget.headers,
+          useLocalhost: false,
+          algorithm: widget.algorithm,
+          toCast: true,
+        );
       }
-      return (video: url, audio: widget.audioUrl);
+      return url;
     }
 
     // Si llegamos aquí, necesitamos extraer
@@ -322,7 +278,7 @@ class _CastButtonState extends ConsumerState<CastButton>
           ),
     );
 
-    if (result == null || result.videoUrl.isEmpty) return (video: null, audio: null);
+    if (result == null || result.videoUrl.isEmpty) return null;
 
     // Proxear el resultado para que WVC o el Cast interno reciban el video limpio
     final headers = <String, String>{};
@@ -336,55 +292,18 @@ class _CastButtonState extends ConsumerState<CastButton>
       await A3ProxyService().start(targetIp: deviceIp);
       final proxied = A3ProxyService().generateSessionUrl(result.videoUrl, headers);
       print('--- [CAST] URL A3 generada (Tras Extracción, Vía Sesión): $proxied ---');
-      return (video: proxied, audio: null);
+      return proxied;
     }
 
     await MediaProxyService().start();
     
-    String finalVideoUrl = result.videoUrl;
-    String? finalAudioUrl = result.audioUrl;
-
-    // --- MEJORA CRÍTICA: SI ES ALGORITMO 2, FUSIONAR AQUÍ MISMO ---
-    // Esto asegura que tanto el Cast interno como WVC reciban un flujo ÚNICO ya combinado.
-    if (widget.algorithm == 2 && finalAudioUrl != null && finalAudioUrl.isNotEmpty) {
-      print('🚀 [EXTRACTOR] Algoritmo 2 detectado con audio separado. Registrando BRIDGE DE FUSIÓN...');
-      
-      // Proxeamos los inputs para que FFmpeg pueda leerlos (evita errores de Content-Type: image/png)
-      final proxiedV = MediaProxyService().getProxiedUrl(
-        finalVideoUrl,
-        headers,
-        useLocalhost: true,
-        algorithm: widget.algorithm,
-      );
-      final proxiedA = MediaProxyService().getProxiedUrl(
-        finalAudioUrl,
-        headers,
-        useLocalhost: true,
-        algorithm: widget.algorithm,
-      );
-
-      finalVideoUrl = MediaProxyService().registerBridge(
-        proxiedV,
-        proxiedA,
-        {}, // Headers ya están en la URL proxeada
-      );
-      // Al usar el bridge, el audio ya está incluido en el flujo de video
-      finalAudioUrl = null;
-      print('🔗 [EXTRACTOR] Bridge registrado: $finalVideoUrl');
-    }
-
-    final proxied = (finalVideoUrl.startsWith('http://127.0.0.1') || finalVideoUrl.contains('/bridge/')) 
-      ? finalVideoUrl 
-      : MediaProxyService().getProxiedUrl(
-          finalVideoUrl,
-          headers,
-          useLocalhost: false,
-          algorithm: widget.algorithm,
-          toCast: true,
-        );
-        
-    print('🔴🔴🔴 [EXTRACT_IF_NEEDED] RETURN (post-dialog) -> audio=$finalAudioUrl');
-    return (video: proxied, audio: finalAudioUrl);
+    return MediaProxyService().getProxiedUrl(
+      result.videoUrl,
+      headers,
+      useLocalhost: false,
+      algorithm: widget.algorithm,
+      toCast: true,
+    );
   }
 
   Future<void> _checkAdAndProceed(VoidCallback onDone) async {
@@ -484,8 +403,7 @@ class _CastButtonState extends ConsumerState<CastButton>
   }
 
   Future<void> _launchWebVideoCaster() async {
-    final result = await _extractIfNeeded(widget.videoUrl);
-    final String? finalUrl = result.video;
+    final String? finalUrl = await _extractIfNeeded(widget.videoUrl);
     if (finalUrl == null || !mounted) return;
 
     final String videoUrl = finalUrl;
@@ -588,9 +506,7 @@ class _CastButtonState extends ConsumerState<CastButton>
   }
 
   Future<void> _openCastSheet() async {
-    final result = await _extractIfNeeded(widget.videoUrl);
-    final String? finalUrl = result.video;
-    final String? finalAudioUrl = result.audio;
+    final String? finalUrl = await _extractIfNeeded(widget.videoUrl);
     if (finalUrl == null || !mounted) return;
 
     showModalBottomSheet(
@@ -599,7 +515,6 @@ class _CastButtonState extends ConsumerState<CastButton>
       isScrollControlled: true,
       builder: (context) => CastDeviceListSheet(
         videoUrl: finalUrl,
-        audioUrl: finalAudioUrl,
         localFilePath: widget.localFilePath,
         title: widget.title,
         imageUrl: widget.imageUrl,
