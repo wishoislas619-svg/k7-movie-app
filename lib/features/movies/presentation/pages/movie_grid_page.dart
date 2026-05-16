@@ -25,6 +25,7 @@ import 'package:movie_app/features/player/presentation/pages/video_player_page.d
 import 'package:movie_app/providers.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 import 'package:movie_app/shared/widgets/tv_focus_wrapper.dart';
+import 'package:movie_app/shared/utils/responsive_layout.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -150,7 +151,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                         ),
                       if (popularMovies.isNotEmpty && !_isSearching && _selectedCategoryFilter == null)
                         SliverToBoxAdapter(
-                          child: _buildCarousel(popularMovies),
+                          child: _buildCarousel(popularMovies, context),
                         ),
                       SliverPadding(
                         padding: const EdgeInsets.only(top: 0, bottom: 100),
@@ -185,11 +186,11 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                 child: GridView.builder(
                                   shrinkWrap: true,
                                   physics: const NeverScrollableScrollPhysics(),
-                                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: 3,
+                                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: ResponsiveLayout.getGridCrossAxisCount(context),
                                     crossAxisSpacing: 12,
                                     mainAxisSpacing: 20,
-                                    mainAxisExtent: 240,
+                                    mainAxisExtent: ResponsiveLayout.getPosterHeight(context) + 60,
                                   ),
                                   itemCount: filteredMovies.length,
                                   itemBuilder: (context, index) => _buildMovieCard(context, filteredMovies[index]),
@@ -282,11 +283,11 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     );
   }
 
-  Widget _buildCarousel(List<Movie> popularMovies) {
+  Widget _buildCarousel(List<Movie> popularMovies, BuildContext context) {
     return Column(
       children: [
         SizedBox(
-          height: 300,
+          height: ResponsiveLayout.getCarouselHeight(context),
           child: PageView.builder(
             controller: _carouselController,
             onPageChanged: (index) => setState(() => _currentCarouselPage = index),
@@ -440,7 +441,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding: const EdgeInsets.only(left: 16, right: 16, top: 4, bottom: 8),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -479,7 +480,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           ),
         ),
         SizedBox(
-          height: 240,
+          height: ResponsiveLayout.getPosterHeight(context) + 60,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -490,15 +491,16 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             },
           ),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 4),
       ],
     );
   }
 
   Widget _buildMovieCard(BuildContext context, Movie movie) {
+    final double cardWidth = ResponsiveLayout.getPosterWidth(context);
     return Container(
-      width: 120,
-      margin: const EdgeInsets.only(right: 16),
+      width: cardWidth,
+      margin: const EdgeInsets.only(right: 8),
       child: TvFocusWrapper(
         onTap: () {
           Navigator.push(
@@ -519,10 +521,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(15),
                 child: SizedBox(
-                  width: 120,
-                  height: 180,
+                  width: ResponsiveLayout.getPosterWidth(context),
+                  height: ResponsiveLayout.getPosterHeight(context),
                   child: Image.network(
-                    movie.imagePath, 
+                    (ResponsiveLayout.isLandscape(context) && movie.backdropUrl != null && movie.backdropUrl!.isNotEmpty)
+                        ? movie.backdropUrl!
+                        : movie.imagePath, 
                     fit: BoxFit.cover,
                     errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white24, size: 50),
                   ),
@@ -546,8 +550,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             const SizedBox(height: 10),
             MarqueeText(
               text: movie.name,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-              width: 120,
+              style: TextStyle(
+                fontSize: ResponsiveLayout.isLandscape(context) ? 14 : 18, 
+                fontWeight: FontWeight.bold, 
+                color: Colors.white
+              ),
+              width: cardWidth,
             ),
           ],
         ),
@@ -560,7 +568,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding: const EdgeInsets.only(left: 16, right: 16, top: 4, bottom: 8),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -608,7 +616,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             },
           ),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 4),
       ],
     );
   }
@@ -618,7 +626,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     
     return Container(
       width: 140,
-      margin: const EdgeInsets.only(right: 16),
+      margin: const EdgeInsets.only(right: 8),
       child: TvFocusWrapper(
         onTap: () => _launchMedia(context, item, resume: true),
         borderRadius: 16,

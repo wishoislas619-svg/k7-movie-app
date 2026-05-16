@@ -5,6 +5,7 @@ import 'movie_details_page.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
+import 'package:movie_app/shared/utils/responsive_layout.dart';
 
 class CategoryPage extends StatefulWidget {
   final Category category;
@@ -67,11 +68,11 @@ class _CategoryPageState extends State<CategoryPage> {
       ),
       body: GridView.builder(
         padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 40),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: ResponsiveLayout.getGridCrossAxisCount(context),
           crossAxisSpacing: 12,
           mainAxisSpacing: 20,
-          mainAxisExtent: 220,
+          mainAxisExtent: ResponsiveLayout.getPosterHeight(context) + 50,
         ),
         itemCount: filteredMovies.length,
         itemBuilder: (context, index) {
@@ -94,12 +95,16 @@ class _CategoryPageState extends State<CategoryPage> {
                       backgroundColor: Colors.white10,
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(15),
-                        child: Container(
+                        child: SizedBox(
                           width: double.infinity,
-                          height: 170,
-                          child: movie.imagePath.startsWith('http') 
-                            ? Image.network(movie.imagePath, fit: BoxFit.cover)
-                            : const Icon(Icons.movie, color: Colors.white24, size: 40),
+                          height: ResponsiveLayout.getPosterHeight(context),
+                          child: Image.network(
+                            (ResponsiveLayout.isLandscape(context) && movie.backdropUrl != null && movie.backdropUrl!.isNotEmpty)
+                                ? movie.backdropUrl!
+                                : movie.imagePath, 
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white24, size: 40),
+                          ),
                         ),
                       ),
                     ),
@@ -120,8 +125,12 @@ class _CategoryPageState extends State<CategoryPage> {
                 const SizedBox(height: 8),
                 MarqueeText(
                   text: movie.name,
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
-                  width: 100,
+                  style: TextStyle(
+                    fontSize: ResponsiveLayout.isLandscape(context) ? 12 : 14, 
+                    fontWeight: FontWeight.bold, 
+                    color: Colors.white
+                  ),
+                  width: double.infinity,
                 ),
               ],
             ),

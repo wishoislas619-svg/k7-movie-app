@@ -10,6 +10,7 @@ import '../../../player/data/datasources/video_service.dart';
 import '../../../../providers.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 import 'package:movie_app/features/movies/presentation/widgets/cast_button_overlay.dart';
+import 'package:movie_app/shared/utils/responsive_layout.dart';
 
 class MovieDetailsPage extends ConsumerStatefulWidget {
   final Movie movie;
@@ -163,7 +164,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
             Stack(
               children: [
                 Container(
-                  height: 300, // Increased height for better visibility
+                  height: ResponsiveLayout.isLandscape(context) ? 250 : 300, 
                   width: double.infinity,
                   decoration: BoxDecoration(
                     image: DecorationImage(
@@ -177,7 +178,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                   ),
                 ),
                 Container(
-                  height: 300,
+                  height: ResponsiveLayout.isLandscape(context) ? 250 : 300,
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
@@ -211,8 +212,8 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                             borderRadius: BorderRadius.circular(11),
                             child: Image.network(
                               currentMovie.imagePath,
-                              width: 120,
-                              height: 180,
+                              width: ResponsiveLayout.isLandscape(context) ? 100 : 120,
+                              height: ResponsiveLayout.isLandscape(context) ? 150 : 180,
                               fit: BoxFit.cover,
                               errorBuilder: (_, __, ___) => Container(color: Colors.white12, child: const Icon(Icons.movie, color: Colors.white24)),
                             ),
@@ -255,28 +256,34 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                                   ),
                                 if (currentMovie.year != null && currentRating > 0)
                                   const SizedBox(width: 12),
-                                if (currentRating > 0)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: Colors.amber.withOpacity(0.2),
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(color: Colors.amber.withOpacity(0.5)),
+                                  if (currentRating > 0)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      margin: const EdgeInsets.only(right: 12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.amber.withOpacity(0.2),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(color: Colors.amber.withOpacity(0.5)),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.star_rounded, color: Colors.amber, size: 16),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            currentRating.toStringAsFixed(1),
+                                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.star_rounded, color: Colors.amber, size: 16),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          currentRating.toStringAsFixed(1),
-                                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                              ],
-                            ),
+                                  if (ResponsiveLayout.isLandscape(context)) ...[
+                                    _buildMetaIcon(Icons.remove_red_eye, '${currentMovie.views}', color: Colors.white70),
+                                    const SizedBox(width: 12),
+                                    _buildMetaIcon(Icons.movie_creation_outlined, category.name, color: Colors.white70),
+                                  ],
+                                ],
+                              ),
                           ],
                         ),
                       ),
@@ -313,15 +320,16 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                 children: [
                   // Title was here, moved to Stack above
                   
-                  // Metadata row
-                  Row(
-                    children: [
-                      _buildMetaIcon(Icons.remove_red_eye, '${currentMovie.views} Views'),
-                      const SizedBox(width: 20),
-                      Expanded(child: _buildMetaIcon(Icons.movie_creation_outlined, category.name)),
-                    ],
-                  ),
-                  const SizedBox(height: 25),
+                  if (!ResponsiveLayout.isLandscape(context)) ...[
+                    Row(
+                      children: [
+                        _buildMetaIcon(Icons.remove_red_eye, '${currentMovie.views} Views'),
+                        const SizedBox(width: 20),
+                        Expanded(child: _buildMetaIcon(Icons.movie_creation_outlined, category.name)),
+                      ],
+                    ),
+                    const SizedBox(height: 25),
+                  ],
 
                   // 3. Play Movie Button (Gradient)
                   GestureDetector(

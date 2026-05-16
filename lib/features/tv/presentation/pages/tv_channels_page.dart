@@ -8,6 +8,10 @@ import '../../../../shared/widgets/tv_focus_wrapper.dart';
 import 'package:video_player/video_player.dart';
 import 'tv_player_page.dart';
 import '../../../../core/services/ad_service.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../../../core/constants/app_constants.dart';
+import '../../../../shared/utils/responsive_layout.dart';
 
 // Modelo temporal para la vista
 class TempTvChannel {
@@ -24,14 +28,15 @@ class TempTvChannel {
   });
 }
 
-class TvChannelsPage extends StatefulWidget {
+class TvChannelsPage extends ConsumerStatefulWidget {
   const TvChannelsPage({super.key});
 
   @override
-  State<TvChannelsPage> createState() => _TvChannelsPageState();
+  ConsumerState<TvChannelsPage> createState() => _TvChannelsPageState();
 }
 
-class _TvChannelsPageState extends State<TvChannelsPage> {
+class _TvChannelsPageState extends ConsumerState<TvChannelsPage> {
+  bool _isNavigating = false;
   List<Map<String, dynamic>> _allChannels = [];
   List<Map<String, dynamic>> _filteredChannels = [];
   Map<String, List<Map<String, dynamic>>> _groupedChannels = {};
@@ -302,30 +307,50 @@ class _TvChannelsPageState extends State<TvChannelsPage> {
     return Container(
       margin: const EdgeInsets.only(bottom: 4), 
       child: TvFocusWrapper(
-        onTap: () {
-            // Show rewarded ad before playing
-            AdService.showRewardedAd(
-              ticketId: "tv_reward",
-              onAdWatched: (_) async {
-                _saveAsFavorite(channel);
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => TvPlayerPage(
-                      channels: _filteredChannels,
-                      initialIndex: _filteredChannels.indexOf(channel),
-                    ),
+        onTap: () async {
+            if (_isNavigating) return;
+            
+            final user = ref.read(authStateProvider);
+            final role = user?.role.toLowerCase() ?? 'user';
+            final bool isFree = role == AppConstants.roleAdmin || role == AppConstants.roleUserVip;
+
+            Future<void> openPlayer() async {
+              if (_isNavigating) return;
+              setState(() => _isNavigating = true);
+              _saveAsFavorite(channel);
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => TvPlayerPage(
+                    channels: _filteredChannels,
+                    initialIndex: _filteredChannels.indexOf(channel),
                   ),
-                );
+                ),
+              );
+              if (mounted) {
+                setState(() => _isNavigating = false);
                 _scrollToChannel(channel['id']);
-              },
-              onAdFailed: (error) {
-                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
-              },
-              onAdDismissedIncomplete: () {
-                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Debes ver el anuncio para acceder al canal")));
               }
-            );
+            }
+
+            if (isFree) {
+              await openPlayer();
+            } else {
+              // Show rewarded ad before playing
+              AdService.showRewardedAd(
+                ticketId: "tv_reward",
+                onAdWatched: (_) async {
+                  await openPlayer();
+                },
+                onAdFailed: (error) async {
+                   // If ad fails (no fill), we still let them in
+                   await openPlayer();
+                },
+                onAdDismissedIncomplete: () {
+                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Debes ver el anuncio para acceder al canal")));
+                }
+              );
+            }
         },
         borderRadius: 16,
         child: EnergyFlowBorder(
@@ -336,7 +361,10 @@ class _TvChannelsPageState extends State<TvChannelsPage> {
           child: Material(
             color: Colors.transparent,
             child: ListTile(
-               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+               contentPadding: EdgeInsets.symmetric(
+                 horizontal: 16, 
+                 vertical: ResponsiveLayout.isLandscape(context) ? 4 : 8
+               ),
                onTap: null, // Lo maneja TvFocusWrapper
                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                leading: Container(
@@ -352,13 +380,18 @@ class _TvChannelsPageState extends State<TvChannelsPage> {
                     ? Image.network(
                         logoUrl,
                         fit: BoxFit.contain,
-                        errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white38, size: 24),
+                        errorBuilder: (_, __, ___) => Icon(Icons.tv, color: Colors.white38, size: ResponsiveLayout.isLandscape(context) ? 18 : 24),
                       )
-                    : const Icon(Icons.tv, color: Colors.white38, size: 24),
+                    : Icon(Icons.tv, color: Colors.white38, size: ResponsiveLayout.isLandscape(context) ? 18 : 24),
                ),
                title: Text(
                  name.toUpperCase(), 
-                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 0.5), 
+                 style: TextStyle(
+                   color: Colors.white, 
+                   fontWeight: FontWeight.bold, 
+                   fontSize: ResponsiveLayout.isLandscape(context) ? 12 : 14, 
+                   letterSpacing: 0.5
+                 ), 
                  maxLines: 1, 
                  overflow: TextOverflow.ellipsis,
                ),

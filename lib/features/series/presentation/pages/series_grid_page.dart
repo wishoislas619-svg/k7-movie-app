@@ -9,6 +9,7 @@ import '../../../../shared/widgets/energy_flow_border.dart';
 import 'series_category_page.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 import '../../../../shared/widgets/tv_focus_wrapper.dart';
+import '../../../../shared/utils/responsive_layout.dart';
 
 class SeriesGridPage extends ConsumerStatefulWidget {
   const SeriesGridPage({super.key});
@@ -96,10 +97,10 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                           ),
                         ),
                       ),
-                    if (popularSeries.isNotEmpty && !_isSearching && _selectedCategoryFilter == null)
-                      SliverToBoxAdapter(
-                        child: _buildCarousel(popularSeries),
-                      ),
+                      if (popularSeries.isNotEmpty && !_isSearching && _selectedCategoryFilter == null)
+                        SliverToBoxAdapter(
+                          child: _buildCarousel(popularSeries, context),
+                        ),
                     SliverPadding(
                       padding: const EdgeInsets.only(top: 0, bottom: 10),
                       sliver: SliverList(
@@ -117,11 +118,11 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                               child: GridView.builder(
                                 shrinkWrap: true,
                                 physics: const NeverScrollableScrollPhysics(),
-                                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 3,
+                                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: ResponsiveLayout.getGridCrossAxisCount(context),
                                   crossAxisSpacing: 12,
                                   mainAxisSpacing: 20,
-                                  mainAxisExtent: 260,
+                                  mainAxisExtent: ResponsiveLayout.getPosterHeight(context) + 60,
                                 ),
                                 itemCount: filteredSeries.length,
                                 itemBuilder: (context, index) => _buildSeriesCard(context, filteredSeries[index]),
@@ -213,11 +214,11 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
     );
   }
 
-  Widget _buildCarousel(List<Series> popularSeries) {
+  Widget _buildCarousel(List<Series> popularSeries, BuildContext context) {
     return Column(
       children: [
         SizedBox(
-          height: 300,
+          height: ResponsiveLayout.getCarouselHeight(context),
           child: PageView.builder(
             controller: _carouselController,
             onPageChanged: (index) => setState(() => _currentCarouselPage = index),
@@ -388,7 +389,7 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.only(left: 20, right: 10, bottom: 12, top: 12),
+          padding: const EdgeInsets.only(left: 20, right: 10, top: 4, bottom: 8),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -427,7 +428,7 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
           ),
         ),
         SizedBox(
-          height: 240,
+          height: ResponsiveLayout.getPosterHeight(context) + 60,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -437,12 +438,15 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
             },
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 4),
       ],
     );
   }
 
   Widget _buildSeriesCard(BuildContext context, Series series) {
+    final double cardWidth = ResponsiveLayout.getPosterWidth(context);
+    final double cardHeight = ResponsiveLayout.getPosterHeight(context);
+    
     return TvFocusWrapper(
       onTap: () {
         Navigator.push(
@@ -452,8 +456,8 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
       },
       borderRadius: 16,
       child: Container(
-        width: 120,
-        margin: const EdgeInsets.only(right: 12),
+        width: cardWidth,
+        margin: const EdgeInsets.only(right: 6),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -466,13 +470,15 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(15),
                     child: Image.network(
-                      series.imagePath,
-                      width: 120,
-                      height: 190,
+                      (ResponsiveLayout.isLandscape(context) && series.backdropUrl?.isNotEmpty == true)
+                          ? series.backdropUrl!
+                          : series.imagePath,
+                      width: cardWidth,
+                      height: cardHeight,
                       fit: BoxFit.cover,
                       errorBuilder: (_, __, ___) => Container(
-                         width: 120,
-                         height: 190,
+                         width: cardWidth,
+                         height: cardHeight,
                          color: Colors.white12,
                          child: const Center(child: Icon(Icons.live_tv, size: 40, color: Colors.white24))
                       ),
@@ -496,8 +502,12 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
             const SizedBox(height: 10),
             MarqueeText(
               text: series.name,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-              width: 120,
+              style: TextStyle(
+                fontSize: ResponsiveLayout.isLandscape(context) ? 13 : 16, 
+                fontWeight: FontWeight.bold, 
+                color: Colors.white
+              ),
+              width: cardWidth,
             ),
           ],
         ),

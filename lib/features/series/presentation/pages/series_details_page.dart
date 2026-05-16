@@ -24,6 +24,7 @@ import 'package:uuid/uuid.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:movie_app/core/services/ad_service.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
+import 'package:movie_app/shared/utils/responsive_layout.dart';
 import 'dart:async';
 
 class SeriesDetailsPage extends ConsumerStatefulWidget {
@@ -509,7 +510,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                   left: 0,
                   right: 0,
                   child: SizedBox(
-                    height: 300,
+                    height: ResponsiveLayout.isLandscape(context) ? 250 : 300,
                     child: Opacity(
                       opacity: 0.99,
                       child: Image.network(
@@ -550,7 +551,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
               physics: const AlwaysScrollableScrollPhysics(),
               slivers: [
                 SliverAppBar(
-                expandedHeight: 300,
+                expandedHeight: ResponsiveLayout.isLandscape(context) ? 250 : 300,
                 pinned: true,
                 backgroundColor: Colors.transparent,
                 leading: const SizedBox.shrink(),
@@ -590,8 +591,8 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                                   borderRadius: BorderRadius.circular(11),
                                   child: Image.network(
                                     curSeries.imagePath,
-                                    width: 120,
-                                    height: 180,
+                                    width: ResponsiveLayout.isLandscape(context) ? 100 : 120,
+                                    height: ResponsiveLayout.isLandscape(context) ? 150 : 180,
                                     fit: BoxFit.cover,
                                     errorBuilder: (_, __, ___) => Container(color: Colors.white12, child: const Icon(Icons.movie, color: Colors.white24)),
                                   ),
@@ -634,6 +635,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                                       if (curSeries.rating > 0)
                                         Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                          margin: const EdgeInsets.only(right: 12),
                                           decoration: BoxDecoration(
                                             color: Colors.amber.withOpacity(0.2),
                                             borderRadius: BorderRadius.circular(8),
@@ -651,6 +653,20 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                                             ],
                                           ),
                                         ),
+                                      if (ResponsiveLayout.isLandscape(context)) ...[
+                                        _buildMetaIcon(Icons.remove_red_eye, '${curSeries.views}', color: Colors.white70),
+                                        if (curSeries.categoryId != null) ...[
+                                          const SizedBox(width: 12),
+                                          ref.watch(seriesCategoriesProvider).when(
+                                            data: (categories) {
+                                              final category = categories.firstWhere((c) => c.id == curSeries.categoryId, orElse: () => SeriesCategory(id: '', name: 'Serie'));
+                                              return _buildMetaIcon(Icons.live_tv_outlined, category.name, color: Colors.white70);
+                                            },
+                                            loading: () => const SizedBox.shrink(),
+                                            error: (_, __) => const SizedBox.shrink(),
+                                          ),
+                                        ],
+                                      ],
                                     ],
                                   ),
                                 ],
@@ -659,11 +675,15 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                           ],
                         ),
                       ),
-                      SafeArea(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: SafeArea(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               _buildRoundButton(Icons.arrow_back, () => Navigator.pop(context)),
                               CastButtonOverlay(
@@ -680,6 +700,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                           ),
                         ),
                       ),
+                    ),
                     ],
                   ),
                 ),
@@ -691,24 +712,26 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          _buildMetaIcon(Icons.remove_red_eye, '${curSeries.views} Views'),
-                          if (curSeries.categoryId != null) ...[
-                            const SizedBox(width: 20),
-                            Expanded(child: ref.watch(seriesCategoriesProvider).when(
-                              data: (categories) {
-                                final category = categories.firstWhere((c) => c.id == curSeries.categoryId, orElse: () => SeriesCategory(id: '', name: 'Serie'));
-                                return _buildMetaIcon(Icons.live_tv_outlined, category.name);
-                              },
-                              loading: () => const SizedBox.shrink(),
-                              error: (_, __) => const SizedBox.shrink(),
-                             ),
-                            ),
+                      if (!ResponsiveLayout.isLandscape(context)) ...[
+                        Row(
+                          children: [
+                            _buildMetaIcon(Icons.remove_red_eye, '${curSeries.views} Views'),
+                            if (curSeries.categoryId != null) ...[
+                              const SizedBox(width: 20),
+                              Expanded(child: ref.watch(seriesCategoriesProvider).when(
+                                data: (categories) {
+                                  final category = categories.firstWhere((c) => c.id == curSeries.categoryId, orElse: () => SeriesCategory(id: '', name: 'Serie'));
+                                  return _buildMetaIcon(Icons.live_tv_outlined, category.name);
+                                },
+                                loading: () => const SizedBox.shrink(),
+                                error: (_, __) => const SizedBox.shrink(),
+                               ),
+                              ),
+                            ],
                           ],
-                        ],
-                      ),
-                      const SizedBox(height: 25),
+                        ),
+                        const SizedBox(height: 25),
+                      ],
 
                       // Description with Neon Border
                       EnergyFlowBorder(

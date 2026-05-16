@@ -4,6 +4,7 @@ import '../../domain/entities/series_category.dart';
 import 'series_details_page.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 import '../../../../shared/widgets/energy_flow_border.dart';
+import '../../../../shared/utils/responsive_layout.dart';
 
 class SeriesCategoryPage extends StatefulWidget {
   final SeriesCategory category;
@@ -66,11 +67,11 @@ class _SeriesCategoryPageState extends State<SeriesCategoryPage> {
       ),
       body: GridView.builder(
         padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 40),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: ResponsiveLayout.getGridCrossAxisCount(context),
           crossAxisSpacing: 12,
           mainAxisSpacing: 20,
-          mainAxisExtent: 250,
+          mainAxisExtent: ResponsiveLayout.getPosterHeight(context) + 50,
         ),
         itemCount: filteredSeries.length,
         itemBuilder: (context, index) {
@@ -93,12 +94,16 @@ class _SeriesCategoryPageState extends State<SeriesCategoryPage> {
                       backgroundColor: Colors.white10,
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(15),
-                        child: Container(
+                        child: SizedBox(
                           width: double.infinity,
-                          height: 190,
-                          child: series.imagePath.startsWith('http') 
-                            ? Image.network(series.imagePath, fit: BoxFit.cover)
-                            : const Icon(Icons.live_tv, color: Colors.white24, size: 40),
+                          height: ResponsiveLayout.getPosterHeight(context),
+                          child: Image.network(
+                            (ResponsiveLayout.isLandscape(context) && series.backdropUrl?.isNotEmpty == true)
+                                ? series.backdropUrl!
+                                : series.imagePath,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Icon(Icons.live_tv, color: Colors.white24, size: 40),
+                          ),
                         ),
                       ),
                     ),
@@ -107,8 +112,12 @@ class _SeriesCategoryPageState extends State<SeriesCategoryPage> {
                 const SizedBox(height: 8),
                 MarqueeText(
                   text: series.name,
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
-                  width: 100,
+                  style: TextStyle(
+                    fontSize: ResponsiveLayout.isLandscape(context) ? 12 : 14, 
+                    fontWeight: FontWeight.bold, 
+                    color: Colors.white
+                  ),
+                  width: double.infinity,
                 ),
               ],
             ),

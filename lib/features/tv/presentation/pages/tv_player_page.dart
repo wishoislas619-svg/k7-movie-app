@@ -12,7 +12,7 @@ import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../../cast/presentation/widgets/cast_button.dart';
 import '../../../../core/services/storage_service.dart';
 import '../../../cast/services/media_proxy_service.dart';
-import '../../../../core/services/storage_service.dart';
+import '../../../../core/constants/app_constants.dart';
 
 class TvPlayerPage extends ConsumerStatefulWidget {
   final List<Map<String, dynamic>> channels;
@@ -65,7 +65,7 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
     // Si es VIP o Admin, no activamos el temporizador de anuncios periódicos
     final user = ref.read(authStateProvider);
     final role = user?.role.toLowerCase() ?? 'user';
-    if (role == 'admin' || role == 'uservip') return;
+    if (role == AppConstants.roleAdmin || role == AppConstants.roleUserVip) return;
 
     _adTimer?.cancel();
     _adTimer = Timer.periodic(const Duration(minutes: adIntervalMinutes), (timer) {
@@ -162,7 +162,7 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
     final role = user?.role.toLowerCase() ?? 'user';
 
     // Si es VIP o Admin, cambiamos de canal de inmediato
-    if (role == 'admin' || role == 'uservip') {
+    if (role == AppConstants.roleAdmin || role == AppConstants.roleUserVip) {
       setState(() {
         _currentIndex = index;
       });
@@ -263,7 +263,12 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
     final String channelName = currentChannel['name'] ?? 'Canal Desconocido';
     final String channelLogo = currentChannel['logo_url'] ?? '';
 
-    return Scaffold(
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
         onTap: _toggleControls,
@@ -488,6 +493,7 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }
