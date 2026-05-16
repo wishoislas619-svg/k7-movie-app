@@ -7,6 +7,7 @@ import 'package:movie_app/providers.dart';
 import 'package:movie_app/features/series/presentation/pages/series_details_page.dart';
 import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
 import 'package:movie_app/features/movies/presentation/providers/movie_provider.dart';
+import 'package:movie_app/shared/utils/responsive_layout.dart';
 
 class HistoryViewAllPage extends ConsumerStatefulWidget {
   const HistoryViewAllPage({super.key});
@@ -81,11 +82,11 @@ class _HistoryViewAllPageState extends ConsumerState<HistoryViewAllPage> {
 
           return GridView.builder(
             padding: const EdgeInsets.all(16),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: ResponsiveLayout.isLandscape(context) ? 4 : 2,
               crossAxisSpacing: 16,
               mainAxisSpacing: 20,
-              mainAxisExtent: 280,
+              mainAxisExtent: ResponsiveLayout.isLandscape(context) ? 180 : 280,
             ),
             itemCount: filtered.length,
             itemBuilder: (context, index) => _buildHistoryItem(filtered[index]),

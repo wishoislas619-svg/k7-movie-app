@@ -19,6 +19,7 @@ import 'core/services/update_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/foreground_service.dart';
+import 'shared/widgets/virtual_cursor_overlay.dart';
 import 'features/auth/domain/entities/user.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
@@ -151,44 +152,46 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
       debugShowCheckedModeBanner: false,
       home: const AuthWrapper(),
       builder: (context, child) {
-        return Stack(
-          children: [
-            if (child != null) child,
-            if (floatingState.isActive && floatingState.controller != null)
-              FloatingPlayerOverlay(
-                controller: floatingState.controller!,
-                title: floatingState.title ?? '',
-                onClose: () {
-                  ref.read(floatingPlayerProvider.notifier).state = FloatingPlayerState(isActive: false);
-                },
-                onReturn: () async {
-                  final state = ref.read(floatingPlayerProvider.notifier).state;
-                  // Cerrar el overlay de sistema si está activo
-
-                  // Limpiar el estado flotante
-                  ref.read(floatingPlayerProvider.notifier).state = FloatingPlayerState(isActive: false);
-                  
-                  // Navegar de vuelta REINICIANDO la reproducción desde el timestamp
-                  // Usamos pushAndRemoveUntil para limpiar el stack de navegación
-                  navigatorKey.currentState?.pushAndRemoveUntil(
-                    MaterialPageRoute(
-                      builder: (_) => VideoPlayerPage(
-                        movieName: state.title ?? '',
-                        videoOptions: state.videoOptions ?? [],
-                        mediaId: state.mediaId ?? '',
-                        mediaType: state.mediaType ?? 'movie',
-                        imagePath: state.imagePath ?? '',
-                        episodeId: state.episodeId,
-                        startPosition: state.currentPosition,
-                        // NO pasamos initialController -> reinicia scraping limpio
+        return VirtualCursorOverlay(
+          child: Stack(
+            children: [
+              if (child != null) child,
+              if (floatingState.isActive && floatingState.controller != null)
+                FloatingPlayerOverlay(
+                  controller: floatingState.controller!,
+                  title: floatingState.title ?? '',
+                  onClose: () {
+                    ref.read(floatingPlayerProvider.notifier).state = FloatingPlayerState(isActive: false);
+                  },
+                  onReturn: () async {
+                    final state = ref.read(floatingPlayerProvider.notifier).state;
+                    // Cerrar el overlay de sistema si está activo
+  
+                    // Limpiar el estado flotante
+                    ref.read(floatingPlayerProvider.notifier).state = FloatingPlayerState(isActive: false);
+                    
+                    // Navegar de vuelta REINICIANDO la reproducción desde el timestamp
+                    // Usamos pushAndRemoveUntil para limpiar el stack de navegación
+                    navigatorKey.currentState?.pushAndRemoveUntil(
+                      MaterialPageRoute(
+                        builder: (_) => VideoPlayerPage(
+                          movieName: state.title ?? '',
+                          videoOptions: state.videoOptions ?? [],
+                          mediaId: state.mediaId ?? '',
+                          mediaType: state.mediaType ?? 'movie',
+                          imagePath: state.imagePath ?? '',
+                          episodeId: state.episodeId,
+                          startPosition: state.currentPosition,
+                          // NO pasamos initialController -> reinicia scraping limpio
+                        ),
                       ),
-                    ),
-                    (route) => route.isFirst,
-                  );
-                },
-              ),
-            // Zona de eliminación (X) al fondo cuando se arrastra (lógica simplificada aquí, el overlay la maneja)
-          ],
+                      (route) => route.isFirst,
+                    );
+                  },
+                ),
+              // Zona de eliminación (X) al fondo cuando se arrastra (lógica simplificada aquí, el overlay la maneja)
+            ],
+          ),
         );
       },
     );

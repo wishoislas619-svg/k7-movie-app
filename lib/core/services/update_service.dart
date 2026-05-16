@@ -96,8 +96,8 @@ class UpdateService {
                 children: [
                   Text('Guía de descarga:', style: TextStyle(color: Color(0xFF00A3FF), fontSize: 12, fontWeight: FontWeight.bold)),
                   SizedBox(height: 5),
-                  Text('• app-arm64-v8a: Dispositivos modernos/premium.', style: TextStyle(color: Colors.white70, fontSize: 11)),
-                  Text('• app-armeabi-v7a: TV Boxes y dispositivos antiguos.', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                  Text('• K7-MOVIE-ANDROID: Dispositivos modernos/premium.', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                  Text('• K7-MOVIE-TV-BOX: TV Boxes y dispositivos antiguos.', style: TextStyle(color: Colors.white70, fontSize: 11)),
                 ],
               ),
             ),
