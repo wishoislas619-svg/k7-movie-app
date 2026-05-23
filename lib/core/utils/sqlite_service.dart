@@ -14,11 +14,11 @@ class SqliteService {
   Future<Database> _initDatabase() async {
     String path = join(await getDatabasesPath(), 'movie_app.db');
     print('--- [SQLITE] Iniciando base de datos en: $path ---');
-    
+
     try {
       return await openDatabase(
         path,
-        version: 21,
+        version: 22,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
         onOpen: (db) {
@@ -27,13 +27,11 @@ class SqliteService {
       );
     } catch (e) {
       print('--- [SQLITE] ERROR CRÍTICO al abrir DB: $e ---');
-      print('--- [SQLITE] Intentando borrar base de datos corrupta para resetear ---');
-      await deleteDatabase(path);
-      return await openDatabase(
-        path,
-        version: 21,
-        onCreate: _onCreate,
+      print(
+        '--- [SQLITE] Intentando borrar base de datos corrupta para resetear ---',
       );
+      await deleteDatabase(path);
+      return await openDatabase(path, version: 22, onCreate: _onCreate);
     }
   }
 
@@ -72,10 +70,14 @@ class SqliteService {
       await db.execute('ALTER TABLE movies ADD COLUMN subtitleRss TEXT');
     }
     if (oldVersion < 10) {
-      await db.execute('ALTER TABLE movies RENAME COLUMN subtitleRss TO subtitleUrl');
+      await db.execute(
+        'ALTER TABLE movies RENAME COLUMN subtitleRss TO subtitleUrl',
+      );
     }
     if (oldVersion < 11) {
-      await db.execute('ALTER TABLE movies ADD COLUMN isPopular INTEGER DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE movies ADD COLUMN isPopular INTEGER DEFAULT 0',
+      );
     }
     if (oldVersion < 12) {
       await db.execute('ALTER TABLE video_options ADD COLUMN language TEXT');
@@ -157,13 +159,19 @@ class SqliteService {
       ''');
     }
     if (oldVersion < 16) {
-      await db.execute('ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0',
+      );
       await db.execute('ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER');
-      await db.execute('ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER');
+      await db.execute(
+        'ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER',
+      );
     }
     if (oldVersion < 17) {
-       // Add urls column to episodes for multiple servers support
-       try { await db.execute('ALTER TABLE episodes ADD COLUMN urls TEXT'); } catch (_) {}
+      // Add urls column to episodes for multiple servers support
+      try {
+        await db.execute('ALTER TABLE episodes ADD COLUMN urls TEXT');
+      } catch (_) {}
     }
     if (oldVersion < 18) {
       await db.execute('''
@@ -182,17 +190,45 @@ class SqliteService {
       ''');
     }
     if (oldVersion < 19) {
-      try { await db.execute('ALTER TABLE watch_history ADD COLUMN videoOptionId TEXT'); } catch (_) {}
+      try {
+        await db.execute(
+          'ALTER TABLE watch_history ADD COLUMN videoOptionId TEXT',
+        );
+      } catch (_) {}
     }
     if (oldVersion < 20) {
-      try { await db.execute('ALTER TABLE downloads ADD COLUMN originalFilename TEXT'); } catch (_) {
-        print('--- [SQLITE] Columna originalFilename ya existe o error ignorado en v20 ---');
+      try {
+        await db.execute(
+          'ALTER TABLE downloads ADD COLUMN originalFilename TEXT',
+        );
+      } catch (_) {
+        print(
+          '--- [SQLITE] Columna originalFilename ya existe o error ignorado en v20 ---',
+        );
       }
     }
     if (oldVersion < 21) {
-       try { await db.execute('ALTER TABLE downloads ADD COLUMN originalFilename TEXT'); } catch (_) {
-         print('--- [SQLITE] Columna originalFilename ya existe o error ignorado en v21 ---');
-       }
+      try {
+        await db.execute(
+          'ALTER TABLE downloads ADD COLUMN originalFilename TEXT',
+        );
+      } catch (_) {
+        print(
+          '--- [SQLITE] Columna originalFilename ya existe o error ignorado en v21 ---',
+        );
+      }
+    }
+    if (oldVersion < 22) {
+      try {
+        await db.execute(
+          'ALTER TABLE watch_history ADD COLUMN lastCastWasCast INTEGER DEFAULT 0',
+        );
+      } catch (_) {}
+      try {
+        await db.execute(
+          'ALTER TABLE watch_history ADD COLUMN castDeviceName TEXT',
+        );
+      } catch (_) {}
     }
   }
 
@@ -317,7 +353,7 @@ class SqliteService {
       )
     ''');
 
-     await db.execute('''
+    await db.execute('''
       CREATE TABLE series_options(
         id TEXT PRIMARY KEY,
         seriesId TEXT,
@@ -341,7 +377,9 @@ class SqliteService {
         title TEXT,
         subtitle TEXT,
         imagePath TEXT,
-        videoOptionId TEXT
+        videoOptionId TEXT,
+        lastCastWasCast INTEGER DEFAULT 0,
+        castDeviceName TEXT
       )
     ''');
   }

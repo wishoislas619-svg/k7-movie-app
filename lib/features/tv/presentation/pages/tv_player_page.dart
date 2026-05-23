@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
@@ -29,6 +30,9 @@ class TvPlayerPage extends ConsumerStatefulWidget {
 }
 
 class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
+  static const _audioBoostChannel = MethodChannel(
+    'com.luis.movieapp/audio_boost',
+  );
   VideoPlayerController? _controller;
   final ScrollController _scrollController = ScrollController();
   late int _currentIndex;
@@ -123,10 +127,24 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
         });
         
         // Aplicar los valores cargados
-        VolumeController.instance.setVolume(_volume);
+        await _applyVolumeBoost(_volume);
         ScreenBrightness().setScreenBrightness(_brightness);
       }
     } catch (_) {}
+  }
+
+  Future<void> _applyVolumeBoost(double targetVolume) async {
+    final clamped = targetVolume.clamp(0.0, 3.0);
+    final baseVolume = clamped <= 1.0 ? clamped : 1.0;
+
+    _controller?.setVolume(baseVolume);
+    await VolumeController.instance.setVolume(baseVolume);
+
+    if (Platform.isAndroid) {
+      try {
+        await _audioBoostChannel.invokeMethod('setBoost', {'boost': clamped});
+      } catch (_) {}
+    }
   }
 
   Future<void> _initializePlayer(String url) async {
@@ -216,11 +234,11 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
     
     if (isLeftSide) {
       _isDraggingVolume = true;
-      _volume = (_volume + delta).clamp(0.0, 1.0);
+      _volume = (_volume + delta).clamp(0.0, 3.0);
       _showVolumeLabel = true;
       _showBrightnessLabel = false;
       VolumeController.instance.showSystemUI = false;
-      VolumeController.instance.setVolume(_volume);
+      _applyVolumeBoost(_volume);
     } else {
       _isDraggingBrightness = true;
       _brightness = (_brightness + delta).clamp(0.0, 1.0);
@@ -250,6 +268,9 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
     WakelockPlus.disable();
     _labelHideTimer?.cancel();
     _adTimer?.cancel();
+    if (Platform.isAndroid) {
+      _audioBoostChannel.invokeMethod('releaseBoost');
+    }
     _controller?.dispose();
     _scrollController.dispose();
     VolumeController.instance.showSystemUI = true;

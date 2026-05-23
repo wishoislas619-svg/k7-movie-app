@@ -2,9 +2,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:movie_app/features/movies/domain/entities/watch_history.dart';
 import 'package:movie_app/providers.dart';
 
-final historyProvider = StateNotifierProvider<HistoryNotifier, AsyncValue<List<WatchHistory>>>((ref) {
-  return HistoryNotifier(ref);
-});
+final historyProvider =
+    StateNotifierProvider<HistoryNotifier, AsyncValue<List<WatchHistory>>>((
+      ref,
+    ) {
+      return HistoryNotifier(ref);
+    });
 
 class HistoryNotifier extends StateNotifier<AsyncValue<List<WatchHistory>>> {
   final Ref ref;
@@ -34,6 +37,8 @@ class HistoryNotifier extends StateNotifier<AsyncValue<List<WatchHistory>>> {
     String? subtitle,
     required String imagePath,
     String? videoOptionId,
+    bool lastCastWasCast = false,
+    String? castDeviceName,
   }) async {
     final id = episodeId ?? mediaId;
     final history = WatchHistory(
@@ -48,10 +53,12 @@ class HistoryNotifier extends StateNotifier<AsyncValue<List<WatchHistory>>> {
       subtitle: subtitle,
       imagePath: imagePath,
       videoOptionId: videoOptionId,
+      lastCastWasCast: lastCastWasCast,
+      castDeviceName: castDeviceName,
     );
 
     await ref.read(historyRepositoryProvider).saveHistory(history);
-    
+
     // Recargar la lista completa desde la DB para asegurar sincronización total
     await loadHistory();
   }

@@ -1,4 +1,4 @@
- import 'dart:async';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import '../../services/cast_service.dart';
@@ -21,6 +21,12 @@ class CastDeviceListSheet extends ConsumerStatefulWidget {
   final Duration startPosition;
   final Duration? duration;
   final int? algorithm; // Algoritmo de extracción para el proxy
+  final String? mediaId;
+  final String? episodeId;
+  final String? mediaType;
+  final String? subtitleLabel;
+  final String? videoOptionId;
+
   /// Callback disparado UNA SOLA VEZ cuando la transmisión comienza exitosamente.
   final VoidCallback? onCastStarted;
 
@@ -34,18 +40,25 @@ class CastDeviceListSheet extends ConsumerStatefulWidget {
     this.startPosition = Duration.zero,
     this.duration,
     this.algorithm,
+    this.mediaId,
+    this.episodeId,
+    this.mediaType,
+    this.subtitleLabel,
+    this.videoOptionId,
     this.onCastStarted,
   });
 
   @override
-  ConsumerState<CastDeviceListSheet> createState() => _CastDeviceListSheetState();
+  ConsumerState<CastDeviceListSheet> createState() =>
+      _CastDeviceListSheetState();
 }
 
 class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
   final _castService = CastService();
   Timer? _scanTimer;
   bool _casting = false;
-  bool _castStartedFired = false; // Guard para disparar el callback una sola vez
+  bool _castStartedFired =
+      false; // Guard para disparar el callback una sola vez
 
   @override
   void initState() {
@@ -80,17 +93,29 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
     debugPrint('🎬 [SHEET]   title         : ${widget.title}');
     debugPrint('🎬 [SHEET]   algorithm     : ${widget.algorithm}');
     debugPrint('🎬 [SHEET]   headers       : ${widget.headers}');
-    debugPrint('🎬 [SHEET]   startPosition : ${widget.startPosition.inSeconds}s');
+    debugPrint(
+      '🎬 [SHEET]   startPosition : ${widget.startPosition.inSeconds}s',
+    );
     debugPrint('🎬 [SHEET]   duration      : ${widget.duration?.inSeconds}s');
 
     // 1. Conectar al dispositivo
     await _castService.connectTo(device);
     if (!_castService.isConnected) {
-      debugPrint('❌ [SHEET] connectTo() falló — isConnected=false. error=${_castService.errorMessage}');
+      debugPrint(
+        '❌ [SHEET] connectTo() falló — isConnected=false. error=${_castService.errorMessage}',
+      );
       if (mounted) setState(() => _casting = false);
       return;
     }
     debugPrint('✅ [SHEET] Conectado a ${device.name}');
+    _castService.setHistoryContext(
+      mediaId: widget.mediaId,
+      episodeId: widget.episodeId,
+      mediaType: widget.mediaType,
+      subtitleLabel: widget.subtitleLabel,
+      imagePath: widget.imageUrl,
+      videoOptionId: widget.videoOptionId,
+    );
 
     // 2. Transmisión directa (Anuncio ya verificado en CastButton)
     final appUser = ref.read(authStateProvider);
@@ -101,14 +126,20 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
     // Verificar que la sesión DLNA sigue activa después del anuncio
     // (el anuncio puede durar >30s y la TV desconecta por idle)
     if (!_castService.isConnected) {
-      debugPrint('🎬 [SHEET] Sesión perdida durante el anuncio — reconectando...');
+      debugPrint(
+        '🎬 [SHEET] Sesión perdida durante el anuncio — reconectando...',
+      );
       await _castService.connectTo(device);
       if (!_castService.isConnected) {
-        debugPrint('❌ [SHEET] Reconexión fallida: ${_castService.errorMessage}');
+        debugPrint(
+          '❌ [SHEET] Reconexión fallida: ${_castService.errorMessage}',
+        );
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Se perdió la conexión con la TV. Intenta de nuevo.'),
+              content: Text(
+                'Se perdió la conexión con la TV. Intenta de nuevo.',
+              ),
               backgroundColor: Colors.redAccent,
             ),
           );
@@ -188,8 +219,8 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
             child: _casting
                 ? _buildConnecting()
                 : _castService.isConnected
-                    ? _buildConnectedView()
-                    : _buildDeviceList(),
+                ? _buildConnectedView()
+                : _buildDeviceList(),
           ),
           SizedBox(height: 24 + MediaQuery.of(context).padding.bottom),
         ],
@@ -224,7 +255,11 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
               children: [
                 const Text(
                   'Transmitir a pantalla',
-                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 if (_castService.isScanning)
                   const Text(
@@ -250,7 +285,11 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
             )
           else
             IconButton(
-              icon: const Icon(Icons.refresh_rounded, color: Color(0xFF00FF87), size: 24),
+              icon: const Icon(
+                Icons.refresh_rounded,
+                color: Color(0xFF00FF87),
+                size: 24,
+              ),
               onPressed: () {
                 _castService.stopScan();
                 _castService.startScan();
@@ -289,7 +328,10 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
                 _castService.startScan();
               },
               icon: const Icon(Icons.refresh_rounded, color: Color(0xFF00A3FF)),
-              label: const Text('Intentar de nuevo', style: TextStyle(color: Color(0xFF00A3FF))),
+              label: const Text(
+                'Intentar de nuevo',
+                style: TextStyle(color: Color(0xFF00A3FF)),
+              ),
             ),
           ],
         ),
@@ -392,7 +434,10 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
                   children: [
                     Text(
                       device.name,
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     const Text(
                       'Transmitiendo ahora',
@@ -404,7 +449,10 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
               GestureDetector(
                 onTap: _disconnect,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.red.shade900,
                     borderRadius: BorderRadius.circular(8),
@@ -414,7 +462,10 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
                     children: [
                       Icon(Icons.close, color: Colors.white, size: 14),
                       SizedBox(width: 4),
-                      Text('Desconectar', style: TextStyle(color: Colors.white, fontSize: 12)),
+                      Text(
+                        'Desconectar',
+                        style: TextStyle(color: Colors.white, fontSize: 12),
+                      ),
                     ],
                   ),
                 ),
@@ -430,9 +481,9 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
                 Navigator.pop(context);
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (mounted) {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => CastRemotePage()),
-                    );
+                    Navigator.of(
+                      context,
+                    ).push(MaterialPageRoute(builder: (_) => CastRemotePage()));
                   }
                 });
               },
@@ -441,7 +492,9 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF00A3FF),
                 foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
             ),
           ),

@@ -693,8 +693,8 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
                                 child: ActionChip(
                                   backgroundColor: isSelected
                                       ? (isOmenYoru
-                                          ? const Color(0xFF00FFD1)
-                                          : const Color(0xFFD400FF))
+                                            ? const Color(0xFF00FFD1)
+                                            : const Color(0xFFD400FF))
                                       : const Color(0xFF1A1A1A),
                                   side: BorderSide(
                                     color: isSelected
@@ -704,8 +704,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
                                   label: Text(
                                     name.toUpperCase(),
                                     style: TextStyle(
-                                      color:
-                                          isSelected ? Colors.black : Colors.white60,
+                                      color: isSelected
+                                          ? Colors.black
+                                          : Colors.white60,
                                       fontSize: 10,
                                       fontWeight: FontWeight.bold,
                                     ),
@@ -1211,7 +1212,9 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
 
         // Si es Algoritmo 3 enviamos la url cruda (A3) directamente
         if (widget.extractionAlgorithm == 3) {
-          final isPlaying = customHeaders?['status'] == 'playing' || customHeaders?['type'] == 'fetch';
+          final isPlaying =
+              customHeaders?['status'] == 'playing' ||
+              customHeaders?['type'] == 'fetch';
           if (!_serverSwitchDone && !isPlaying) {
             print("[SNIFFER] Ignorando stream A3 preventivo...");
             return;
@@ -1221,11 +1224,13 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
           final urlA3 = url;
           final data = VideoExtractionData(
             videoUrl: urlA3,
-            qualities: [VideoQuality(resolution: "Resolución Auto", url: urlA3)],
+            qualities: [
+              VideoQuality(resolution: "Resolución Auto", url: urlA3),
+            ],
             headers: headersForProbe,
             cookies: cookieString,
           );
-          
+
           if (!_isPopped) {
             _isPopped = true;
             Navigator.of(context).pop(data);
@@ -1885,46 +1890,6 @@ class _VideoExtractorDialogState extends State<VideoExtractorDialog>
             } catch(e){}
           }
         };
-
-        // 3. Escaneo de reproducción activa (ReadyState > 2)
-        const deepScan = () => {
-          const videos = document.querySelectorAll('video');
-          videos.forEach(v => {
-            if (v.readyState >= 2) { // Video ya tiene datos o está reproduciendo
-               const src = v.src || v.currentSrc;
-               if (src && !src.startsWith('blob:')) notify(src, {status: 'playing', area: 'active_dom'});
-               
-               // Si es un Blob, intentamos buscar el playlist origen en el historial de red
-               if (src && src.startsWith('blob:')) {
-                 console.log('[DEBUG_JS] Video reproduciendo mediante BLOB. Buscando manifiesto...');
-               }
-            }
-          });
-          scanEngine();
-        };
-
-        // Interceptación de Red (Fetch/XHR)
-        const _fetch = window.fetch;
-        window.fetch = function(...args) {
-          let url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
-          if (url && (url.includes('.m3u8') || url.includes('.mp4'))) notify(url, {source: 'fetch_active'});
-          return _fetch.apply(this, args);
-        };
-
-        const _open = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(m, u) {
-          if (u && (u.includes('.m3u8') || u.includes('.mp4'))) notify(u, {source: 'xhr_active'});
-          return _open.apply(this, arguments);
-        };
-
-        setInterval(deepScan, 1000);
-        setInterval(() => window.flutter_inappwebview.callHandler('debugLog', 'GHOST_HEARTBEAT_v5.5'), 3000);
-        
-        notify('READY_SIGNAL', {status: 'v5.5_ready'});
-      })();
-    ''';
-  }
-}
 
         // 3. Escaneo de reproducción activa (ReadyState > 2)
         const deepScan = () => {

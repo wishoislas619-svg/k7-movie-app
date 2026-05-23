@@ -18,6 +18,8 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       imagePath: row['image_path'] as String? ?? '',
       subtitle: row['subtitle'] as String?,
       videoOptionId: row['video_option_id'] as String?,
+      lastCastWasCast: row['last_cast_was_cast'] as bool? ?? false,
+      castDeviceName: row['cast_device_name'] as String?,
     );
   }
 
@@ -25,7 +27,9 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
   Future<List<WatchHistory>> getHistory() async {
     final userId = _client.auth.currentUser?.id;
     if (userId == null) {
-      print('--- [HISTORIAL] Error: No se puede obtener historial porque no hay sesión ---');
+      print(
+        '--- [HISTORIAL] Error: No se puede obtener historial porque no hay sesión ---',
+      );
       return [];
     }
 
@@ -99,14 +103,17 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       'image_path': history.imagePath,
       'subtitle': history.subtitle,
       'video_option_id': history.videoOptionId,
+      'last_cast_was_cast': history.lastCastWasCast,
+      'cast_device_name': history.castDeviceName,
     };
 
     try {
-      print('--- [HISTORIAL] Intentando guardar progreso para ${history.title} pos: ${history.lastPosition} ---');
-      await _client.from('user_watch_history').upsert(
-        row,
-        onConflict: 'user_id, media_id',
+      print(
+        '--- [HISTORIAL] Intentando guardar progreso para ${history.title} pos: ${history.lastPosition} ---',
       );
+      await _client
+          .from('user_watch_history')
+          .upsert(row, onConflict: 'user_id, media_id');
       print('--- [HISTORIAL] Guardado con éxito en Supabase ---');
     } catch (e) {
       print('--- [HISTORIAL] ERROR al guardar en Supabase: $e ---');
@@ -130,9 +137,6 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
     final userId = _client.auth.currentUser?.id;
     if (userId == null) return;
 
-    await _client
-        .from('user_watch_history')
-        .delete()
-        .eq('user_id', userId);
+    await _client.from('user_watch_history').delete().eq('user_id', userId);
   }
 }

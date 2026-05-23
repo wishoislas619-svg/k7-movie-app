@@ -10,6 +10,8 @@ class WatchHistory {
   final String? subtitle; // e.g., "S1 E5: Episode Name"
   final String imagePath;
   final String? videoOptionId; // Enlace/servidor que el usuario eligió
+  final bool lastCastWasCast;
+  final String? castDeviceName;
 
   WatchHistory({
     required this.id,
@@ -23,6 +25,8 @@ class WatchHistory {
     this.subtitle,
     required this.imagePath,
     this.videoOptionId,
+    this.lastCastWasCast = false,
+    this.castDeviceName,
   });
 
   WatchHistory copyWith({
@@ -30,6 +34,8 @@ class WatchHistory {
     int? totalDuration,
     DateTime? lastWatchedAt,
     String? videoOptionId,
+    bool? lastCastWasCast,
+    String? castDeviceName,
   }) {
     return WatchHistory(
       id: id,
@@ -43,10 +49,13 @@ class WatchHistory {
       subtitle: subtitle,
       imagePath: imagePath,
       videoOptionId: videoOptionId ?? this.videoOptionId,
+      lastCastWasCast: lastCastWasCast ?? this.lastCastWasCast,
+      castDeviceName: castDeviceName ?? this.castDeviceName,
     );
   }
 
   factory WatchHistory.fromMap(Map<String, dynamic> map) {
+    final castValue = map['lastCastWasCast'];
     return WatchHistory(
       id: map['id']?.toString() ?? '',
       mediaId: map['mediaId']?.toString() ?? '',
@@ -54,13 +63,19 @@ class WatchHistory {
       mediaType: map['mediaType']?.toString() ?? 'movie',
       lastPosition: map['lastPosition'] as int? ?? 0,
       totalDuration: map['totalDuration'] as int? ?? 0,
-      lastWatchedAt: map['lastWatchedAt'] != null 
-          ? DateTime.parse(map['lastWatchedAt']) 
+      lastWatchedAt: map['lastWatchedAt'] != null
+          ? DateTime.parse(map['lastWatchedAt'])
           : DateTime.now(),
       title: map['title']?.toString() ?? 'Sin título',
       subtitle: map['subtitle']?.toString(),
       imagePath: map['imagePath']?.toString() ?? '',
       videoOptionId: map['videoOptionId']?.toString(),
+      lastCastWasCast: castValue is bool
+          ? castValue
+          : castValue is int
+          ? castValue == 1
+          : false,
+      castDeviceName: map['castDeviceName']?.toString(),
     );
   }
 
@@ -77,6 +92,8 @@ class WatchHistory {
       'subtitle': subtitle,
       'imagePath': imagePath,
       'videoOptionId': videoOptionId,
+      'lastCastWasCast': lastCastWasCast ? 1 : 0,
+      'castDeviceName': castDeviceName,
     };
   }
 }

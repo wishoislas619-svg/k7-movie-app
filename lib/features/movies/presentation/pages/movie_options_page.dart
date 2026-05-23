@@ -31,7 +31,9 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
   @override
   void initState() {
     super.initState();
-    _optionsFuture = ref.read(movieRepositoryProvider).getVideoOptions(widget.movie.id);
+    _optionsFuture = ref
+        .read(movieRepositoryProvider)
+        .getVideoOptions(widget.movie.id);
   }
 
   void _handleOptionSelect(VideoOption option, List<VideoOption> allOptions) {
@@ -59,7 +61,9 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
     int retries = 15; // Increased to 15 retries (30 sec)
     while (retries > 0) {
       if (!mounted) return false;
-      print('--- [POLL] Checking verification for ticket: $ticketId (retries left: $retries) ---');
+      print(
+        '--- [POLL] Checking verification for ticket: $ticketId (retries left: $retries) ---',
+      );
       try {
         final response = await Supabase.instance.client.functions.invoke(
           'secure-video-link',
@@ -120,7 +124,8 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
             if (mounted) {
               setState(() {
                 _isAdLoading = false;
-                _adErrorMessage = 'Anuncio incompleto. Debes verlo para descargar.';
+                _adErrorMessage =
+                    'Anuncio incompleto. Debes verlo para descargar.';
               });
             }
             if (!adCompleter.isCompleted) adCompleter.complete(false);
@@ -129,19 +134,19 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
 
         final adResult = await adCompleter.future;
         print('--- [DOWNLOAD_AD] Result: $adResult, Watched: $adWatched ---');
-        
+
         if (mounted) setState(() => _isAdLoading = false);
-        
+
         if (!adResult || !adWatched) return;
 
         // 2. Poll Verification (Background activity)
         _pollVerification(ticketId); // Don't await
       } catch (e) {
         if (mounted) {
-           setState(() {
-             _isAdLoading = false;
-             _adErrorMessage = 'Error al procesar el anuncio: $e';
-           });
+          setState(() {
+            _isAdLoading = false;
+            _adErrorMessage = 'Error al procesar el anuncio: $e';
+          });
         }
         return;
       }
@@ -149,12 +154,12 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
 
     // 3. Continue with extraction flow
     if (!mounted) return;
-    
+
     final VideoExtractionData? result = await showDialog(
       context: context,
       barrierDismissible: false,
       builder: (_) => VideoExtractorDialog(
-        url: option.videoUrl, 
+        url: option.videoUrl,
         extractionAlgorithm: option.extractionAlgorithm,
       ),
     );
@@ -168,7 +173,8 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
       var downloadUrl = selectedQuality.url;
       if (downloadUrl.startsWith('/') && !downloadUrl.startsWith('//')) {
         final uri = Uri.parse(option.videoUrl);
-        downloadUrl = '${uri.scheme}://${uri.host}${uri.port != 80 && uri.port != 443 && uri.port != 0 ? ":${uri.port}" : ""}$downloadUrl';
+        downloadUrl =
+            '${uri.scheme}://${uri.host}${uri.port != 80 && uri.port != 443 && uri.port != 0 ? ":${uri.port}" : ""}$downloadUrl';
       }
 
       final headers = <String, String>{};
@@ -191,14 +197,16 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
         createdAt: DateTime.now(),
         headers: headers,
       );
-      
+
       ref.read(downloadsListProvider.notifier).addDownload(task);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Iniciando descarga..."), backgroundColor: Colors.green),
+        const SnackBar(
+          content: Text("Iniciando descarga..."),
+          backgroundColor: Colors.green,
+        ),
       );
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -207,7 +215,10 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: Text(widget.movie.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(
+          widget.movie.name,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
       ),
       body: Stack(
         children: [
@@ -215,7 +226,9 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
             future: _optionsFuture,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF)));
+                return const Center(
+                  child: CircularProgressIndicator(color: Color(0xFF00A3FF)),
+                );
               }
               final options = snapshot.data ?? [];
               if (options.isEmpty) {
@@ -223,7 +236,11 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.video_library_outlined, size: 80, color: Colors.grey[800]),
+                      Icon(
+                        Icons.video_library_outlined,
+                        size: 80,
+                        color: Colors.grey[800],
+                      ),
                       const SizedBox(height: 16),
                       const Text(
                         'No hay opciones disponibles',
@@ -282,7 +299,9 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
                             child: Container(
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF0D031A), // Cosmic purple feeling
+                                color: const Color(
+                                  0xFF0D031A,
+                                ), // Cosmic purple feeling
                                 borderRadius: BorderRadius.circular(15),
                               ),
                               child: Row(
@@ -297,20 +316,33 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
                                     ),
                                     child: ClipRRect(
                                       borderRadius: BorderRadius.circular(8),
-                                      child: option.serverImagePath.startsWith('http')
+                                      child:
+                                          option.serverImagePath.startsWith(
+                                            'http',
+                                          )
                                           ? Image.network(
                                               option.serverImagePath,
                                               fit: BoxFit.cover,
-                                              errorBuilder: (_, __, ___) => const Icon(Icons.dns, color: Colors.blue, size: 18),
+                                              errorBuilder: (_, __, ___) =>
+                                                  const Icon(
+                                                    Icons.dns,
+                                                    color: Colors.blue,
+                                                    size: 18,
+                                                  ),
                                             )
-                                          : const Icon(Icons.dns, color: Colors.blue, size: 18),
+                                          : const Icon(
+                                              Icons.dns,
+                                              color: Colors.blue,
+                                              size: 18,
+                                            ),
                                     ),
                                   ),
                                   const SizedBox(width: 12),
                                   // Quality and Server Info
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Text(
                                           'Servidor ${index + 1}',
@@ -332,82 +364,96 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
                                     ),
                                   ),
                                   // Language Flag
-                                  if (option.language != null && option.language!.isNotEmpty)
+                                  if (option.language != null &&
+                                      option.language!.isNotEmpty)
                                     Container(
                                       margin: const EdgeInsets.only(right: 12),
                                       width: 34,
                                       height: 34,
                                       decoration: BoxDecoration(
                                         shape: BoxShape.circle,
-                                        border: Border.all(color: Colors.white10, width: 1),
+                                        border: Border.all(
+                                          color: Colors.white10,
+                                          width: 1,
+                                        ),
                                       ),
                                       child: ClipOval(
                                         child: Image.asset(
-                                          option.language == 'Latino' ? 'assets/images/flags/latino.png' :
-                                          option.language == 'Castellano' ? 'assets/images/flags/castellano.png' :
-                                          option.language == 'Japonés' ? 'assets/images/flags/japones.png' :
-                                          'assets/images/flags/ingles.png',
+                                          option.language == 'Latino'
+                                              ? 'assets/images/flags/latino.png'
+                                              : option.language == 'Castellano'
+                                              ? 'assets/images/flags/castellano.png'
+                                              : option.language == 'Japonés'
+                                              ? 'assets/images/flags/japones.png'
+                                              : 'assets/images/flags/ingles.png',
                                           fit: BoxFit.cover,
                                         ),
                                       ),
                                     ),
-                                    // Download Icon
-                                    GestureDetector(
-                                      onTap: () => _handleDownload(option),
-                                      child: Container(
-                                        width: 38,
-                                        height: 38,
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFFD400FF).withOpacity(0.1),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(
-                                          Icons.download_for_offline_rounded,
-                                          color: Color(0xFFD400FF),
-                                          size: 22,
-                                        ),
+                                  // Download Icon
+                                  GestureDetector(
+                                    onTap: () => _handleDownload(option),
+                                    child: Container(
+                                      width: 38,
+                                      height: 38,
+                                      decoration: BoxDecoration(
+                                        color: const Color(
+                                          0xFFD400FF,
+                                        ).withOpacity(0.1),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(
+                                        Icons.download_for_offline_rounded,
+                                        color: Color(0xFFD400FF),
+                                        size: 22,
                                       ),
                                     ),
-                                    const SizedBox(width: 8),
-                                    // Cast Icon
-                                    GestureDetector(
-                                      onTap: () {
-                                        _showCastSelector(context, option);
-                                      },
-                                      child: Container(
-                                        width: 38,
-                                        height: 38,
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF00FF87).withOpacity(0.1),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(
-                                          Icons.cast_rounded,
-                                          color: Color(0xFF00FF87),
-                                          size: 22,
-                                        ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  // Cast Icon
+                                  GestureDetector(
+                                    onTap: () {
+                                      _showCastSelector(context, option);
+                                    },
+                                    child: Container(
+                                      width: 38,
+                                      height: 38,
+                                      decoration: BoxDecoration(
+                                        color: const Color(
+                                          0xFF00FF87,
+                                        ).withOpacity(0.1),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(
+                                        Icons.cast_rounded,
+                                        color: Color(0xFF00FF87),
+                                        size: 22,
                                       ),
                                     ),
-                                    const SizedBox(width: 8),
-                                    // Play Icon
-                                    GestureDetector(
-                                      onTap: () => _handleOptionSelect(option, options),
-                                      child: Container(
-                                        width: 38,
-                                        height: 38,
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF00A3FF).withOpacity(0.1),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(
-                                          Icons.play_arrow_rounded,
-                                          color: Color(0xFF00A3FF),
-                                          size: 26,
-                                        ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  // Play Icon
+                                  GestureDetector(
+                                    onTap: () =>
+                                        _handleOptionSelect(option, options),
+                                    child: Container(
+                                      width: 38,
+                                      height: 38,
+                                      decoration: BoxDecoration(
+                                        color: const Color(
+                                          0xFF00A3FF,
+                                        ).withOpacity(0.1),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(
+                                        Icons.play_arrow_rounded,
+                                        color: Color(0xFF00A3FF),
+                                        size: 26,
                                       ),
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         );
@@ -429,12 +475,19 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
                     const SizedBox(height: 20),
                     const Text(
                       "PREPARANDO ANUNCIO...",
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.2),
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
+                      ),
                     ),
                     const SizedBox(height: 10),
                     Text(
                       "Verifica tu sesión publicitaria para descargar",
-                      style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12),
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.6),
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),
@@ -455,8 +508,16 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
                   children: [
                     const Icon(Icons.error_outline, color: Colors.white),
                     const SizedBox(width: 12),
-                    Expanded(child: Text(_adErrorMessage!, style: const TextStyle(color: Colors.white))),
-                    IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: () => setState(() => _adErrorMessage = null)),
+                    Expanded(
+                      child: Text(
+                        _adErrorMessage!,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: () => setState(() => _adErrorMessage = null),
+                    ),
                   ],
                 ),
               ),
@@ -471,22 +532,28 @@ class _MovieOptionsPageState extends ConsumerState<MovieOptionsPage> {
     // Usamos el widget CastButton de forma invisible o simplemente disparamos su lógica
     // pero es mejor crear un método estático o reutilizable.
     // Por ahora, para ser rápidos y efectivos, mostraremos el diálogo de selección.
-    
+
     // Mostramos un modal similar al de CastButton
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF141414),
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (context) => CastSelectionModal(
         videoUrl: option.videoUrl,
         title: widget.movie.name,
         imageUrl: widget.movie.imagePath,
         headers: {
           'Referer': option.videoUrl,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+          'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         },
         algorithm: option.extractionAlgorithm,
+        mediaId: widget.movie.id,
+        mediaType: 'movie',
+        videoOptionId: option.id,
       ),
     );
   }
@@ -499,6 +566,9 @@ class CastSelectionModal extends StatelessWidget {
   final String imageUrl;
   final Map<String, String>? headers;
   final int? algorithm;
+  final String? mediaId;
+  final String? mediaType;
+  final String? videoOptionId;
 
   const CastSelectionModal({
     super.key,
@@ -507,6 +577,9 @@ class CastSelectionModal extends StatelessWidget {
     required this.imageUrl,
     this.headers,
     this.algorithm,
+    this.mediaId,
+    this.mediaType,
+    this.videoOptionId,
   });
 
   @override
@@ -515,7 +588,7 @@ class CastSelectionModal extends StatelessWidget {
     // pero aquí lo pasamos a un widget reutilizable.
     // Por simplicidad en este paso, voy a mover la lógica de CastButton a un sitio común si fuera necesario,
     // pero por ahora lo duplicaré o haré referencia al CastButton si puedo.
-    
+
     // Mejor: Usamos un CastButton "fantasma" que solo abre el modal
     return CastButton(
       videoUrl: videoUrl,
@@ -523,8 +596,11 @@ class CastSelectionModal extends StatelessWidget {
       imageUrl: imageUrl,
       headers: headers,
       algorithm: algorithm ?? 1,
+      mediaId: mediaId,
+      mediaType: mediaType,
+      videoOptionId: videoOptionId,
       // Lo envolvemos para que al montarse dispare el modal
-      showImmediately: true, 
+      showImmediately: true,
     );
   }
 }

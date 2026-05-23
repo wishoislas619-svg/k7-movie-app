@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:movie_app/features/movies/presentation/providers/history_provider.dart';
 import '../../services/cast_service.dart';
 import '../../services/cast_device_info.dart';
 import '../widgets/cast_device_list_sheet.dart';
@@ -15,15 +17,16 @@ import '../widgets/cast_device_list_sheet.dart';
 /// - Botón para cambiar de dispositivo
 /// - Se cierra automáticamente cuando se desconecta
 /// - Wakelock activo para no perder la transmisión
-class CastRemotePage extends StatefulWidget {
+class CastRemotePage extends ConsumerStatefulWidget {
   const CastRemotePage({super.key});
 
   @override
-  State<CastRemotePage> createState() => _CastRemotePageState();
+  ConsumerState<CastRemotePage> createState() => _CastRemotePageState();
 }
 
-class _CastRemotePageState extends State<CastRemotePage> {
+class _CastRemotePageState extends ConsumerState<CastRemotePage> {
   final _castService = CastService();
+  Timer? _progressTimer;
   double _volume = 0.5; // Valor visual inicial
   bool _isSeeking = false;
   double _seekValue = 0.0;
@@ -34,13 +37,42 @@ class _CastRemotePageState extends State<CastRemotePage> {
     super.initState();
     _castService.addListener(_onCastStateChanged);
     WakelockPlus.enable();
+    _progressTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _saveCastProgress(),
+    );
   }
 
   @override
   void dispose() {
     _castService.removeListener(_onCastStateChanged);
+    _progressTimer?.cancel();
+    _saveCastProgress();
     WakelockPlus.disable();
     super.dispose();
+  }
+
+  Future<void> _saveCastProgress() async {
+    final mediaId = _castService.currentMediaId;
+    final mediaType = _castService.currentMediaType;
+    final position = _castService.position.inMilliseconds;
+    if (mediaId == null || mediaType == null || position <= 0) return;
+
+    await ref
+        .read(historyProvider.notifier)
+        .saveProgress(
+          mediaId: mediaId,
+          episodeId: _castService.currentEpisodeId,
+          mediaType: mediaType,
+          position: position,
+          duration: _castService.duration.inMilliseconds,
+          title: _castService.currentTitle ?? 'Video',
+          subtitle: _castService.currentSubtitleLabel,
+          imagePath: _castService.currentImageUrl ?? '',
+          videoOptionId: _castService.currentVideoOptionId,
+          lastCastWasCast: true,
+          castDeviceName: _castService.connectedDevice?.name,
+        );
   }
 
   void _onCastStateChanged() {
@@ -74,6 +106,7 @@ class _CastRemotePageState extends State<CastRemotePage> {
 
   Future<void> _disconnect() async {
     _isNavigatingAway = true;
+    await _saveCastProgress();
     await _castService.disconnect();
     if (mounted) Navigator.of(context).pop();
   }
@@ -108,12 +141,13 @@ class _CastRemotePageState extends State<CastRemotePage> {
     final double progress = (_isSeeking)
         ? _seekValue
         : (duration.inSeconds > 0
-            ? (position.inSeconds / duration.inSeconds).clamp(0.0, 1.0)
-            : 0.0);
+              ? (position.inSeconds / duration.inSeconds).clamp(0.0, 1.0)
+              : 0.0);
 
     // Validación de imagen para evitar error "No host specified in URI file:///"
-    final bool hasValidImage = _castService.currentImageUrl != null && 
-                               _castService.currentImageUrl!.startsWith('http');
+    final bool hasValidImage =
+        _castService.currentImageUrl != null &&
+        _castService.currentImageUrl!.startsWith('http');
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D0D),
@@ -205,7 +239,11 @@ class _CastRemotePageState extends State<CastRemotePage> {
         children: [
           // Botón cerrar (solo oculta el remoto, NO detiene la transmisión)
           IconButton(
-            icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 28),
+            icon: const Icon(
+              Icons.keyboard_arrow_down,
+              color: Colors.white70,
+              size: 28,
+            ),
             tooltip: 'Minimizar (la transmisión continúa)',
             onPressed: () => Navigator.of(context).pop(),
           ),
@@ -214,7 +252,11 @@ class _CastRemotePageState extends State<CastRemotePage> {
             children: [
               const Text(
                 'REPRODUCIENDO EN',
-                style: TextStyle(color: Colors.white38, fontSize: 9, letterSpacing: 1.5),
+                style: TextStyle(
+                  color: Colors.white38,
+                  fontSize: 9,
+                  letterSpacing: 1.5,
+                ),
               ),
               Text(
                 device.name,
@@ -241,10 +283,11 @@ class _CastRemotePageState extends State<CastRemotePage> {
   Widget _buildCover({required bool isLandscape}) {
     final double w = isLandscape ? 120 : 160;
     final double h = isLandscape ? 160 : 220;
-    
+
     // Si la URL no es válida (file:///), usamos el placeholder
-    final bool hasValidImage = _castService.currentImageUrl != null && 
-                               _castService.currentImageUrl!.startsWith('http');
+    final bool hasValidImage =
+        _castService.currentImageUrl != null &&
+        _castService.currentImageUrl!.startsWith('http');
 
     if (!hasValidImage) {
       return Container(
@@ -254,7 +297,11 @@ class _CastRemotePageState extends State<CastRemotePage> {
           color: Colors.white10,
           borderRadius: BorderRadius.circular(16),
         ),
-        child: Icon(Icons.movie, color: Colors.white24, size: isLandscape ? 40 : 60),
+        child: Icon(
+          Icons.movie,
+          color: Colors.white24,
+          size: isLandscape ? 40 : 60,
+        ),
       );
     }
 
@@ -264,7 +311,11 @@ class _CastRemotePageState extends State<CastRemotePage> {
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 20, offset: const Offset(0, 10)),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.5),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
+          ),
         ],
         image: DecorationImage(
           image: NetworkImage(_castService.currentImageUrl!),
@@ -336,8 +387,14 @@ class _CastRemotePageState extends State<CastRemotePage> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(_formatDuration(position), style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                Text(_formatDuration(duration), style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                Text(
+                  _formatDuration(position),
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                Text(
+                  _formatDuration(duration),
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
               ],
             ),
           ),
@@ -364,22 +421,33 @@ class _CastRemotePageState extends State<CastRemotePage> {
         _ControlButton(
           icon: Icons.replay_10_rounded,
           size: 32,
-          onTap: () => _castService.seekTo(position - const Duration(seconds: 10)),
+          onTap: () =>
+              _castService.seekTo(position - const Duration(seconds: 10)),
           tooltip: '-10 segundos',
         ),
         // Play / Pause (botón grande central)
         GestureDetector(
-          onTap: () => _castService.isPlaying ? _castService.pause() : _castService.play(),
+          onTap: () => _castService.isPlaying
+              ? _castService.pause()
+              : _castService.play(),
           child: Container(
             width: playSize,
             height: playSize,
             decoration: const BoxDecoration(
               color: Colors.white,
               shape: BoxShape.circle,
-              boxShadow: [BoxShadow(color: Color(0x4400A3FF), blurRadius: 20, spreadRadius: 2)],
+              boxShadow: [
+                BoxShadow(
+                  color: Color(0x4400A3FF),
+                  blurRadius: 20,
+                  spreadRadius: 2,
+                ),
+              ],
             ),
             child: Icon(
-              _castService.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              _castService.isPlaying
+                  ? Icons.pause_rounded
+                  : Icons.play_arrow_rounded,
               color: Colors.black,
               size: playIconSize,
             ),
@@ -389,7 +457,8 @@ class _CastRemotePageState extends State<CastRemotePage> {
         _ControlButton(
           icon: Icons.forward_10_rounded,
           size: 32,
-          onTap: () => _castService.seekTo(position + const Duration(seconds: 10)),
+          onTap: () =>
+              _castService.seekTo(position + const Duration(seconds: 10)),
           tooltip: '+10 segundos',
         ),
         // Detener y desconectar
@@ -409,7 +478,11 @@ class _CastRemotePageState extends State<CastRemotePage> {
       padding: const EdgeInsets.symmetric(horizontal: 32),
       child: Row(
         children: [
-          const Icon(Icons.volume_mute_rounded, color: Colors.white38, size: 22),
+          const Icon(
+            Icons.volume_mute_rounded,
+            color: Colors.white38,
+            size: 22,
+          ),
           Expanded(
             child: SliderTheme(
               data: SliderTheme.of(context).copyWith(

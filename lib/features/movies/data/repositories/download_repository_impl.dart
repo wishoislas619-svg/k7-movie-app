@@ -1,17 +1,17 @@
-
 import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'dart:math';
-import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_min_gpl/ffprobe_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/ffprobe_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:http/http.dart' as http;
 import 'package:movie_app/core/utils/sqlite_service.dart';
-import 'package:movie_app/features/movies/domain/entities/download_task.dart' as my;
+import 'package:movie_app/features/movies/domain/entities/download_task.dart'
+    as my;
 import 'package:movie_app/providers.dart';
 import 'package:movie_app/core/services/notification_service.dart';
 import 'package:movie_app/core/services/foreground_service.dart';
@@ -34,14 +34,23 @@ class DownloadRepository {
   void _initDownloader() async {
     // Configure global notifications
     FileDownloader().configureNotification(
-      running: const TaskNotification('Descargando {displayName}', 'Progreso: {progress} - {networkSpeed}'),
-      complete: const TaskNotification('Descarga completada', '{displayName} se guardó con éxito'),
-      error: const TaskNotification('Error en la descarga', 'No se pudo descargar {displayName}'),
+      running: const TaskNotification(
+        'Descargando {displayName}',
+        'Progreso: {progress} - {networkSpeed}',
+      ),
+      complete: const TaskNotification(
+        'Descarga completada',
+        '{displayName} se guardó con éxito',
+      ),
+      error: const TaskNotification(
+        'Error en la descarga',
+        'No se pudo descargar {displayName}',
+      ),
       paused: const TaskNotification('Descarga pausada', '{displayName}'),
       progressBar: true,
       tapOpensFile: true,
     );
-    
+
     // Request notification permission for Android 13+
     if (Platform.isAndroid) {
       await FileDownloader().permissions.request(PermissionType.notifications);
@@ -50,23 +59,48 @@ class DownloadRepository {
 
   Future<List<my.DownloadTask>> getDownloads() async {
     final db = await _sqliteService.database;
-    final List<Map<String, dynamic>> maps =
-        await db.query('downloads', orderBy: 'createdAt DESC');
+    final List<Map<String, dynamic>> maps = await db.query(
+      'downloads',
+      orderBy: 'createdAt DESC',
+    );
     return maps.map((map) => my.DownloadTask.fromMap(map)).toList();
   }
 
   Future<void> saveDownloadTask(my.DownloadTask task) async {
     final db = await _sqliteService.database;
     try {
-      await db.insert('downloads', task.toMap(),
-          conflictAlgorithm: ConflictAlgorithm.replace);
+      await db.insert(
+        'downloads',
+        task.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     } catch (e) {
       if (e.toString().contains('no column named isSeries')) {
-         try { await db.execute('ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0'); } catch (_) {}
-         try { await db.execute('ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER'); } catch (_) {}
-         try { await db.execute('ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER'); } catch (_) {}
-         try { await db.execute('ALTER TABLE downloads ADD COLUMN originalFilename TEXT'); } catch (_) {}
-         await db.insert('downloads', task.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+        try {
+          await db.execute(
+            'ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE downloads ADD COLUMN originalFilename TEXT',
+          );
+        } catch (_) {}
+        await db.insert(
+          'downloads',
+          task.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
       } else {
         rethrow;
       }
@@ -84,11 +118,32 @@ class DownloadRepository {
       );
     } catch (e) {
       if (e.toString().contains('no column named isSeries')) {
-         try { await db.execute('ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0'); } catch (_) {}
-         try { await db.execute('ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER'); } catch (_) {}
-         try { await db.execute('ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER'); } catch (_) {}
-         try { await db.execute('ALTER TABLE downloads ADD COLUMN originalFilename TEXT'); } catch (_) {}
-         await db.update('downloads', task.toMap(), where: 'id = ?', whereArgs: [task.id]);
+        try {
+          await db.execute(
+            'ALTER TABLE downloads ADD COLUMN isSeries INTEGER DEFAULT 0',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE downloads ADD COLUMN seasonNumber INTEGER',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE downloads ADD COLUMN episodeNumber INTEGER',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE downloads ADD COLUMN originalFilename TEXT',
+          );
+        } catch (_) {}
+        await db.update(
+          'downloads',
+          task.toMap(),
+          where: 'id = ?',
+          whereArgs: [task.id],
+        );
       } else {
         rethrow;
       }
@@ -102,10 +157,13 @@ class DownloadRepository {
     return my.DownloadTask.fromMap(rows.first);
   }
 
-
   Future<void> deleteDownloadTask(String id) async {
     final db = await _sqliteService.database;
-    final downloads = await db.query('downloads', where: 'id = ?', whereArgs: [id]);
+    final downloads = await db.query(
+      'downloads',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
     if (downloads.isNotEmpty) {
       final task = my.DownloadTask.fromMap(downloads.first);
       if (task.savePath != null) {
@@ -116,7 +174,7 @@ class DownloadRepository {
       }
     }
     await db.delete('downloads', where: 'id = ?', whereArgs: [id]);
-    
+
     await FileDownloader().cancelTasksWithIds([id]);
   }
 
@@ -129,7 +187,9 @@ class DownloadRepository {
       if (await Permission.storage.isDenied) await Permission.storage.request();
     }
 
-    print('[PLAY] ensurePlayableFile start id=${task.id} savePath=${task.savePath}');
+    print(
+      '[PLAY] ensurePlayableFile start id=${task.id} savePath=${task.savePath}',
+    );
     if (task.savePath == null) {
       final resolved = await _findExistingFile(task);
       print('[PLAY] resolved path=$resolved');
@@ -143,7 +203,10 @@ class DownloadRepository {
       return task.savePath;
     }
 
-    final converted = await _convertToMp4IfNeeded(task.savePath!, onProgress: onProgress);
+    final converted = await _convertToMp4IfNeeded(
+      task.savePath!,
+      onProgress: onProgress,
+    );
     if (converted != null) {
       await updateDownloadTask(task.copyWith(savePath: converted));
       await _updateTaskMediaInfo(task, converted);
@@ -153,7 +216,10 @@ class DownloadRepository {
     // Fallback: return original file
     // Si es .ts, intentamos forzar conversión más agresiva
     if (task.savePath!.toLowerCase().endsWith('.ts')) {
-      final forcedConvert = await _forceConvertToMp4(task.savePath!, onProgress: onProgress);
+      final forcedConvert = await _forceConvertToMp4(
+        task.savePath!,
+        onProgress: onProgress,
+      );
       if (forcedConvert != null) {
         await updateDownloadTask(task.copyWith(savePath: forcedConvert));
         await _updateTaskMediaInfo(task, forcedConvert);
@@ -166,7 +232,11 @@ class DownloadRepository {
 
   Future<void> deleteFailedDownloads() async {
     final db = await _sqliteService.database;
-    final failed = await db.query('downloads', where: 'status = ?', whereArgs: ['error']);
+    final failed = await db.query(
+      'downloads',
+      where: 'status = ?',
+      whereArgs: ['error'],
+    );
 
     final directory = await getApplicationDocumentsDirectory();
     final downloadsDir = Directory('${directory.path}/downloads');
@@ -220,22 +290,26 @@ class DownloadRepository {
     await db.delete('downloads', where: 'status = ?', whereArgs: ['error']);
   }
 
-  Future<void> enqueueDownload(my.DownloadTask task,
-      {required Function(double, String) onProgress,
-      required Function(my.DownloadStatus, {String? savePath}) onStatusChange}) async {
-    
+  Future<void> enqueueDownload(
+    my.DownloadTask task, {
+    required Function(double, String) onProgress,
+    required Function(my.DownloadStatus, {String? savePath}) onStatusChange,
+  }) async {
     // Detect HLS: classic .m3u8 OR .txt manifests from known CDN domains
-    final isHls = task.videoUrl.contains('.m3u8') ||
-        (task.videoUrl.contains('.txt') && 
-         (task.videoUrl.contains('goldenfieldproductionworks') ||
-          task.videoUrl.contains('cf-master') ||
-          task.videoUrl.contains('index-f') ||
-          task.videoUrl.contains('/v4/db/')));
+    final isHls =
+        task.videoUrl.contains('.m3u8') ||
+        (task.videoUrl.contains('.txt') &&
+            (task.videoUrl.contains('goldenfieldproductionworks') ||
+                task.videoUrl.contains('cf-master') ||
+                task.videoUrl.contains('index-f') ||
+                task.videoUrl.contains('/v4/db/')));
     print('[DL] enqueue id=${task.id} isHls=$isHls url=${task.videoUrl}');
-    
+
     // 🛡️ BYPASS PROXY PARA DESCARGAS
     var finalUrl = task.videoUrl;
-    var finalHeaders = task.headers != null ? Map<String, String>.from(task.headers!) : <String, String>{};
+    var finalHeaders = task.headers != null
+        ? Map<String, String>.from(task.headers!)
+        : <String, String>{};
 
     // Si la URL viene del proxy local, extraemos la original y sus headers.
     final unproxied = MediaProxyService.tryUnproxy(finalUrl);
@@ -245,15 +319,18 @@ class DownloadRepository {
         // Combinamos los headers del proxy con los que ya teníamos (priorizando los del proxy)
         finalHeaders.addAll(unproxied['headers'] as Map<String, String>);
       }
-      print('🛡️ [DL_BYPASS] URL des-proxeada para descarga directa: $finalUrl');
+      print(
+        '🛡️ [DL_BYPASS] URL des-proxeada para descarga directa: $finalUrl',
+      );
     }
 
     // Default headers if none provided
     if (finalHeaders.isEmpty) {
-      finalHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+      finalHeaders['User-Agent'] =
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
       finalHeaders['Referer'] = finalUrl.split('/').take(3).join('/');
     }
-    
+
     // Cleanup headers for background downloader
     finalHeaders.remove('range');
     finalHeaders.remove('Range');
@@ -277,7 +354,9 @@ class DownloadRepository {
     final baseName = _buildSafeFileBase(task);
     final fileName = '$baseName.$finalExt';
 
-    await updateDownloadTask(task.copyWith(status: my.DownloadStatus.downloading, videoUrl: finalUrl));
+    await updateDownloadTask(
+      task.copyWith(status: my.DownloadStatus.downloading, videoUrl: finalUrl),
+    );
 
     // If still HLS after conversion attempt, download and merge segments.
     if (isHls || finalUrl.contains('.m3u8') || finalUrl.contains('.txt')) {
@@ -321,7 +400,8 @@ class DownloadRepository {
     try {
       final client = http.Client();
       print('[HLS] Fetch playlist: ${task.videoUrl}');
-      final playlistRes = await client.get(Uri.parse(task.videoUrl), headers: headers)
+      final playlistRes = await client
+          .get(Uri.parse(task.videoUrl), headers: headers)
           .timeout(const Duration(seconds: 10));
 
       if (playlistRes.statusCode != 200 && playlistRes.statusCode != 206) {
@@ -332,11 +412,15 @@ class DownloadRepository {
       }
 
       final playlistText = playlistRes.body;
-      final selectedPlaylistUrl = _selectVariantPlaylistUrl(task.videoUrl, playlistText);
+      final selectedPlaylistUrl = _selectVariantPlaylistUrl(
+        task.videoUrl,
+        playlistText,
+      );
 
       if (selectedPlaylistUrl != null) {
         print('[HLS] selected variant: $selectedPlaylistUrl');
-        final variantRes = await client.get(Uri.parse(selectedPlaylistUrl), headers: headers)
+        final variantRes = await client
+            .get(Uri.parse(selectedPlaylistUrl), headers: headers)
             .timeout(const Duration(seconds: 10));
         if (variantRes.statusCode != 200 && variantRes.statusCode != 206) {
           print('[HLS] variant status=${variantRes.statusCode}');
@@ -384,7 +468,9 @@ class DownloadRepository {
       final line = lines[i].trim();
       if (line.startsWith('#EXT-X-STREAM-INF')) {
         final bwMatch = RegExp(r'BANDWIDTH=(\d+)').firstMatch(line);
-        final bw = bwMatch != null ? int.tryParse(bwMatch.group(1) ?? '') ?? 0 : 0;
+        final bw = bwMatch != null
+            ? int.tryParse(bwMatch.group(1) ?? '') ?? 0
+            : 0;
         final next = (i + 1 < lines.length) ? lines[i + 1].trim() : '';
         if (next.isNotEmpty && !next.startsWith('#')) {
           if (bw >= bestBw) {
@@ -444,7 +530,9 @@ class DownloadRepository {
       }
     }
 
-    final raf = await outputFile.open(mode: startIndex > 0 ? FileMode.append : FileMode.write);
+    final raf = await outputFile.open(
+      mode: startIndex > 0 ? FileMode.append : FileMode.write,
+    );
     final client = http.Client();
     _hlsCancelFlags[task.id] = false;
 
@@ -466,7 +554,8 @@ class DownloadRepository {
           return;
         }
         final url = segmentUrls[i];
-        final res = await client.get(Uri.parse(url), headers: headers)
+        final res = await client
+            .get(Uri.parse(url), headers: headers)
             .timeout(const Duration(seconds: 20));
         if (res.statusCode != 200 && res.statusCode != 206) {
           await raf.close();
@@ -485,7 +574,8 @@ class DownloadRepository {
           await progressFile.writeAsString((i + 1).toString());
         }
 
-        final elapsed = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
+        final elapsed =
+            DateTime.now().difference(startTime).inMilliseconds / 1000.0;
         final speed = elapsed > 0 ? (totalBytes / 1024 / 1024 / elapsed) : 0.0;
         final progress = completed / segmentUrls.length;
         final speedStr = '${speed.toStringAsFixed(2)} MB/s';
@@ -531,7 +621,9 @@ class DownloadRepository {
     }
 
     // Actualizamos el task con la ruta del TS antes de intentar validar o convertir para no perder la referencia si algo falla
-    await updateDownloadTask(task.copyWith(savePath: outputPath, originalFilename: fileName));
+    await updateDownloadTask(
+      task.copyWith(savePath: outputPath, originalFilename: fileName),
+    );
 
     final mediaOk = await _validateTsFile(outputPath);
     if (!mediaOk) {
@@ -549,51 +641,57 @@ class DownloadRepository {
     }
 
     onProgress(0.0, 'Convirtiendo...');
-    final convertedPath = await _convertToMp4IfNeeded(outputPath, onProgress: (p, s) {
-      onProgress(p, s);
-    });
-    
+    final convertedPath = await _convertToMp4IfNeeded(
+      outputPath,
+      onProgress: (p, s) {
+        onProgress(p, s);
+      },
+    );
+
     // Si la conversión falla, mantenemos el TS para que al menos sea reproducible localmente
     final finalPath = convertedPath ?? outputPath;
 
     String pPath = finalPath;
     if (!AppConstants.secureSave && Platform.isAndroid) {
-        try {
-            print("[PUBLIC DL] Copiando HLS/MP4 convertido a carpeta pública K7-MOVIE...");
-            final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
-            if (!await pubDir.exists()) {
-               await pubDir.create();
-            }
-            
-            // Forzar extensión .mp4 para el archivo público
-            String publicName = finalPath.split('/').last;
-
-            // Asegurar que el nombre público sea descriptivo y sin marcas de HLS crudo
-            publicName = publicName
-                .replaceAll('_HLS_', '_Streaming_')
-                .replaceAll('(HLS)', '(Streaming)')
-                .replaceAll('HLS', 'Streaming');
-
-            if (publicName.toLowerCase().endsWith('.ts')) {
-              publicName = publicName.substring(0, publicName.length - 3) + '.mp4';
-            } else if (publicName.toLowerCase().endsWith('.m3u8')) {
-              publicName = publicName.substring(0, publicName.length - 5) + '.mp4';
-            } else if (!publicName.toLowerCase().endsWith('.mp4')) {
-              publicName = '$publicName.mp4';
-            }
-
-            final publicFile = await File(finalPath).copy('${pubDir.path}/$publicName');
-            pPath = publicFile.path;
-            await File(finalPath).delete(); // Borramos el archivo temporal/original
-        } catch(e) {
-            print("[PUBLIC DL] Error copiando archivo a público: $e");
+      try {
+        print(
+          "[PUBLIC DL] Copiando HLS/MP4 convertido a carpeta pública K7-MOVIE...",
+        );
+        final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
+        if (!await pubDir.exists()) {
+          await pubDir.create();
         }
+
+        // Forzar extensión .mp4 para el archivo público
+        String publicName = finalPath.split('/').last;
+
+        // Asegurar que el nombre público sea descriptivo y sin marcas de HLS crudo
+        publicName = publicName
+            .replaceAll('_HLS_', '_Streaming_')
+            .replaceAll('(HLS)', '(Streaming)')
+            .replaceAll('HLS', 'Streaming');
+
+        if (publicName.toLowerCase().endsWith('.ts')) {
+          publicName = publicName.substring(0, publicName.length - 3) + '.mp4';
+        } else if (publicName.toLowerCase().endsWith('.m3u8')) {
+          publicName = publicName.substring(0, publicName.length - 5) + '.mp4';
+        } else if (!publicName.toLowerCase().endsWith('.mp4')) {
+          publicName = '$publicName.mp4';
+        }
+
+        final publicFile = await File(
+          finalPath,
+        ).copy('${pubDir.path}/$publicName');
+        pPath = publicFile.path;
+        await File(finalPath).delete(); // Borramos el archivo temporal/original
+      } catch (e) {
+        print("[PUBLIC DL] Error copiando archivo a público: $e");
+      }
     }
 
-    await updateDownloadTask(task.copyWith(
-      savePath: pPath,
-      originalFilename: pPath.split('/').last,
-    ));
+    await updateDownloadTask(
+      task.copyWith(savePath: pPath, originalFilename: pPath.split('/').last),
+    );
     await _updateTaskMediaInfo(task, pPath);
     NotificationService.showDownloadNotification(
       id: task.id.hashCode & 0x7fffffff,
@@ -623,7 +721,7 @@ class DownloadRepository {
       final baseUri = Uri.parse(base);
       final refUri = Uri.parse(ref);
       if (refUri.hasScheme) return ref;
-      
+
       // Fix: If ref starts with / and base is relative or we need to ensure host
       if (ref.startsWith('/') && !ref.startsWith('//')) {
         return Uri(
@@ -634,7 +732,7 @@ class DownloadRepository {
           query: refUri.hasQuery ? refUri.query : null,
         ).toString();
       }
-      
+
       return baseUri.resolveUri(refUri).toString();
     } catch (_) {
       return ref;
@@ -646,14 +744,17 @@ class DownloadRepository {
     String res = task.resolution
         .replaceAll('(HLS)', '(Streaming)')
         .replaceAll('HLS', 'Streaming');
-        
+
     String movie = task.movieName.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
     String resolution = res.replaceAll(RegExp(r'[^a-zA-Z0-9()]'), '_');
-    
+
     return '${movie}_$resolution';
   }
 
-  Future<String?> _updateTaskMediaInfo(my.DownloadTask task, String path) async {
+  Future<String?> _updateTaskMediaInfo(
+    my.DownloadTask task,
+    String path,
+  ) async {
     try {
       final file = File(path);
       if (!await file.exists()) return null;
@@ -688,7 +789,9 @@ class DownloadRepository {
         label = sizeStr;
       }
 
-      await updateDownloadTask(task.copyWith(resolution: label, savePath: path));
+      await updateDownloadTask(
+        task.copyWith(resolution: label, savePath: path),
+      );
       return label;
     } catch (e) {
       print('[MEDIA] info error: $e');
@@ -755,36 +858,38 @@ class DownloadRepository {
       for (final entity in files) {
         if (entity is File) {
           final name = entity.path.split('/').last;
-          if (name.startsWith(safeMovie) && (name.endsWith('.mp4') || name.endsWith('.ts'))) {
+          if (name.startsWith(safeMovie) &&
+              (name.endsWith('.mp4') || name.endsWith('.ts'))) {
             return entity.path;
           }
         }
       }
 
       if (Platform.isAndroid && !AppConstants.secureSave) {
-         final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
-         if (await pubDir.exists()) {
-           final pubCandidates = [
-             File('${pubDir.path}/$baseSafe.mp4'),
-             File('${pubDir.path}/$baseSafe.ts'),
-             File('${pubDir.path}/$baseSafe.m3u8'),
-             File('${pubDir.path}/$baseRawRes.mp4'),
-             File('${pubDir.path}/$baseRawRes.ts'),
-             File('${pubDir.path}/$baseRawRes.m3u8'),
-           ];
-           for (final f in pubCandidates) {
-             if (await f.exists()) return f.path;
-           }
-           final pubFiles = await pubDir.list().toList();
-           for (final entity in pubFiles) {
-             if (entity is File) {
-               final name = entity.path.split('/').last;
-               if (name.startsWith(safeMovie) && (name.endsWith('.mp4') || name.endsWith('.ts'))) {
-                 return entity.path;
-               }
-             }
-           }
-         }
+        final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
+        if (await pubDir.exists()) {
+          final pubCandidates = [
+            File('${pubDir.path}/$baseSafe.mp4'),
+            File('${pubDir.path}/$baseSafe.ts'),
+            File('${pubDir.path}/$baseSafe.m3u8'),
+            File('${pubDir.path}/$baseRawRes.mp4'),
+            File('${pubDir.path}/$baseRawRes.ts'),
+            File('${pubDir.path}/$baseRawRes.m3u8'),
+          ];
+          for (final f in pubCandidates) {
+            if (await f.exists()) return f.path;
+          }
+          final pubFiles = await pubDir.list().toList();
+          for (final entity in pubFiles) {
+            if (entity is File) {
+              final name = entity.path.split('/').last;
+              if (name.startsWith(safeMovie) &&
+                  (name.endsWith('.mp4') || name.endsWith('.ts'))) {
+                return entity.path;
+              }
+            }
+          }
+        }
       }
     } catch (e) {
       print('[PLAY] Resolve file error: $e');
@@ -886,27 +991,32 @@ class DownloadRepository {
     return null;
   }
 
-
-  Future<String?> _tryConvertToMp4(String hlsUrl, {Map<String, String>? headers}) async {
+  Future<String?> _tryConvertToMp4(
+    String hlsUrl, {
+    Map<String, String>? headers,
+  }) async {
     try {
       print("[RECOVERY] Intentando encontrar versión MP4 para: $hlsUrl");
-      
+
       final String baseUrl = hlsUrl.split('?').first;
-      final String query = hlsUrl.contains('?') ? '?${hlsUrl.split('?').last}' : '';
+      final String query = hlsUrl.contains('?')
+          ? '?${hlsUrl.split('?').last}'
+          : '';
 
       // Pattern 1: PeliculaPlay / Akamai patterns (EXTREMELY COMMON)
-      if (hlsUrl.contains('peliculaplay.com') || hlsUrl.contains('media-limit')) {
-         final variations = [
-           baseUrl.replaceAll(RegExp(r'-microframe-(ld|sd|hd)\.m3u8$'), '.mp4'),
-           baseUrl.replaceAll(RegExp(r'\.m3u8$'), '.mp4'),
-           baseUrl.replaceAll(RegExp(r'/playlist\.m3u8$'), '/video.mp4'),
-           baseUrl.replaceFirst('/hls/', '/').replaceAll('.m3u8', '.mp4'),
-         ];
-         
-         for (var p in variations) {
-            final full = p + query;
-            if (await _probeUrl(full, headers: headers)) return full;
-         }
+      if (hlsUrl.contains('peliculaplay.com') ||
+          hlsUrl.contains('media-limit')) {
+        final variations = [
+          baseUrl.replaceAll(RegExp(r'-microframe-(ld|sd|hd)\.m3u8$'), '.mp4'),
+          baseUrl.replaceAll(RegExp(r'\.m3u8$'), '.mp4'),
+          baseUrl.replaceAll(RegExp(r'/playlist\.m3u8$'), '/video.mp4'),
+          baseUrl.replaceFirst('/hls/', '/').replaceAll('.m3u8', '.mp4'),
+        ];
+
+        for (var p in variations) {
+          final full = p + query;
+          if (await _probeUrl(full, headers: headers)) return full;
+        }
       }
 
       // Pattern 2: Generic pirate servers (cloclo, vidsrc, etc)
@@ -929,10 +1039,18 @@ class DownloadRepository {
 
   Future<bool> _probeUrl(String url, {Map<String, String>? headers}) async {
     try {
-      final response = await http.head(Uri.parse(url), headers: headers ?? {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      }).timeout(const Duration(seconds: 3));
-      
+      final response = await http
+          .head(
+            Uri.parse(url),
+            headers:
+                headers ??
+                {
+                  'User-Agent':
+                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                },
+          )
+          .timeout(const Duration(seconds: 3));
+
       if (response.statusCode == 200) {
         final cl = response.headers['content-length'];
         if (cl != null) {
@@ -940,7 +1058,7 @@ class DownloadRepository {
           // Must be at least 10MB to be a movie file
           return size > 10 * 1024 * 1024;
         }
-        return true; 
+        return true;
       }
     } catch (_) {}
     return false;
@@ -951,14 +1069,16 @@ class DownloadRepository {
     final rows = await db.query('downloads', where: 'id = ?', whereArgs: [id]);
     if (rows.isNotEmpty) {
       final task = my.DownloadTask.fromMap(rows.first);
-      if (task.videoUrl.contains('.m3u8') || (task.savePath?.endsWith('.ts') ?? false)) {
+      if (task.videoUrl.contains('.m3u8') ||
+          (task.savePath?.endsWith('.ts') ?? false)) {
         _hlsCancelFlags[id] = true;
         return;
       }
     }
 
     final tasks = await FileDownloader().allTasks();
-    final task = tasks.where((t) => t.taskId == id).firstOrNull as DownloadTask?;
+    final task =
+        tasks.where((t) => t.taskId == id).firstOrNull as DownloadTask?;
     if (task != null) {
       await FileDownloader().pause(task);
     }
@@ -969,14 +1089,21 @@ class DownloadRepository {
     required Function(double, String) onProgress,
     required Function(my.DownloadStatus, {String? savePath}) onStatusChange,
   }) async {
-    final isHls = task.videoUrl.contains('.m3u8') || (task.savePath?.endsWith('.ts') ?? false);
+    final isHls =
+        task.videoUrl.contains('.m3u8') ||
+        (task.savePath?.endsWith('.ts') ?? false);
     if (isHls) {
-      final headers = task.headers ?? {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Referer': task.videoUrl.split('/').take(3).join('/'),
-      };
+      final headers =
+          task.headers ??
+          {
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': task.videoUrl.split('/').take(3).join('/'),
+          };
       final fileName = _resolveHlsFileName(task);
-      await updateDownloadTask(task.copyWith(status: my.DownloadStatus.downloading));
+      await updateDownloadTask(
+        task.copyWith(status: my.DownloadStatus.downloading),
+      );
       _downloadHlsAsTs(
         task: task,
         fileName: fileName,
@@ -988,13 +1115,18 @@ class DownloadRepository {
     }
 
     final tasks = await FileDownloader().allTasks();
-    final dlTask = tasks.where((t) => t.taskId == task.id).firstOrNull as DownloadTask?;
+    final dlTask =
+        tasks.where((t) => t.taskId == task.id).firstOrNull as DownloadTask?;
     if (dlTask != null) {
       await FileDownloader().resume(dlTask);
       return;
     }
 
-    await enqueueDownload(task, onProgress: onProgress, onStatusChange: onStatusChange);
+    await enqueueDownload(
+      task,
+      onProgress: onProgress,
+      onStatusChange: onStatusChange,
+    );
   }
 
   String _resolveHlsFileName(my.DownloadTask task) {
@@ -1005,12 +1137,15 @@ class DownloadRepository {
     return '$base.ts';
   }
 
-  void trackDownloads(Function(String, double, String, my.DownloadStatus, {String? savePath}) onUpdate) {
+  void trackDownloads(
+    Function(String, double, String, my.DownloadStatus, {String? savePath})
+    onUpdate,
+  ) {
     FileDownloader().registerCallbacks(
       taskStatusCallback: (update) {
         final id = update.task.taskId;
         my.DownloadStatus myStatus;
-        
+
         switch (update.status) {
           case TaskStatus.enqueued:
           case TaskStatus.running:
@@ -1023,23 +1158,26 @@ class DownloadRepository {
               if (isValid) {
                 myStatus = my.DownloadStatus.completed;
                 _progressInfos.remove(id);
-                
+
                 String? finalPath;
                 if (!AppConstants.secureSave && Platform.isAndroid) {
-                    try {
-                        print("[PUBLIC DL] Movie completing. Moving to Shared Storage...");
-                        final sharedPath = await FileDownloader().moveToSharedStorage(
-                            update.task as DownloadTask, 
-                            SharedStorage.downloads, 
-                            directory: 'K7-MOVIE'
+                  try {
+                    print(
+                      "[PUBLIC DL] Movie completing. Moving to Shared Storage...",
+                    );
+                    final sharedPath = await FileDownloader()
+                        .moveToSharedStorage(
+                          update.task as DownloadTask,
+                          SharedStorage.downloads,
+                          directory: 'K7-MOVIE',
                         );
-                        finalPath = sharedPath ?? await _getFilePath(update.task);
-                    } catch(e) {
-                        print("[PUBLIC DL] Error moving to shared storage: $e");
-                        finalPath = await _getFilePath(update.task);
-                    }
-                } else {
+                    finalPath = sharedPath ?? await _getFilePath(update.task);
+                  } catch (e) {
+                    print("[PUBLIC DL] Error moving to shared storage: $e");
                     finalPath = await _getFilePath(update.task);
+                  }
+                } else {
+                  finalPath = await _getFilePath(update.task);
                 }
 
                 onUpdate(id, 1.0, "", myStatus, savePath: finalPath);
@@ -1067,20 +1205,27 @@ class DownloadRepository {
       taskProgressCallback: (update) {
         final id = update.task.taskId;
         final now = DateTime.now();
-        final info = _progressInfos[id] ?? _DownloadProgressInfo(lastUpdate: now, lastProgress: 0);
-        
+        final info =
+            _progressInfos[id] ??
+            _DownloadProgressInfo(lastUpdate: now, lastProgress: 0);
+
         String speedStr = "";
         if (update.progress > info.lastProgress) {
-          final timeDiff = now.difference(info.lastUpdate).inMilliseconds / 1000.0;
-          if (timeDiff > 0.5) { // Update speed every 0.5s
+          final timeDiff =
+              now.difference(info.lastUpdate).inMilliseconds / 1000.0;
+          if (timeDiff > 0.5) {
+            // Update speed every 0.5s
             // background_downloader doesn't provide file size in progress update easily
             // but we can estimate or use {networkSpeed} in notifications.
             // For the UI, we'll use the networkSpeed if available or just show progress
             speedStr = update.networkSpeedAsString;
-            _progressInfos[id] = _DownloadProgressInfo(lastUpdate: now, lastProgress: update.progress);
+            _progressInfos[id] = _DownloadProgressInfo(
+              lastUpdate: now,
+              lastProgress: update.progress,
+            );
           }
         }
-        
+
         final percent = (update.progress * 100).clamp(0, 100).toInt();
         NotificationService.showDownloadNotification(
           id: id.hashCode & 0x7fffffff,
@@ -1098,7 +1243,7 @@ class DownloadRepository {
 
   Future<String?> _getFilePath(Task task) async {
     if (task is DownloadTask) {
-       return await task.filePath();
+      return await task.filePath();
     }
     return null;
   }
@@ -1112,7 +1257,9 @@ class DownloadRepository {
           final size = await file.length();
           // If less than 1MB, it's definitely not a movie (likely an error page or m3u8 playlist)
           if (size < 1024 * 1024) {
-            print("Download verification failed: File size too small (${size} bytes).");
+            print(
+              "Download verification failed: File size too small (${size} bytes).",
+            );
             return false;
           }
           return true;
@@ -1131,10 +1278,10 @@ class DownloadRepository {
     if (!inputPath.toLowerCase().endsWith('.ts')) return null;
     final inputFile = File(inputPath);
     if (!await inputFile.exists()) return null;
-    
+
     final outputPath = inputPath.substring(0, inputPath.length - 3) + '.mp4';
     print('[FORCE_CONVERT] Start: $inputPath -> $outputPath');
-    
+
     // Multiple conversion attempts with different ffmpeg flags
     final attempts = [
       // Attempt 1: Copy all streams (fastest)
@@ -1144,18 +1291,22 @@ class DownloadRepository {
       // Attempt 3: Just copy video, re-encode audio
       '-y -i "$inputPath" -c:v copy -c:a aac -b:a 128k -movflags +faststart -f mp4 "$outputPath.tmp"',
     ];
-    
+
     onProgress?.call(0.0, 'Convirtiendo...');
-    
+
     for (int i = 0; i < attempts.length; i++) {
       if (await File(outputPath).exists()) {
-        try { await File(outputPath).delete(); } catch (_) {}
+        try {
+          await File(outputPath).delete();
+        } catch (_) {}
       }
       if (await File('$outputPath.tmp').exists()) {
-        try { await File('$outputPath.tmp').delete(); } catch (_) {}
+        try {
+          await File('$outputPath.tmp').delete();
+        } catch (_) {}
       }
-      
-      print('[FORCE_CONVERT] Attempt ${i+1}/${attempts.length}');
+
+      print('[FORCE_CONVERT] Attempt ${i + 1}/${attempts.length}');
       final session = await FFmpegKit.execute(attempts[i]);
       final sessionId = session.getSessionId();
       final rc = await Future.any([
@@ -1165,7 +1316,7 @@ class DownloadRepository {
           return null;
         }),
       ]);
-      
+
       if (rc == null) continue; // Timeout, try next
       if (ReturnCode.isSuccess(rc)) {
         final tempFile = File('$outputPath.tmp');
@@ -1175,7 +1326,8 @@ class DownloadRepository {
         final finalFile = File(outputPath);
         if (await finalFile.exists()) {
           final size = await finalFile.length();
-          if (size > 5 * 1024 * 1024) { // At least 5MB
+          if (size > 5 * 1024 * 1024) {
+            // At least 5MB
             print('[FORCE_CONVERT] Success: $outputPath (${size} bytes)');
             onProgress?.call(1.0, '');
             return outputPath;
@@ -1183,7 +1335,7 @@ class DownloadRepository {
         }
       }
     }
-    
+
     print('[FORCE_CONVERT] All attempts failed for: $inputPath');
     return null;
   }
@@ -1194,9 +1346,10 @@ final downloadRepositoryProvider = Provider<DownloadRepository>((ref) {
   return DownloadRepository(sqliteService);
 });
 
-final downloadsListProvider = StateNotifierProvider<DownloadsListNotifier, List<my.DownloadTask>>((ref) {
-  return DownloadsListNotifier(ref.watch(downloadRepositoryProvider));
-});
+final downloadsListProvider =
+    StateNotifierProvider<DownloadsListNotifier, List<my.DownloadTask>>((ref) {
+      return DownloadsListNotifier(ref.watch(downloadRepositoryProvider));
+    });
 
 class DownloadsListNotifier extends StateNotifier<List<my.DownloadTask>> {
   final DownloadRepository _repository;
@@ -1232,11 +1385,13 @@ class DownloadsListNotifier extends StateNotifier<List<my.DownloadTask>> {
 
     state = [
       for (final item in state)
-        if (item.id == id) updated else item
+        if (item.id == id) updated else item,
     ];
 
-    if (updated.status != t.status || (progress >= 0 && (progress * 100).toInt() % 10 == 0) || savePath != null) {
-       _repository.updateDownloadTask(updated);
+    if (updated.status != t.status ||
+        (progress >= 0 && (progress * 100).toInt() % 10 == 0) ||
+        savePath != null) {
+      _repository.updateDownloadTask(updated);
     }
 
     if (updated.status == my.DownloadStatus.completed || savePath != null) {
@@ -1264,16 +1419,19 @@ class DownloadsListNotifier extends StateNotifier<List<my.DownloadTask>> {
     );
     state = [
       for (final item in state)
-        if (item.id == id) merged else item
+        if (item.id == id) merged else item,
     ];
   }
 
   Future<void> addDownload(my.DownloadTask task) async {
     await _repository.saveDownloadTask(task);
     await _loadDownloads();
-    _repository.enqueueDownload(task, 
-      onProgress: (p, s) => _updateLocalTask(task.id, p, s, my.DownloadStatus.downloading),
-      onStatusChange: (s, {savePath}) => _updateLocalTask(task.id, -1, "", s, savePath: savePath)
+    _repository.enqueueDownload(
+      task,
+      onProgress: (p, s) =>
+          _updateLocalTask(task.id, p, s, my.DownloadStatus.downloading),
+      onStatusChange: (s, {savePath}) =>
+          _updateLocalTask(task.id, -1, "", s, savePath: savePath),
     );
   }
 
@@ -1286,11 +1444,18 @@ class DownloadsListNotifier extends StateNotifier<List<my.DownloadTask>> {
       }
     }
     if (task == null) return;
-    _updateLocalTask(task!.id, task!.progress, task!.speed ?? '', my.DownloadStatus.downloading);
+    _updateLocalTask(
+      task!.id,
+      task!.progress,
+      task!.speed ?? '',
+      my.DownloadStatus.downloading,
+    );
     await _repository.resumeDownloadTask(
       task!,
-      onProgress: (p, s) => _updateLocalTask(task!.id, p, s, my.DownloadStatus.downloading),
-      onStatusChange: (s, {savePath}) => _updateLocalTask(task!.id, -1, "", s, savePath: savePath),
+      onProgress: (p, s) =>
+          _updateLocalTask(task!.id, p, s, my.DownloadStatus.downloading),
+      onStatusChange: (s, {savePath}) =>
+          _updateLocalTask(task!.id, -1, "", s, savePath: savePath),
     );
   }
 
@@ -1318,16 +1483,33 @@ class DownloadsListNotifier extends StateNotifier<List<my.DownloadTask>> {
     }
     if (task == null) return null;
 
-    _updateLocalTask(task!.id, 0.0, 'Convirtiendo...', my.DownloadStatus.downloading);
+    _updateLocalTask(
+      task!.id,
+      0.0,
+      'Convirtiendo...',
+      my.DownloadStatus.downloading,
+    );
 
     final path = await _repository.ensurePlayableFile(
       task!,
-      onProgress: (p, s) => _updateLocalTask(task!.id, p, s, my.DownloadStatus.downloading),
+      onProgress: (p, s) =>
+          _updateLocalTask(task!.id, p, s, my.DownloadStatus.downloading),
     );
     if (path != null) {
-      _updateLocalTask(task!.id, 1.0, '', my.DownloadStatus.completed, savePath: path);
+      _updateLocalTask(
+        task!.id,
+        1.0,
+        '',
+        my.DownloadStatus.completed,
+        savePath: path,
+      );
     } else {
-      _updateLocalTask(task!.id, task!.progress, task!.speed ?? '', my.DownloadStatus.error);
+      _updateLocalTask(
+        task!.id,
+        task!.progress,
+        task!.speed ?? '',
+        my.DownloadStatus.error,
+      );
     }
     return path;
   }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:movie_app/features/movies/presentation/providers/movie_provider.dart';
 import 'package:movie_app/features/movies/presentation/providers/category_provider.dart';
 import 'package:movie_app/features/movies/domain/entities/movie.dart';
@@ -18,14 +19,18 @@ import 'package:movie_app/features/auth/presentation/pages/profile_page.dart';
 import 'package:movie_app/features/movies/presentation/providers/history_provider.dart';
 import 'package:movie_app/features/movies/domain/entities/watch_history.dart';
 import 'package:movie_app/features/series/domain/entities/series.dart';
+import 'package:movie_app/features/series/domain/entities/episode.dart';
 import 'package:movie_app/features/series/presentation/pages/series_details_page.dart';
 import 'package:movie_app/features/movies/presentation/pages/history_view_all_page.dart';
 import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
 import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
+import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
 import 'package:movie_app/providers.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 import 'package:movie_app/shared/widgets/tv_focus_wrapper.dart';
 import 'package:movie_app/shared/utils/responsive_layout.dart';
+import 'package:movie_app/shared/widgets/vip_promo_widgets.dart';
+import 'package:movie_app/core/services/vip_promo_service.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -44,6 +49,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   String _searchQuery = "";
   final TextEditingController _searchController = TextEditingController();
   static bool _batteryDialogShown = false;
+  static bool _vipPromoShown = false;
 
   @override
   void initState() {
@@ -93,14 +99,27 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             _showBatteryOptimizationDialog(context);
           });
         }
+        if (!_vipPromoShown) {
+          _vipPromoShown = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _showInitialVipPromoIfNeeded(context);
+          });
+        }
 
         // Filtering logic
         var filteredMovies = allMovies;
         if (_selectedCategoryFilter != null) {
-          filteredMovies = allMovies.where((m) => m.categoryId == _selectedCategoryFilter).toList();
+          filteredMovies = allMovies
+              .where((m) => m.categoryId == _selectedCategoryFilter)
+              .toList();
         }
         if (_searchQuery.isNotEmpty) {
-          filteredMovies = filteredMovies.where((m) => m.name.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
+          filteredMovies = filteredMovies
+              .where(
+                (m) =>
+                    m.name.toLowerCase().contains(_searchQuery.toLowerCase()),
+              )
+              .toList();
         }
 
         final popularMovies = filteredMovies.where((m) => m.isPopular).toList();
@@ -109,10 +128,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           data: (categories) {
             return Stack(
               children: [
-                 RefreshIndicator(
+                RefreshIndicator(
                   onRefresh: () async {
                     await ref.read(moviesProvider.notifier).loadMovies();
-                    await ref.read(categoriesProvider.notifier).loadCategories();
+                    await ref
+                        .read(categoriesProvider.notifier)
+                        .loadCategories();
                   },
                   color: const Color(0xFF00A3FF),
                   backgroundColor: const Color(0xFF1A1A1A),
@@ -122,17 +143,28 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                       if (_isSearching)
                         SliverToBoxAdapter(
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 8,
+                            ),
                             child: TextField(
                               controller: _searchController,
                               autofocus: true,
                               style: const TextStyle(color: Colors.white),
                               decoration: InputDecoration(
                                 hintText: 'Buscar películas...',
-                                hintStyle: const TextStyle(color: Colors.white38),
-                                prefixIcon: const Icon(Icons.search, color: Color(0xFF00A3FF)),
+                                hintStyle: const TextStyle(
+                                  color: Colors.white38,
+                                ),
+                                prefixIcon: const Icon(
+                                  Icons.search,
+                                  color: Color(0xFF00A3FF),
+                                ),
                                 suffixIcon: IconButton(
-                                  icon: const Icon(Icons.close, color: Colors.white70),
+                                  icon: const Icon(
+                                    Icons.close,
+                                    color: Colors.white70,
+                                  ),
                                   onPressed: () {
                                     setState(() {
                                       _isSearching = false;
@@ -143,13 +175,19 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                 ),
                                 filled: true,
                                 fillColor: Colors.white.withOpacity(0.05),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
                               ),
-                              onChanged: (val) => setState(() => _searchQuery = val),
+                              onChanged: (val) =>
+                                  setState(() => _searchQuery = val),
                             ),
                           ),
                         ),
-                      if (popularMovies.isNotEmpty && !_isSearching && _selectedCategoryFilter == null)
+                      if (popularMovies.isNotEmpty &&
+                          !_isSearching &&
+                          _selectedCategoryFilter == null)
                         SliverToBoxAdapter(
                           child: _buildCarousel(popularMovies, context),
                         ),
@@ -157,54 +195,86 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                         padding: const EdgeInsets.only(top: 0, bottom: 100),
                         sliver: SliverList(
                           delegate: SliverChildListDelegate([
-                            if (filteredMovies.isNotEmpty && !_isSearching && _selectedCategoryFilter == null) ...[
-                              ref.watch(historyProvider).when(
-                                data: (history) {
-                                  if (history.isEmpty) return const SizedBox.shrink();
+                            if (filteredMovies.isNotEmpty &&
+                                !_isSearching &&
+                                _selectedCategoryFilter == null) ...[
+                              ref
+                                  .watch(historyProvider)
+                                  .when(
+                                    data: (history) {
+                                      if (history.isEmpty)
+                                        return const SizedBox.shrink();
 
-                                  final Map<String, WatchHistory> uniqueHistory = {};
-                                  for (var item in history) {
-                                    if (!uniqueHistory.containsKey(item.mediaId)) {
-                                      uniqueHistory[item.mediaId] = item;
-                                    }
-                                  }
-                                  
-                                  return _buildHistorySection(context, uniqueHistory.values.take(20).toList());
-                                },
-                                loading: () => const SizedBox.shrink(),
-                                error: (_, __) => const SizedBox.shrink(),
-                              ),
+                                      final Map<String, WatchHistory>
+                                      uniqueHistory = {};
+                                      for (var item in history) {
+                                        if (!uniqueHistory.containsKey(
+                                          item.mediaId,
+                                        )) {
+                                          uniqueHistory[item.mediaId] = item;
+                                        }
+                                      }
+
+                                      return _buildHistorySection(
+                                        context,
+                                        uniqueHistory.values.take(20).toList(),
+                                      );
+                                    },
+                                    loading: () => const SizedBox.shrink(),
+                                    error: (_, __) => const SizedBox.shrink(),
+                                  ),
                               _buildMovieSection(
-                                context, 
-                                'RECIÉN AGREGADAS', 
-                                filteredMovies.where((m) => true).toList()..sort((a,b) => b.createdAt.compareTo(a.createdAt)),
+                                context,
+                                'RECIÉN AGREGADAS',
+                                filteredMovies.where((m) => true).toList()
+                                  ..sort(
+                                    (a, b) =>
+                                        b.createdAt.compareTo(a.createdAt),
+                                  ),
                               ),
                             ],
                             if (_isSearching || _selectedCategoryFilter != null)
                               Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                ),
                                 child: GridView.builder(
                                   shrinkWrap: true,
                                   physics: const NeverScrollableScrollPhysics(),
-                                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: ResponsiveLayout.getGridCrossAxisCount(context),
-                                    crossAxisSpacing: 12,
-                                    mainAxisSpacing: 20,
-                                    mainAxisExtent: ResponsiveLayout.getPosterHeight(context) + 60,
-                                  ),
+                                  gridDelegate:
+                                      SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount:
+                                            ResponsiveLayout.getGridCrossAxisCount(
+                                              context,
+                                            ),
+                                        crossAxisSpacing: 12,
+                                        mainAxisSpacing: 20,
+                                        mainAxisExtent:
+                                            ResponsiveLayout.getPosterHeight(
+                                              context,
+                                            ) +
+                                            60,
+                                      ),
                                   itemCount: filteredMovies.length,
-                                  itemBuilder: (context, index) => _buildMovieCard(context, filteredMovies[index]),
+                                  itemBuilder: (context, index) =>
+                                      _buildMovieCard(
+                                        context,
+                                        filteredMovies[index],
+                                      ),
                                 ),
                               )
                             else
                               ...categories.map((cat) {
-                                final catMovies = filteredMovies.where((m) => m.categoryId == cat.id).toList();
-                                if (catMovies.isEmpty) return const SizedBox.shrink();
+                                final catMovies = filteredMovies
+                                    .where((m) => m.categoryId == cat.id)
+                                    .toList();
+                                if (catMovies.isEmpty)
+                                  return const SizedBox.shrink();
                                 return _buildMovieSection(
-                                  context, 
-                                  cat.name.toUpperCase(), 
+                                  context,
+                                  cat.name.toUpperCase(),
                                   catMovies,
-                                  category: cat
+                                  category: cat,
                                 );
                               }),
                           ]),
@@ -216,12 +286,23 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
               ],
             );
           },
-          loading: () => const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
-          error: (e, s) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white))),
+          loading: () => const Center(
+            child: CircularProgressIndicator(color: Color(0xFF00A3FF)),
+          ),
+          error: (e, s) => Center(
+            child: Text(
+              'Error: $e',
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
         );
       },
-      loading: () => const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
-      error: (e, s) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white))),
+      loading: () => const Center(
+        child: CircularProgressIndicator(color: Color(0xFF00A3FF)),
+      ),
+      error: (e, s) => Center(
+        child: Text('Error: $e', style: const TextStyle(color: Colors.white)),
+      ),
     );
   }
 
@@ -230,18 +311,50 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       backgroundColor: Colors.black.withOpacity(0.5),
       floating: true,
       elevation: 0,
+      flexibleSpace: SafeArea(
+        child: Stack(
+          children: [
+            Align(
+              alignment: Alignment.center,
+              child: Consumer(
+                builder: (context, ref, _) {
+                  final role = ref.watch(authStateProvider)?.role ?? 'user';
+                  return VipStarButton(role: role);
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
       title: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(4),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)]),
+              gradient: const LinearGradient(
+                colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)],
+              ),
               borderRadius: BorderRadius.circular(4),
             ),
-            child: const Text('K7', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+            child: const Text(
+              'K7',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+                color: Colors.white,
+              ),
+            ),
           ),
           const SizedBox(width: 8),
-          const Text('MOVIE', style: TextStyle(letterSpacing: 2, fontWeight: FontWeight.normal, fontSize: 16, color: Colors.white)),
+          const Text(
+            'MOVIE',
+            style: TextStyle(
+              letterSpacing: 2,
+              fontWeight: FontWeight.normal,
+              fontSize: 16,
+              color: Colors.white,
+            ),
+          ),
         ],
       ),
       actions: [
@@ -256,31 +369,87 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                   width: 80,
                   child: Align(
                     alignment: Alignment.centerRight,
-                    child: Text("Todas", overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.white)),
+                    child: Text(
+                      "Todas",
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: Colors.white),
+                    ),
                   ),
                 ),
-                ...categories.map((c) => SizedBox(
-                  width: 80,
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: Text(c.name, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
+                ...categories.map(
+                  (c) => SizedBox(
+                    width: 80,
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: Text(
+                        c.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
                   ),
-                )),
+                ),
               ];
             },
             items: [
-              const DropdownMenuItem(value: null, child: Text("Todas", style: TextStyle(color: Colors.white))),
-              ...categories.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name, style: const TextStyle(color: Colors.white)))),
+              const DropdownMenuItem(
+                value: null,
+                child: Text("Todas", style: TextStyle(color: Colors.white)),
+              ),
+              ...categories.map(
+                (c) => DropdownMenuItem(
+                  value: c.id,
+                  child: Text(
+                    c.name,
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ),
+              ),
             ],
             onChanged: (val) => setState(() => _selectedCategoryFilter = val),
           ),
         ),
         IconButton(
-          icon: Icon(_isSearching ? Icons.search_off : Icons.search, color: Colors.white70), 
-          onPressed: () => setState(() => _isSearching = !_isSearching)
+          icon: Icon(
+            _isSearching ? Icons.search_off : Icons.search,
+            color: Colors.white70,
+          ),
+          onPressed: () => setState(() => _isSearching = !_isSearching),
         ),
       ],
     );
+  }
+
+  Future<void> _showInitialVipPromoIfNeeded(BuildContext context) async {
+    final role = ref.read(authStateProvider)?.role.toLowerCase() ?? 'user';
+    if (role == 'uservip') return;
+
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('hide_vip_promo_modal') == true) return;
+    final config = await VipPromoService.loadConfig();
+    if (!context.mounted) return;
+
+    var neverAgain = false;
+    await showDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => VipPromoDialog(
+          config: config,
+          showNeverAgain: true,
+          neverAgainValue: neverAgain,
+          onNeverAgainChanged: (v) => setDialogState(() => neverAgain = v),
+          onLater: () {
+            if (neverAgain) {
+              prefs.setBool('hide_vip_promo_modal', true);
+            }
+            Navigator.pop(dialogContext);
+          },
+        ),
+      ),
+    );
+    if (neverAgain) {
+      await prefs.setBool('hide_vip_promo_modal', true);
+    }
   }
 
   Widget _buildCarousel(List<Movie> popularMovies, BuildContext context) {
@@ -290,7 +459,8 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           height: ResponsiveLayout.getCarouselHeight(context),
           child: PageView.builder(
             controller: _carouselController,
-            onPageChanged: (index) => setState(() => _currentCarouselPage = index),
+            onPageChanged: (index) =>
+                setState(() => _currentCarouselPage = index),
             itemCount: popularMovies.length,
             itemBuilder: (context, index) {
               final movie = popularMovies[index];
@@ -310,7 +480,9 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
               height: _currentCarouselPage == index ? 10 : 8,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: _currentCarouselPage == index ? const Color(0xFF00A3FF) : Colors.white24,
+                color: _currentCarouselPage == index
+                    ? const Color(0xFF00A3FF)
+                    : Colors.white24,
               ),
             ),
           ),
@@ -322,7 +494,10 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   Widget _buildCarouselItem(Movie movie) {
     return TvFocusWrapper(
       onTap: () {
-        Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)),
+        );
       },
       borderRadius: 25,
       child: Padding(
@@ -336,112 +511,162 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                Image.network((movie.backdropUrl != null && movie.backdropUrl!.isNotEmpty) ? movie.backdropUrl! : movie.imagePath, fit: BoxFit.cover),
+                Image.network(
+                  (movie.backdropUrl != null && movie.backdropUrl!.isNotEmpty)
+                      ? movie.backdropUrl!
+                      : movie.imagePath,
+                  fit: BoxFit.cover,
+                ),
                 Container(
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.transparent,
-                      Colors.black.withOpacity(0.4),
-                      Colors.black.withOpacity(0.9),
-                    ],
+                      colors: [
+                        Colors.transparent,
+                        Colors.black.withOpacity(0.4),
+                        Colors.black.withOpacity(0.9),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: Container(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'TRENDING NOW',
-                        style: TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold, letterSpacing: 1.2, fontSize: 11),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        movie.name.toUpperCase(),
-                        style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900, height: 1.1),
-                      ),
-                      const SizedBox(height: 10),
-                      if (movie.description != null)
-                        Text(
-                          movie.description!,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 13),
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  child: Container(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'TRENDING NOW',
+                          style: TextStyle(
+                            color: Color(0xFF00E5FF),
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.2,
+                            fontSize: 11,
+                          ),
                         ),
-                      const SizedBox(height: 20),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Container(
-                              height: 48,
-                              decoration: BoxDecoration(
-                                gradient: const LinearGradient(
-                                  colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
-                                ),
-                                borderRadius: BorderRadius.circular(12),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: const Color(0xFF00A3FF).withOpacity(0.35),
-                                    blurRadius: 15,
-                                    offset: const Offset(0, 8),
+                        const SizedBox(height: 8),
+                        Text(
+                          movie.name.toUpperCase(),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 26,
+                            fontWeight: FontWeight.w900,
+                            height: 1.1,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        if (movie.description != null)
+                          Text(
+                            movie.description!,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.7),
+                              fontSize: 13,
+                            ),
+                          ),
+                        const SizedBox(height: 20),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Container(
+                                height: 48,
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Color(0xFF00A3FF),
+                                      Color(0xFFD400FF),
+                                    ],
                                   ),
-                                ],
-                              ),
-                              child: ElevatedButton.icon(
-                                onPressed: () {
-                                  Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
-                                },
-                                icon: const Icon(Icons.play_arrow, size: 20),
-                                label: const Text('Play Now', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.1)),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.transparent,
-                                  shadowColor: Colors.transparent,
-                                  foregroundColor: Colors.white,
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  borderRadius: BorderRadius.circular(12),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: const Color(
+                                        0xFF00A3FF,
+                                      ).withOpacity(0.35),
+                                      blurRadius: 15,
+                                      offset: const Offset(0, 8),
+                                    ),
+                                  ],
+                                ),
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) =>
+                                            MovieDetailsPage(movie: movie),
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(Icons.play_arrow, size: 20),
+                                  label: const Text(
+                                    'Play Now',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 1.1,
+                                    ),
+                                  ),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.transparent,
+                                    shadowColor: Colors.transparent,
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 12),
-                          Container(
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(12),
+                            const SizedBox(width: 12),
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: IconButton(
+                                icon: const Icon(
+                                  Icons.add,
+                                  color: Colors.white,
+                                ),
+                                onPressed: () {},
+                              ),
                             ),
-                            child: IconButton(
-                              icon: const Icon(Icons.add, color: Colors.white),
-                              onPressed: () {},
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
-    ),
     );
   }
 
-  Widget _buildMovieSection(BuildContext context, String title, List<Movie> movies, {Category? category}) {
+  Widget _buildMovieSection(
+    BuildContext context,
+    String title,
+    List<Movie> movies, {
+    Category? category,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.only(left: 16, right: 16, top: 4, bottom: 8),
+          padding: const EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 4,
+            bottom: 8,
+          ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -462,7 +687,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                   const SizedBox(width: 10),
                   Text(
                     title,
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1.5, color: Colors.white),
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.5,
+                      color: Colors.white,
+                    ),
                   ),
                 ],
               ),
@@ -471,10 +701,20 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                   onPressed: () {
                     Navigator.push(
                       context,
-                      MaterialPageRoute(builder: (_) => CategoryPage(category: category, movies: movies))
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            CategoryPage(category: category, movies: movies),
+                      ),
                     );
                   },
-                  child: const Text('VIEW ALL', style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold)),
+                  child: const Text(
+                    'VIEW ALL',
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
             ],
           ),
@@ -504,8 +744,8 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       child: TvFocusWrapper(
         onTap: () {
           Navigator.push(
-            context, 
-            MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie))
+            context,
+            MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)),
           );
         },
         borderRadius: 16,
@@ -514,35 +754,51 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           children: [
             Stack(
               children: [
-            EnergyFlowBorder(
-              borderRadius: 16,
-              borderWidth: 1.2,
-              backgroundColor: Colors.white10,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(15),
-                child: SizedBox(
-                  width: ResponsiveLayout.getPosterWidth(context),
-                  height: ResponsiveLayout.getPosterHeight(context),
-                  child: Image.network(
-                    (ResponsiveLayout.isLandscape(context) && movie.backdropUrl != null && movie.backdropUrl!.isNotEmpty)
-                        ? movie.backdropUrl!
-                        : movie.imagePath, 
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white24, size: 50),
+                EnergyFlowBorder(
+                  borderRadius: 16,
+                  borderWidth: 1.2,
+                  backgroundColor: Colors.white10,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(15),
+                    child: SizedBox(
+                      width: ResponsiveLayout.getPosterWidth(context),
+                      height: ResponsiveLayout.getPosterHeight(context),
+                      child: Image.network(
+                        (ResponsiveLayout.isLandscape(context) &&
+                                movie.backdropUrl != null &&
+                                movie.backdropUrl!.isNotEmpty)
+                            ? movie.backdropUrl!
+                            : movie.imagePath,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const Icon(
+                          Icons.movie,
+                          color: Colors.white24,
+                          size: 50,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
                 Positioned(
                   top: 8,
                   left: 8,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFF00A3FF).withOpacity(0.8),
                       borderRadius: BorderRadius.circular(4),
                     ),
-                    child: const Text('MOVIE', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                    child: const Text(
+                      'MOVIE',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 8,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -551,9 +807,9 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             MarqueeText(
               text: movie.name,
               style: TextStyle(
-                fontSize: ResponsiveLayout.isLandscape(context) ? 14 : 18, 
-                fontWeight: FontWeight.bold, 
-                color: Colors.white
+                fontSize: ResponsiveLayout.isLandscape(context) ? 14 : 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
               ),
               width: cardWidth,
             ),
@@ -563,12 +819,20 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     );
   }
 
-  Widget _buildHistorySection(BuildContext context, List<WatchHistory> history) {
+  Widget _buildHistorySection(
+    BuildContext context,
+    List<WatchHistory> history,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.only(left: 16, right: 16, top: 4, bottom: 8),
+          padding: const EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 4,
+            bottom: 8,
+          ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -589,7 +853,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                   const SizedBox(width: 10),
                   const Text(
                     'CONTINUAR VIENDO',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1.5, color: Colors.white),
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.5,
+                      color: Colors.white,
+                    ),
                   ),
                 ],
               ),
@@ -597,10 +866,19 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                 onPressed: () {
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => const HistoryViewAllPage())
+                    MaterialPageRoute(
+                      builder: (_) => const HistoryViewAllPage(),
+                    ),
                   );
                 },
-                child: const Text('VIEW ALL', style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'VIEW ALL',
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
             ],
           ),
@@ -623,12 +901,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
 
   Widget _buildHistoryCard(BuildContext context, WatchHistory item) {
     final progress = item.lastPosition / item.totalDuration;
-    
+
     return Container(
       width: 140,
       margin: const EdgeInsets.only(right: 8),
       child: TvFocusWrapper(
-        onTap: () => _launchMedia(context, item, resume: true),
+        onTap: () => _showHistoryOptionsModal(context, item),
         borderRadius: 16,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -647,9 +925,13 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                           width: 140,
                           height: 200,
                           child: Image.network(
-                            item.imagePath, 
+                            item.imagePath,
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const Icon(Icons.movie, color: Colors.white24, size: 50),
+                            errorBuilder: (_, __, ___) => const Icon(
+                              Icons.movie,
+                              color: Colors.white24,
+                              size: 50,
+                            ),
                           ),
                         ),
                         // Progress bar at the bottom of the card image
@@ -669,7 +951,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                   child: Container(
                                     height: 4,
                                     decoration: const BoxDecoration(
-                                      gradient: LinearGradient(colors: [Color(0xFF00A3FF), Color(0xFFD400FF)]),
+                                      gradient: LinearGradient(
+                                        colors: [
+                                          Color(0xFF00A3FF),
+                                          Color(0xFFD400FF),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -686,7 +973,11 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                 color: Colors.black.withOpacity(0.4),
                                 shape: BoxShape.circle,
                               ),
-                              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 30),
+                              child: const Icon(
+                                Icons.play_arrow_rounded,
+                                color: Colors.white,
+                                size: 30,
+                              ),
                             ),
                           ),
                         ),
@@ -699,7 +990,11 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             const SizedBox(height: 8),
             Text(
               item.title,
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -720,7 +1015,9 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     return Container(
       decoration: BoxDecoration(
         color: Colors.black.withOpacity(0.9),
-        border: const Border(top: BorderSide(color: Colors.white10, width: 0.5)),
+        border: const Border(
+          top: BorderSide(color: Colors.white10, width: 0.5),
+        ),
       ),
       child: BottomNavigationBar(
         currentIndex: _currentTabIndex,
@@ -739,63 +1036,149 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         selectedFontSize: 10,
         unselectedFontSize: 10,
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.movie_creation_outlined), label: 'PELÍCULAS'),
-          BottomNavigationBarItem(icon: Icon(Icons.live_tv_outlined), label: 'SERIES'),
-          BottomNavigationBarItem(icon: Icon(Icons.tv_outlined), label: 'TV VIVO'),
-          BottomNavigationBarItem(icon: Icon(Icons.download_rounded), label: 'DESCARGAS'),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'PERFIL'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.movie_creation_outlined),
+            label: 'PELÍCULAS',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.live_tv_outlined),
+            label: 'SERIES',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.tv_outlined),
+            label: 'TV VIVO',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.download_rounded),
+            label: 'DESCARGAS',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline),
+            label: 'PERFIL',
+          ),
         ],
       ),
     );
   }
 
   void _showHistoryOptionsModal(BuildContext context, WatchHistory item) {
+    final canResume = item.lastPosition > 10000;
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF141414),
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (BuildContext ctx) {
         return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                margin: const EdgeInsets.only(top: 10, bottom: 20),
-                height: 4,
-                width: 40,
-                decoration: BoxDecoration(
-                  color: Colors.white24,
-                  borderRadius: BorderRadius.circular(2),
-                ),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.8,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    margin: const EdgeInsets.only(top: 10, bottom: 20),
+                    height: 4,
+                    width: 40,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.play_circle_fill,
+                      color: Color(0xFF00A3FF),
+                    ),
+                    title: Text(
+                      canResume ? 'Reanudar en la app' : 'Ver en la app',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _launchMedia(context, item, resume: canResume);
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.cast, color: Color(0xFF00A3FF)),
+                    title: const Text(
+                      'Transmitir por Cast local',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    subtitle: Text(
+                      canResume
+                          ? 'Retoma donde te quedaste en tu TV'
+                          : 'Enviar a TV con Cast interno',
+                      style: const TextStyle(color: Colors.white54),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _launchHistoryCast(
+                        context,
+                        item,
+                        mode: 'internal',
+                        resume: canResume,
+                      );
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.launch_rounded,
+                      color: Color(0xFF00FF87),
+                    ),
+                    title: const Text(
+                      'Transmitir con Web Video Caster',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    subtitle: Text(
+                      canResume
+                          ? 'Abre Web Video Caster y continua'
+                          : 'Abrir en Web Video Caster',
+                      style: const TextStyle(color: Colors.white54),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _launchHistoryCast(
+                        context,
+                        item,
+                        mode: 'wvc',
+                        resume: canResume,
+                      );
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.replay, color: Colors.white70),
+                    title: const Text(
+                      'Ver desde el principio',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _launchMedia(context, item, resume: false);
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.info_outline,
+                      color: Colors.white70,
+                    ),
+                    title: const Text(
+                      'Selecionar Enlace',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _goToDetails(context, item);
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                ],
               ),
-              ListTile(
-                leading: const Icon(Icons.play_circle_fill, color: Color(0xFF00A3FF)),
-                title: const Text('Reanudar reproducción', style: TextStyle(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _launchMedia(context, item, resume: true);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.replay, color: Colors.white70),
-                title: const Text('Ver desde el principio', style: TextStyle(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _launchMedia(context, item, resume: false);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.info_outline, color: Colors.white70),
-                title: const Text('Selecionar Enlace', style: TextStyle(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _goToDetails(context, item);
-                },
-              ),
-              const SizedBox(height: 10),
-            ],
+            ),
           ),
         );
       },
@@ -804,7 +1187,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
 
   void _showBatteryOptimizationDialog(BuildContext context) {
     if (!Platform.isAndroid) return;
-    
+
     Future.delayed(const Duration(seconds: 2), () {
       if (!context.mounted) return;
       Permission.ignoreBatteryOptimizations.status.then((status) {
@@ -816,7 +1199,10 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             backgroundColor: const Color(0xFF121214),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(24),
-              side: BorderSide(color: Colors.white.withOpacity(0.1), width: 0.5),
+              side: BorderSide(
+                color: Colors.white.withOpacity(0.1),
+                width: 0.5,
+              ),
             ),
             title: Column(
               children: [
@@ -826,13 +1212,22 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                     color: Colors.amber.withOpacity(0.1),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.battery_saver_rounded, color: Colors.amber, size: 32),
+                  child: const Icon(
+                    Icons.battery_saver_rounded,
+                    color: Colors.amber,
+                    size: 32,
+                  ),
                 ),
                 const SizedBox(height: 20),
                 const Text(
                   'Optimización de Batería',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
                 ),
               ],
             ),
@@ -842,7 +1237,11 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                 Text(
                   'Para garantizar que las descargas y la transmisión a tu TV no se interrumpan, K7-MOVIE necesita ejecutarse sin restricciones de energía.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 14, height: 1.5),
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.7),
+                    fontSize: 14,
+                    height: 1.5,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Container(
@@ -853,12 +1252,19 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.info_outline, color: Color(0xFF00A3FF), size: 18),
+                      const Icon(
+                        Icons.info_outline,
+                        color: Color(0xFF00A3FF),
+                        size: 18,
+                      ),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
                           'Selecciona "Sin restricciones" en el siguiente menú.',
-                          style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.5),
+                            fontSize: 12,
+                          ),
                         ),
                       ),
                     ],
@@ -870,7 +1276,14 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: Text('MÁS TARDE', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 13, fontWeight: FontWeight.bold)),
+                child: Text(
+                  'MÁS TARDE',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.4),
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
               ElevatedButton(
                 onPressed: () {
@@ -880,12 +1293,20 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF00A3FF),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 12,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                   elevation: 8,
                   shadowColor: const Color(0xFF00A3FF).withOpacity(0.5),
                 ),
-                child: const Text('CONFIGURAR', style: TextStyle(fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'CONFIGURAR',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
               ),
             ],
           ),
@@ -910,7 +1331,10 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           isPopular: false,
         ),
       );
-      Navigator.push(context, MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)));
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)),
+      );
     } else {
       final series = (ref.read(seriesListProvider).value ?? []).firstWhere(
         (s) => s.id == item.mediaId,
@@ -926,16 +1350,27 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           isPopular: false,
         ),
       );
-      Navigator.push(context, MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)));
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
+      );
     }
   }
 
   /// Método factorizado para iniciar el contenido.
-  Future<void> _launchMedia(BuildContext context, WatchHistory item, {required bool resume}) async {
-    final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
+  Future<void> _launchMedia(
+    BuildContext context,
+    WatchHistory item, {
+    required bool resume,
+  }) async {
+    final startPos = resume
+        ? Duration(milliseconds: item.lastPosition)
+        : Duration.zero;
 
     if (item.mediaType == 'movie') {
-      final allOptions = await ref.read(movieRepositoryProvider).getVideoOptions(item.mediaId);
+      final allOptions = await ref
+          .read(movieRepositoryProvider)
+          .getVideoOptions(item.mediaId);
       if (allOptions.isEmpty) {
         if (!context.mounted) return;
         _goToDetails(context, item);
@@ -960,7 +1395,10 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
 
       // Preferir el enlace que el usuario eligió la última vez
       final option = item.videoOptionId != null
-          ? allOptions.firstWhere((o) => o.id == item.videoOptionId, orElse: () => allOptions.first)
+          ? allOptions.firstWhere(
+              (o) => o.id == item.videoOptionId,
+              orElse: () => allOptions.first,
+            )
           : allOptions.first;
 
       Navigator.push(
@@ -976,27 +1414,29 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     } else {
       // Series: ir a detalles con parámetros de auto-play
       if (!context.mounted) return;
-      
+
       // Intentamos obtener los detalles completos de la serie desde el repositorio si no está en la lista cacheada.
       Series? series;
       final cachedList = ref.read(seriesListProvider).value ?? [];
       try {
         series = cachedList.firstWhere((s) => s.id == item.mediaId);
       } catch (_) {
-        series = await ref.read(seriesRepositoryProvider).getSeriesById(item.mediaId);
+        series = await ref
+            .read(seriesRepositoryProvider)
+            .getSeriesById(item.mediaId);
       }
-      
+
       series ??= Series(
-          id: item.mediaId,
-          name: item.title,
-          imagePath: item.imagePath,
-          categoryId: '',
-          description: '',
-          rating: 0,
-          year: '',
-          createdAt: DateTime.now(),
-          isPopular: false,
-        );
+        id: item.mediaId,
+        name: item.title,
+        imagePath: item.imagePath,
+        categoryId: '',
+        description: '',
+        rating: 0,
+        year: '',
+        createdAt: DateTime.now(),
+        isPopular: false,
+      );
 
       Navigator.push(
         context,
@@ -1011,4 +1451,182 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       );
     }
   }
+
+  Future<void> _launchHistoryCast(
+    BuildContext context,
+    WatchHistory item, {
+    required String mode,
+    required bool resume,
+  }) async {
+    final castData = await _resolveHistoryCastData(item, resume: resume);
+    if (!context.mounted || castData == null) {
+      if (context.mounted) {
+        _goToDetails(context, item);
+      }
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF141414),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => CastButton(
+        videoUrl: castData.videoUrl,
+        title: castData.title,
+        imageUrl: castData.imageUrl,
+        headers: castData.headers,
+        algorithm: castData.algorithm,
+        currentPosition: castData.startPosition,
+        duration: castData.duration,
+        mediaId: castData.mediaId,
+        episodeId: castData.episodeId,
+        mediaType: castData.mediaType,
+        subtitleLabel: castData.subtitleLabel,
+        videoOptionId: castData.videoOptionId,
+        showImmediately: true,
+        preferredLaunchMode: mode,
+      ),
+    );
+  }
+
+  Future<_HistoryCastData?> _resolveHistoryCastData(
+    WatchHistory item, {
+    required bool resume,
+  }) async {
+    final startPos = resume
+        ? Duration(milliseconds: item.lastPosition)
+        : Duration.zero;
+    final totalDuration = item.totalDuration > 0
+        ? Duration(milliseconds: item.totalDuration)
+        : null;
+
+    if (item.mediaType == 'movie') {
+      final allOptions = await ref
+          .read(movieRepositoryProvider)
+          .getVideoOptions(item.mediaId);
+      if (allOptions.isEmpty) return null;
+
+      final option = item.videoOptionId != null
+          ? allOptions.firstWhere(
+              (o) => o.id == item.videoOptionId,
+              orElse: () => allOptions.first,
+            )
+          : allOptions.first;
+
+      return _HistoryCastData(
+        videoUrl: option.videoUrl,
+        headers: {
+          'Referer': option.videoUrl,
+          'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        },
+        algorithm: option.extractionAlgorithm,
+        title: item.title,
+        imageUrl: item.imagePath,
+        mediaId: item.mediaId,
+        mediaType: item.mediaType,
+        videoOptionId: option.id,
+        startPosition: startPos,
+        duration: totalDuration,
+      );
+    }
+
+    final cachedList = ref.read(seriesListProvider).value ?? [];
+    Series? series;
+    try {
+      series = cachedList.firstWhere((s) => s.id == item.mediaId);
+    } catch (_) {
+      series = await ref
+          .read(seriesRepositoryProvider)
+          .getSeriesById(item.mediaId);
+    }
+    if (series == null || item.episodeId == null) return null;
+
+    final seasons = await ref
+        .read(seriesRepositoryProvider)
+        .getSeasonsForSeries(series.id);
+
+    Episode? targetEpisode;
+    for (final season in seasons) {
+      final episodes = await ref
+          .read(seriesRepositoryProvider)
+          .getEpisodesForSeason(season.id);
+      try {
+        targetEpisode = episodes.firstWhere((e) => e.id == item.episodeId);
+        break;
+      } catch (_) {}
+    }
+
+    if (targetEpisode == null) return null;
+
+    final eUrl = item.videoOptionId != null
+        ? targetEpisode.urls.firstWhere(
+            (u) => u.optionId == item.videoOptionId,
+            orElse: () => targetEpisode!.urls.isNotEmpty
+                ? targetEpisode.urls.first
+                : EpisodeUrl(
+                    url: targetEpisode.url,
+                    optionId: item.videoOptionId,
+                    extractionAlgorithm: targetEpisode.extractionAlgorithm,
+                  ),
+          )
+        : (targetEpisode.urls.isNotEmpty
+              ? targetEpisode.urls.first
+              : EpisodeUrl(
+                  url: targetEpisode.url,
+                  extractionAlgorithm: targetEpisode.extractionAlgorithm,
+                ));
+
+    return _HistoryCastData(
+      videoUrl: eUrl.url,
+      headers: {
+        'Referer': eUrl.url,
+        'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+      },
+      algorithm: eUrl.extractionAlgorithm,
+      title: item.title,
+      imageUrl: item.imagePath,
+      mediaId: item.mediaId,
+      episodeId: item.episodeId,
+      mediaType: item.mediaType,
+      subtitleLabel: item.subtitle,
+      videoOptionId: eUrl.optionId ?? item.videoOptionId,
+      startPosition: startPos,
+      duration: totalDuration,
+    );
+  }
+}
+
+class _HistoryCastData {
+  final String videoUrl;
+  final Map<String, String>? headers;
+  final int algorithm;
+  final String title;
+  final String? imageUrl;
+  final String mediaId;
+  final String? episodeId;
+  final String mediaType;
+  final String? subtitleLabel;
+  final String? videoOptionId;
+  final Duration startPosition;
+  final Duration? duration;
+
+  const _HistoryCastData({
+    required this.videoUrl,
+    required this.headers,
+    required this.algorithm,
+    required this.title,
+    required this.imageUrl,
+    required this.mediaId,
+    this.episodeId,
+    required this.mediaType,
+    this.subtitleLabel,
+    this.videoOptionId,
+    required this.startPosition,
+    required this.duration,
+  });
 }

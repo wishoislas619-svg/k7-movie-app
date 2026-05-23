@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/services/supabase_service.dart';
+import '../../../../core/services/vip_promo_service.dart';
 import '../../../../features/movies/presentation/pages/admin_m3u_importer_page.dart';
 
 class AdminSettingsPage extends ConsumerStatefulWidget {
@@ -13,6 +14,10 @@ class AdminSettingsPage extends ConsumerStatefulWidget {
 class _AdminSettingsPageState extends ConsumerState<AdminSettingsPage> {
   final _versionController = TextEditingController();
   final _urlController = TextEditingController();
+  final _vipPhoneController = TextEditingController();
+  final _vipMessageController = TextEditingController();
+  final _vipTitleController = TextEditingController();
+  final _vipBodyController = TextEditingController();
   bool _isLoading = false;
 
   @override
@@ -28,9 +33,14 @@ class _AdminSettingsPageState extends ConsumerState<AdminSettingsPage> {
           .from('app_config')
           .select()
           .single();
-      
+
       _versionController.text = response['latest_version'] ?? '1.0.0';
       _urlController.text = response['update_url'] ?? '';
+      final vip = await VipPromoService.loadConfig();
+      _vipPhoneController.text = vip.whatsappNumber;
+      _vipMessageController.text = vip.whatsappMessage;
+      _vipTitleController.text = vip.modalTitle;
+      _vipBodyController.text = vip.modalBody;
     } catch (e) {
       print('Error loading config: $e');
       // If table doesn't exist or no row found, it will fail.
@@ -45,21 +55,30 @@ class _AdminSettingsPageState extends ConsumerState<AdminSettingsPage> {
     try {
       // Upsert the single config row (we'll use a constant ID like 'global')
       await SupabaseService.client.from('app_config').upsert({
-        'id': '00000000-0000-0000-0000-000000000000', // Unique ID for global config
+        'id':
+            '00000000-0000-0000-0000-000000000000', // Unique ID for global config
         'latest_version': _versionController.text,
         'update_url': _urlController.text,
         'updated_at': DateTime.now().toIso8601String(),
       });
-      
+      await VipPromoService.saveConfig(
+        VipPromoConfig(
+          whatsappNumber: _vipPhoneController.text,
+          whatsappMessage: _vipMessageController.text,
+          modalTitle: _vipTitleController.text,
+          modalBody: _vipBodyController.text,
+        ),
+      );
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Configuración guardada correctamente')),
         );
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al guardar: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error al guardar: $e')));
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -70,94 +89,205 @@ class _AdminSettingsPageState extends ConsumerState<AdminSettingsPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('AJUSTES DE LA APP', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text(
+          'AJUSTES DE LA APP',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
         backgroundColor: Colors.transparent,
         elevation: 0,
       ),
-      body: _isLoading 
-        ? const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF)))
-        : SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                const Text(
-                  'Actualización del Sistema',
-                  style: TextStyle(color: Color(0xFF00A3FF), fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  'Configura la versión más reciente del APK y el link de descarga (Mediafire, etc.).',
-                  style: TextStyle(color: Colors.white54, fontSize: 14),
-                ),
-                const SizedBox(height: 25),
-                _buildTextField(_versionController, 'Versión de la App (ej: 1.0.5)', Icons.vignette),
-                const SizedBox(height: 20),
-                _buildTextField(_urlController, 'Link del APK (Mediafire Direct URL)', Icons.link),
-                const SizedBox(height: 40),
-                SizedBox(
-                  width: double.infinity,
-                  height: 55,
-                  child: ElevatedButton(
-                    onPressed: _saveConfig,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00A3FF),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      body: _isLoading
+          ? const Center(
+              child: CircularProgressIndicator(color: Color(0xFF00A3FF)),
+            )
+          : SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Actualización del Sistema',
+                      style: TextStyle(
+                        color: Color(0xFF00A3FF),
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                    child: const Text('GUARDAR CAMBIOS', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                  ),
-                ),
-                const SizedBox(height: 40),
-                const Text(
-                  'Herramientas Avanzadas',
-                  style: TextStyle(color: Color(0xFFD400FF), fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 10),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Container(
-                     padding: const EdgeInsets.all(10),
-                     decoration: BoxDecoration(color: const Color(0xFFD400FF).withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-                     child: const Icon(Icons.playlist_add_circle_rounded, color: Color(0xFFD400FF)),
-                  ),
-                  title: const Text('Importador Masivo M3U', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  subtitle: const Text('Importa catálogos enteros desde links o archivos M3U de manera veloz.', style: TextStyle(color: Colors.white54, fontSize: 13)),
-                  trailing: const Icon(Icons.chevron_right, color: Colors.white38),
-                  onTap: () {
-                     Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminM3uImporterPage()));
-                  },
-                ),
-                const SizedBox(height: 40),
-                SizedBox(
-                  width: double.infinity,
-                  height: 55,
-                  child: ElevatedButton(
-                    onPressed: _saveConfig,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00A3FF),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Configura la versión más reciente del APK y el link de descarga (Mediafire, etc.).',
+                      style: TextStyle(color: Colors.white54, fontSize: 14),
                     ),
-                    child: const Text('GUARDAR CAMBIOS DE SISTEMA', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                  ),
+                    const SizedBox(height: 25),
+                    _buildTextField(
+                      _versionController,
+                      'Versión de la App (ej: 1.0.5)',
+                      Icons.vignette,
+                    ),
+                    const SizedBox(height: 20),
+                    _buildTextField(
+                      _urlController,
+                      'Link del APK (Mediafire Direct URL)',
+                      Icons.link,
+                    ),
+                    const SizedBox(height: 32),
+                    const Text(
+                      'Plan sin anuncios',
+                      style: TextStyle(
+                        color: Color(0xFF00FF87),
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Edita el número y mensaje usados por la estrella VIP, el modal inicial y el enlace a WhatsApp.',
+                      style: TextStyle(color: Colors.white54, fontSize: 14),
+                    ),
+                    const SizedBox(height: 20),
+                    _buildTextField(
+                      _vipPhoneController,
+                      'WhatsApp con lada (ej: 5215512345678)',
+                      Icons.contact_phone,
+                    ),
+                    const SizedBox(height: 16),
+                    _buildTextField(
+                      _vipMessageController,
+                      'Mensaje para WhatsApp',
+                      Icons.chat,
+                    ),
+                    const SizedBox(height: 16),
+                    _buildTextField(
+                      _vipTitleController,
+                      'Título del modal',
+                      Icons.star_rounded,
+                    ),
+                    const SizedBox(height: 16),
+                    _buildTextField(
+                      _vipBodyController,
+                      'Texto del modal',
+                      Icons.campaign_rounded,
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 40),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 55,
+                      child: ElevatedButton(
+                        onPressed: _saveConfig,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF00A3FF),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'GUARDAR CAMBIOS',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 40),
+                    const Text(
+                      'Herramientas Avanzadas',
+                      style: TextStyle(
+                        color: Color(0xFFD400FF),
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFD400FF).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.playlist_add_circle_rounded,
+                          color: Color(0xFFD400FF),
+                        ),
+                      ),
+                      title: const Text(
+                        'Importador Masivo M3U',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      subtitle: const Text(
+                        'Importa catálogos enteros desde links o archivos M3U de manera veloz.',
+                        style: TextStyle(color: Colors.white54, fontSize: 13),
+                      ),
+                      trailing: const Icon(
+                        Icons.chevron_right,
+                        color: Colors.white38,
+                      ),
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const AdminM3uImporterPage(),
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 40),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 55,
+                      child: ElevatedButton(
+                        onPressed: _saveConfig,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF00A3FF),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'GUARDAR CAMBIOS DE SISTEMA',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
-          ),
-        ),
     );
   }
 
-  Widget _buildTextField(TextEditingController controller, String label, IconData icon) {
+  Widget _buildTextField(
+    TextEditingController controller,
+    String label,
+    IconData icon, {
+    int maxLines = 1,
+  }) {
     return TextField(
       controller: controller,
+      maxLines: maxLines,
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
         labelText: label,
         labelStyle: const TextStyle(color: Colors.white38),
         prefixIcon: Icon(icon, color: const Color(0xFF00A3FF)),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.white10)),
-        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF00A3FF))),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Colors.white10),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF00A3FF)),
+        ),
         filled: true,
         fillColor: Colors.white.withOpacity(0.05),
       ),

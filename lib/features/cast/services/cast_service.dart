@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'cast_device_info.dart';
 import 'media_proxy_service.dart';
 import 'a3_proxy_service.dart';
+import 'roku_ecp_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Helper para emitir logs de cast visibles en logcat con prefijo [CAST]
@@ -27,10 +28,14 @@ class CastService extends ChangeNotifier {
   dc.CastService? _rawService;
   dc.CastSession? _session;
   StreamSubscription? _discoverySubscription;
+  StreamSubscription? _rokuDiscoverySubscription;
   StreamSubscription? _stateSubscription;
   StreamSubscription? _positionSubscription;
   StreamSubscription? _durationSubscription;
   Timer? _dlnaPollTimer;
+  Timer? _rokuPollTimer;
+  final RokuEcpService _rokuEcp = RokuEcpService();
+  String? _rokuEcpBaseUrl;
   String? _dlnaControlUrl;
   String? _dlnaEventUrl;
   String? _dlnaRenderingControlUrl;
@@ -48,6 +53,11 @@ class CastService extends ChangeNotifier {
   String? _currentTitle;
   String? _currentImageUrl;
   String? _currentVideoUrl;
+  String? _currentMediaId;
+  String? _currentEpisodeId;
+  String? _currentMediaType;
+  String? _currentSubtitleLabel;
+  String? _currentVideoOptionId;
 
   // ── Public Getters ─────────────────────────────────────────────────────────
   List<CastDeviceInfo> get devices => _devices;
@@ -62,6 +72,11 @@ class CastService extends ChangeNotifier {
   String? get currentTitle => _currentTitle;
   String? get currentImageUrl => _currentImageUrl;
   String? get currentVideoUrl => _currentVideoUrl;
+  String? get currentMediaId => _currentMediaId;
+  String? get currentEpisodeId => _currentEpisodeId;
+  String? get currentMediaType => _currentMediaType;
+  String? get currentSubtitleLabel => _currentSubtitleLabel;
+  String? get currentVideoOptionId => _currentVideoOptionId;
 
   // ── Discovery ──────────────────────────────────────────────────────────────
 
@@ -96,20 +111,27 @@ class CastService extends ChangeNotifier {
       _discoverySubscription?.cancel();
       _discoverySubscription = _rawService!.startDiscovery().listen(
         (rawDevices) {
-          _devices = rawDevices
-              .map((d) => CastDeviceInfo.fromCastDevice(d))
-              .toList();
-          _log('Dispositivos encontrados: ${_devices.length}');
-          for (final d in _devices) {
-            _log('  • ${d.name} [${d.subtitle}] proto=${d.protocol}');
-          }
-          notifyListeners();
+          _mergeDiscoveredDevices(
+            rawDevices.map((d) => CastDeviceInfo.fromCastDevice(d)),
+          );
         },
         onError: (e) {
           _logErr('Error durante escaneo: $e');
           _errorMessage = 'Error al escanear: $e';
           _state = CastConnectionState.idle;
           notifyListeners();
+        },
+      );
+
+      _rokuDiscoverySubscription?.cancel();
+      _rokuDiscoverySubscription = _rokuEcp.discover().listen(
+        (rawDevices) {
+          _mergeDiscoveredDevices(
+            rawDevices.map((d) => CastDeviceInfo.fromCastDevice(d)),
+          );
+        },
+        onError: (e) {
+          _log('Roku ECP scan ignorado: $e');
         },
       );
     } catch (e) {
@@ -123,10 +145,60 @@ class CastService extends ChangeNotifier {
   void stopScan() {
     _discoverySubscription?.cancel();
     _discoverySubscription = null;
+    _rokuDiscoverySubscription?.cancel();
+    _rokuDiscoverySubscription = null;
+    _rokuEcp.stop();
     if (_state == CastConnectionState.scanning) {
       _state = CastConnectionState.idle;
       notifyListeners();
     }
+  }
+
+  void setHistoryContext({
+    String? mediaId,
+    String? episodeId,
+    String? mediaType,
+    String? subtitleLabel,
+    String? imagePath,
+    String? videoOptionId,
+  }) {
+    _currentMediaId = mediaId;
+    _currentEpisodeId = episodeId;
+    _currentMediaType = mediaType;
+    _currentSubtitleLabel = subtitleLabel;
+    _currentImageUrl = imagePath ?? _currentImageUrl;
+    _currentVideoOptionId = videoOptionId;
+  }
+
+  void _mergeDiscoveredDevices(Iterable<CastDeviceInfo> incoming) {
+    final byEndpoint = <String, CastDeviceInfo>{
+      for (final device in _devices) device.address: device,
+    };
+
+    for (final device in incoming) {
+      final existing = byEndpoint[device.address];
+      final isExistingRoku = existing?.deviceType == CastDeviceType.roku;
+      final isIncomingRoku = device.deviceType == CastDeviceType.roku;
+
+      if (existing == null || isIncomingRoku || !isExistingRoku) {
+        byEndpoint[device.address] = device;
+      }
+    }
+
+    _devices = byEndpoint.values.toList()
+      ..sort((a, b) {
+        final typeCompare = a.deviceType.index.compareTo(b.deviceType.index);
+        if (a.deviceType == CastDeviceType.roku) return -1;
+        if (b.deviceType == CastDeviceType.roku) return 1;
+        if (typeCompare != 0) return typeCompare;
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
+
+    _log('Dispositivos encontrados: ${_devices.length}');
+    for (final d in _devices) {
+      _log('  • ${d.name} [${d.subtitle}] proto=${d.protocol}');
+    }
+    notifyListeners();
   }
 
   // ── Connection ─────────────────────────────────────────────────────────────
@@ -139,6 +211,29 @@ class CastService extends ChangeNotifier {
     _log('Conectando a: ${device.name} [proto=${device.protocol}]');
 
     try {
+      if (device.deviceType == CastDeviceType.roku) {
+        _rokuEcpBaseUrl =
+            device.rawDevice.metadata['ecpBaseUrl'] ??
+            'http://${device.address}:${RokuEcpService.ecpPort}';
+        final info = await _rokuEcp.getDeviceInfo(_rokuEcpBaseUrl!);
+        if (info.isEmpty) {
+          throw Exception(
+            'No respondió Roku ECP. Revisa que "Control por apps móviles" esté habilitado en el Roku.',
+          );
+        }
+
+        _session = null;
+        _connectedDevice = device;
+        _state = CastConnectionState.connected;
+        _isPlaying = false;
+        _position = Duration.zero;
+        _duration = Duration.zero;
+        _startRokuPolling();
+        _log('✅ Conectado a Roku por ECP: $_rokuEcpBaseUrl');
+        notifyListeners();
+        return;
+      }
+
       _rawService ??= _buildCastService();
       _log('Llamando _rawService.connect()...');
       _session = await _rawService!.connect(device.rawDevice);
@@ -200,6 +295,13 @@ class CastService extends ChangeNotifier {
   Future<void> disconnect() async {
     _log('Desconectando...');
     _stopDlnaPolling();
+    _stopRokuPolling();
+    if (_connectedDevice?.deviceType == CastDeviceType.roku &&
+        _rokuEcpBaseUrl != null) {
+      try {
+        await _rokuEcp.keypress(_rokuEcpBaseUrl!, 'Home');
+      } catch (_) {}
+    }
     try {
       await _session?.stop();
       await _session?.disconnect();
@@ -207,6 +309,7 @@ class CastService extends ChangeNotifier {
       _logErr('Error durante disconnect: $e');
     }
     _session = null;
+    _rokuEcpBaseUrl = null;
     _connectedDevice = null;
     _state = CastConnectionState.idle;
     _position = Duration.zero;
@@ -229,6 +332,19 @@ class CastService extends ChangeNotifier {
     String? subtitleUrl,
     int? algorithm,
   }) async {
+    if (_connectedDevice?.deviceType == CastDeviceType.roku) {
+      await _castUrlToRoku(
+        url: url,
+        title: title,
+        imageUrl: imageUrl,
+        headers: headers,
+        startPosition: startPosition,
+        duration: duration,
+        algorithm: algorithm,
+      );
+      return;
+    }
+
     if (_session == null) {
       _logErr('castUrl llamado sin sesión activa');
       return;
@@ -308,24 +424,22 @@ class CastService extends ChangeNotifier {
     // El Puente convierte el manifiesto HLS en un flujo MP4 continuo con audio AAC.
     // Algoritmo 3 ahora usa Proxy estándar por petición del usuario.
     bool shouldBridgeInternal = false;
-    
+
     if (shouldBridgeInternal &&
         (mediaType == dc.CastMediaType.hls ||
             effectiveUrl.contains('.m3u8') ||
             effectiveUrl.contains('master') ||
             effectiveUrl.contains('playlist'))) {
-      _log(
-        '🚀 CAST: Activando PUENTE HLS-a-MP4 (Modo Bridge)',
-      );
+      _log('🚀 CAST: Activando PUENTE HLS-a-MP4 (Modo Bridge)');
       await MediaProxyService().start();
 
       mediaType = dc.CastMediaType.mp4;
       finalUrl = MediaProxyService().getProxiedUrl(
         effectiveUrl,
         combinedHeaders,
-        useLocalhost: false, toCast: true,
+        useLocalhost: false,
+        toCast: true,
         algorithm: effectiveAlgorithm,
-        
       );
 
       if (duration == null || duration == Duration.zero) {
@@ -348,15 +462,17 @@ class CastService extends ChangeNotifier {
     }
     // --- LÓGICA DE PROXY DINÁMICO (ALGORITMO 1 Y 2) ---
     else if ((effectiveAlgorithm == 1 || effectiveAlgorithm == 2) &&
-        (mediaType == dc.CastMediaType.hls ||
-            effectiveUrl.contains('.m3u8'))) {
+        (mediaType == dc.CastMediaType.hls || effectiveUrl.contains('.m3u8'))) {
       _log(
         '🚀 CAST: Usando Modo Dinámico (HLS Nativo) para Algoritmo $effectiveAlgorithm',
       );
       if (effectiveAlgorithm == 3) {
         final deviceIp = _connectedDevice?.address;
         await A3ProxyService().start(targetIp: deviceIp);
-        finalUrl = A3ProxyService().getProxiedUrl(effectiveUrl, combinedHeaders);
+        finalUrl = A3ProxyService().getProxiedUrl(
+          effectiveUrl,
+          combinedHeaders,
+        );
       } else {
         await MediaProxyService().start();
         finalUrl = MediaProxyService().getProxiedUrl(
@@ -397,7 +513,8 @@ class CastService extends ChangeNotifier {
       finalUrl = MediaProxyService().getProxiedUrl(
         effectiveUrl,
         combinedHeaders,
-        useLocalhost: false, toCast: true,
+        useLocalhost: false,
+        toCast: true,
         algorithm: effectiveAlgorithm,
       );
     }
@@ -408,7 +525,8 @@ class CastService extends ChangeNotifier {
       finalUrl = MediaProxyService().getProxiedUrl(
         url,
         combinedHeaders,
-        useLocalhost: false, toCast: true,
+        useLocalhost: false,
+        toCast: true,
         algorithm: effectiveAlgorithm,
       );
     }
@@ -446,7 +564,10 @@ class CastService extends ChangeNotifier {
         if (effectiveAlgorithm == 3) {
           final deviceIp = _connectedDevice?.address;
           await A3ProxyService().start(targetIp: deviceIp);
-          finalUrl = A3ProxyService().getProxiedUrl(unproxiedFinal['url'], minimalHeaders);
+          finalUrl = A3ProxyService().getProxiedUrl(
+            unproxiedFinal['url'],
+            minimalHeaders,
+          );
         } else {
           finalUrl = MediaProxyService().getProxiedUrl(
             unproxiedFinal['url'],
@@ -505,12 +626,35 @@ class CastService extends ChangeNotifier {
     Duration startPosition = Duration.zero,
     Duration? duration,
   }) async {
-    if (_session == null) throw StateError('No hay sesión activa');
-
     final cleanTitle = _sanitizeTitleForDlna(title);
     _currentTitle = cleanTitle;
     _currentImageUrl = imageUrl;
     _currentVideoUrl = filePath;
+
+    if (_connectedDevice?.deviceType == CastDeviceType.roku) {
+      final file = File(filePath);
+      if (!await file.exists()) {
+        throw StateError('El archivo no existe: $filePath');
+      }
+
+      final String? tvIp = _connectedDevice?.address;
+      await MediaProxyService().start(targetIp: tvIp);
+      final fileId = filePath.hashCode.abs().toString();
+      MediaProxyService().registerLocalFile(fileId, filePath);
+      final proxyUrl =
+          'http://${MediaProxyService().localIp}:${MediaProxyService().port}/local/$fileId.mp4';
+      await _castUrlToRoku(
+        url: proxyUrl,
+        title: cleanTitle,
+        imageUrl: imageUrl,
+        headers: null,
+        startPosition: startPosition,
+        duration: duration,
+      );
+      return;
+    }
+
+    if (_session == null) throw StateError('No hay sesión activa');
 
     _log('══════════════════════════════════════');
     _log('castLocalFile() iniciado');
@@ -925,6 +1069,148 @@ class CastService extends ChangeNotifier {
     _durationSubscription?.cancel();
   }
 
+  void _startRokuPolling() {
+    _rokuPollTimer?.cancel();
+    _rokuPollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      if (_state != CastConnectionState.connected ||
+          _connectedDevice?.deviceType != CastDeviceType.roku ||
+          _rokuEcpBaseUrl == null) {
+        return;
+      }
+
+      final info = await _rokuEcp.queryMediaPlayer(_rokuEcpBaseUrl!);
+      final state = info['state'];
+      final positionMs = int.tryParse(
+        (info['position'] ?? '').replaceAll(RegExp(r'[^0-9]'), ''),
+      );
+      final durationMs = int.tryParse(
+        (info['duration'] ?? '').replaceAll(RegExp(r'[^0-9]'), ''),
+      );
+
+      var changed = false;
+      if (state != null) {
+        final playing = state == 'play' || state == 'playing';
+        if (_isPlaying != playing) {
+          _isPlaying = playing;
+          changed = true;
+        }
+      }
+      if (positionMs != null) {
+        final position = Duration(milliseconds: positionMs);
+        if (_position != position) {
+          _position = position;
+          changed = true;
+        }
+      }
+      if (durationMs != null && durationMs > 0) {
+        final duration = Duration(milliseconds: durationMs);
+        if (_duration != duration) {
+          _duration = duration;
+          changed = true;
+        }
+      }
+      if (changed) notifyListeners();
+    });
+  }
+
+  void _stopRokuPolling() {
+    _rokuPollTimer?.cancel();
+    _rokuPollTimer = null;
+  }
+
+  Future<void> _castUrlToRoku({
+    required String url,
+    required String title,
+    String? imageUrl,
+    Map<String, String>? headers,
+    Duration startPosition = Duration.zero,
+    Duration? duration,
+    int? algorithm,
+  }) async {
+    final baseUrl = _rokuEcpBaseUrl;
+    if (baseUrl == null) {
+      throw StateError('No hay conexión ECP activa con Roku');
+    }
+
+    _currentAlgorithm = algorithm;
+    _currentTitle = title;
+    _currentImageUrl = imageUrl;
+    _currentVideoUrl = url;
+    _position = startPosition;
+    _duration = duration ?? Duration.zero;
+
+    final combinedHeaders = <String, String>{
+      'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      ...?headers,
+    };
+
+    var finalUrl = url;
+    final shouldProxy =
+        headers?.isNotEmpty == true ||
+        url.contains('127.0.0.1') ||
+        url.contains('localhost') ||
+        algorithm != null;
+
+    if (shouldProxy && !url.contains('/proxy') && !url.contains('/a3/')) {
+      await MediaProxyService().start(targetIp: _connectedDevice?.address);
+      finalUrl = MediaProxyService().getProxiedUrl(
+        url,
+        combinedHeaders,
+        useLocalhost: false,
+        toCast: true,
+        algorithm: algorithm,
+      );
+    }
+
+    _log('Roku: consultando apps instaladas...');
+    final apps = await _rokuEcp.queryApps(baseUrl);
+    RokuAppInfo? mediaPlayer;
+    for (final app in apps) {
+      final name = app.name.toLowerCase();
+      if (name.contains('roku media player') ||
+          name == 'media player' ||
+          name.contains('media player')) {
+        mediaPlayer = app;
+        break;
+      }
+    }
+
+    if (mediaPlayer == null) {
+      throw Exception(
+        'Roku detectado, pero no encontré Roku Media Player instalado. Instala "Roku Media Player" o usa un Roku con DLNA/Media Player habilitado.',
+      );
+    }
+
+    _log(
+      'Roku: lanzando ${mediaPlayer.name} (${mediaPlayer.id}) con URL: $finalUrl',
+    );
+
+    final params = <String, String>{
+      'contentId': finalUrl,
+      'mediaType': 'movie',
+      'url': finalUrl,
+      'u': finalUrl,
+      't': 'v',
+      'title': _sanitizeTitleForDlna(title),
+    };
+
+    final launched = await _rokuEcp.launch(
+      baseUrl,
+      mediaPlayer.id,
+      params: params,
+    );
+    if (!launched) {
+      throw Exception('Roku rechazó el comando de reproducción.');
+    }
+
+    await Future.delayed(const Duration(milliseconds: 900));
+    _isPlaying = true;
+    _startRokuPolling();
+    notifyListeners();
+  }
+
   /// Limpia el título para incluirlo de forma segura en XML SOAP DLNA.
   /// Samsung TV rechaza peticiones con títulos que contienen extensiones
   /// de archivo, indicadores de formato (HLS/TS) o caracteres no ASCII
@@ -952,7 +1238,8 @@ class CastService extends ChangeNotifier {
       final String proxyBase = MediaProxyService().getProxiedUrl(
         '',
         null,
-        useLocalhost: false, toCast: true,
+        useLocalhost: false,
+        toCast: true,
       );
       final String host = proxyBase
           .split('/proxy')[0]
@@ -1075,6 +1362,14 @@ class CastService extends ChangeNotifier {
   // ── Playback Controls ──────────────────────────────────────────────────────
 
   Future<void> play() async {
+    if (_connectedDevice?.deviceType == CastDeviceType.roku &&
+        _rokuEcpBaseUrl != null) {
+      _log('Roku play()');
+      await _rokuEcp.keypress(_rokuEcpBaseUrl!, 'Play');
+      _isPlaying = true;
+      notifyListeners();
+      return;
+    }
     if (_session == null) return;
     _log('play()');
     if (_connectedDevice?.protocol == dc.CastProtocol.dlna &&
@@ -1101,6 +1396,14 @@ class CastService extends ChangeNotifier {
   }
 
   Future<void> pause() async {
+    if (_connectedDevice?.deviceType == CastDeviceType.roku &&
+        _rokuEcpBaseUrl != null) {
+      _log('Roku pause()');
+      await _rokuEcp.keypress(_rokuEcpBaseUrl!, 'Play');
+      _isPlaying = false;
+      notifyListeners();
+      return;
+    }
     if (_session == null) return;
     _log('pause()');
     if (_connectedDevice?.protocol == dc.CastProtocol.dlna &&
@@ -1127,6 +1430,15 @@ class CastService extends ChangeNotifier {
   }
 
   Future<void> stop() async {
+    if (_connectedDevice?.deviceType == CastDeviceType.roku &&
+        _rokuEcpBaseUrl != null) {
+      _log('Roku stop()');
+      await _rokuEcp.keypress(_rokuEcpBaseUrl!, 'Home');
+      _isPlaying = false;
+      _position = Duration.zero;
+      notifyListeners();
+      return;
+    }
     if (_session == null) return;
     _log('stop()');
     if (_connectedDevice?.protocol == dc.CastProtocol.dlna &&
@@ -1144,6 +1456,20 @@ class CastService extends ChangeNotifier {
   }
 
   Future<void> seekTo(Duration position) async {
+    if (_connectedDevice?.deviceType == CastDeviceType.roku &&
+        _rokuEcpBaseUrl != null) {
+      _log('Roku seek aproximado (${position.inSeconds}s)');
+      final forward = position > _position;
+      final delta = (position - _position).abs();
+      final presses = (delta.inSeconds / 30).clamp(1, 12).round();
+      for (var i = 0; i < presses; i++) {
+        await _rokuEcp.keypress(_rokuEcpBaseUrl!, forward ? 'Fwd' : 'Rev');
+        await Future.delayed(const Duration(milliseconds: 120));
+      }
+      _position = position;
+      notifyListeners();
+      return;
+    }
     if (_session == null) return;
     _log('seekTo(${position.inSeconds}s)');
 
@@ -1172,8 +1498,14 @@ class CastService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<void> setVolume(double volume) =>
-      _session?.setVolume(volume) ?? Future.value();
+  Future<void> setVolume(double volume) async {
+    if (_connectedDevice?.deviceType == CastDeviceType.roku &&
+        _rokuEcpBaseUrl != null) {
+      await _rokuEcp.keypress(_rokuEcpBaseUrl!, 'VolumeUp');
+      return;
+    }
+    return _session?.setVolume(volume) ?? Future.value();
+  }
 
   // ── Internal ───────────────────────────────────────────────────────────────
 

@@ -24,6 +24,7 @@
     <!-- NEARBY_WIFI_DEVICES: Requerido para mDNS/Chromecast discovery en Android 13+ -->
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     
     <!-- Configuración para Amazon / Fire TV: Desactivar obligatoriedad de hardware no presente -->
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />

@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
@@ -23,12 +25,15 @@ class FloatingPlayerOverlay extends StatefulWidget {
 }
 
 class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
+  static const _audioBoostChannel = MethodChannel(
+    'com.luis.movieapp/audio_boost',
+  );
   Offset _position = const Offset(20, 100);
   double _width = 280;
   bool _isDragging = false;
   bool _showControls = true;
   Timer? _hideTimer;
-  
+
   double _volume = 0.5;
   double _brightness = 0.5;
 
@@ -44,6 +49,7 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
     try {
       _brightness = await ScreenBrightness().current;
     } catch (_) {}
+    await _applyVolumeBoost(_volume);
     if (mounted) setState(() {});
   }
 
@@ -57,7 +63,22 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
   @override
   void dispose() {
     _hideTimer?.cancel();
+    if (Platform.isAndroid) {
+      _audioBoostChannel.invokeMethod('releaseBoost');
+    }
     super.dispose();
+  }
+
+  Future<void> _applyVolumeBoost(double targetVolume) async {
+    final clamped = targetVolume.clamp(0.0, 2.0);
+    final baseVolume = clamped <= 1.0 ? clamped : 1.0;
+    widget.controller.setVolume(baseVolume);
+    await VolumeController.instance.setVolume(baseVolume);
+    if (Platform.isAndroid) {
+      try {
+        await _audioBoostChannel.invokeMethod('setBoost', {'boost': clamped});
+      } catch (_) {}
+    }
   }
 
   @override
@@ -67,7 +88,8 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
     final height = _width / aspectRatio;
 
     // Detectar si estamos cerca de la zona "X" al fondo
-    final bool isNearDeleteZone = _isDragging && _position.dy > size.height - 180;
+    final bool isNearDeleteZone =
+        _isDragging && _position.dy > size.height - 180;
 
     return Stack(
       children: [
@@ -127,8 +149,8 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
                   ),
                 ],
                 border: Border.all(
-                  color: isNearDeleteZone 
-                      ? Colors.red 
+                  color: isNearDeleteZone
+                      ? Colors.red
                       : const Color(0xFF00A3FF).withOpacity(0.6),
                   width: 2.0,
                 ),
@@ -156,8 +178,7 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
                         final delta = details.primaryDelta! / -100;
                         if (isLeft) {
                           _volume = (_volume + delta).clamp(0.0, 2.0);
-                          widget.controller.setVolume(_volume);
-                          if (_volume <= 1.0) VolumeController.instance.setVolume(_volume);
+                          _applyVolumeBoost(_volume);
                         } else {
                           _brightness = (_brightness + delta).clamp(0.0, 1.0);
                           ScreenBrightness().setScreenBrightness(_brightness);
@@ -176,7 +197,10 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
                           children: [
                             // Header
                             Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 8,
+                              ),
                               child: Row(
                                 children: [
                                   GestureDetector(
@@ -187,20 +211,32 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
                                         color: Colors.white10,
                                         borderRadius: BorderRadius.circular(6),
                                       ),
-                                      child: const Icon(Icons.fullscreen, color: Colors.white, size: 18),
+                                      child: const Icon(
+                                        Icons.fullscreen,
+                                        color: Colors.white,
+                                        size: 18,
+                                      ),
                                     ),
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
                                       widget.title,
-                                      style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
                                   GestureDetector(
                                     onTap: widget.onClose,
-                                    child: const Icon(Icons.close, color: Colors.white70, size: 20),
+                                    child: const Icon(
+                                      Icons.close,
+                                      color: Colors.white70,
+                                      size: 20,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -211,15 +247,22 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 IconButton(
-                                  icon: const Icon(Icons.replay_10, color: Colors.white, size: 24),
+                                  icon: const Icon(
+                                    Icons.replay_10,
+                                    color: Colors.white,
+                                    size: 24,
+                                  ),
                                   onPressed: () => widget.controller.seekTo(
-                                    widget.controller.value.position - const Duration(seconds: 10),
+                                    widget.controller.value.position -
+                                        const Duration(seconds: 10),
                                   ),
                                 ),
                                 IconButton(
                                   padding: EdgeInsets.zero,
                                   icon: Icon(
-                                    widget.controller.value.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+                                    widget.controller.value.isPlaying
+                                        ? Icons.pause_circle_filled
+                                        : Icons.play_circle_filled,
                                     color: const Color(0xFF00A3FF),
                                     size: 42,
                                   ),
@@ -232,9 +275,14 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
                                   },
                                 ),
                                 IconButton(
-                                  icon: const Icon(Icons.forward_10, color: Colors.white, size: 24),
+                                  icon: const Icon(
+                                    Icons.forward_10,
+                                    color: Colors.white,
+                                    size: 24,
+                                  ),
                                   onPressed: () => widget.controller.seekTo(
-                                    widget.controller.value.position + const Duration(seconds: 10),
+                                    widget.controller.value.position +
+                                        const Duration(seconds: 10),
                                   ),
                                 ),
                               ],
@@ -245,21 +293,28 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
                           ],
                         ),
                       ),
-                    
+
                     // Indicators
                     if (_volume > 1.0 && _showControls)
                       Positioned(
                         top: 40,
                         left: 10,
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 2,
+                          ),
                           decoration: BoxDecoration(
                             color: Colors.red,
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(
                             'BOOST ${(_volume * 100).toInt()}%',
-                            style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 8,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
                       ),
@@ -280,9 +335,15 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
                           height: 24,
                           decoration: const BoxDecoration(
                             color: Colors.black26,
-                            borderRadius: BorderRadius.only(topLeft: Radius.circular(12)),
+                            borderRadius: BorderRadius.only(
+                              topLeft: Radius.circular(12),
+                            ),
                           ),
-                          child: const Icon(Icons.south_east, color: Colors.white54, size: 14),
+                          child: const Icon(
+                            Icons.south_east,
+                            color: Colors.white54,
+                            size: 14,
+                          ),
                         ),
                       ),
                     ),

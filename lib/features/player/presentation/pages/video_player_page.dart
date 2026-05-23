@@ -170,6 +170,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   static const _webviewTouchChannel = MethodChannel(
     'com.luis.movieapp/webview_touch',
   );
+  static const _audioBoostChannel = MethodChannel(
+    'com.luis.movieapp/audio_boost',
+  );
   static const _pipControlChannel = MethodChannel(
     'com.luis.movieapp/pip_control',
   );
@@ -1691,7 +1694,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         });
 
         // Aplicar los valores cargados
-        VolumeController.instance.setVolume(_volume);
+        await _applyVolumeBoost(_volume);
         ScreenBrightness().setScreenBrightness(_brightness);
       }
     } catch (_) {}
@@ -2228,16 +2231,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
 
     if (isLeftSide) {
       _isDraggingVolume = true;
-      // Amplificación hasta 3.0 (300%) para garantizar que el usuario sienta el aumento
+      // Encima de 100% aplicamos booster nativo real en Android.
       _volume = (_volume + delta).clamp(0.0, 3.0);
       _showVolumeLabel = true;
       _showBrightnessLabel = false;
       VolumeController.instance.showSystemUI = false;
-      // Aplicar volumen al controlador (algunas plataformas soportan > 1.0 como ganancia)
-      _controller?.setVolume(_volume);
-      if (_volume <= 1.0) {
-        VolumeController.instance.setVolume(_volume);
-      }
+      _applyVolumeBoost(_volume);
     } else {
       _isDraggingBrightness = true;
       _brightness = (_brightness + delta).clamp(0.0, 1.0);
@@ -2259,6 +2258,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         StorageService.savePlayerSettings(_volume, _brightness);
       }
     });
+  }
+
+  Future<void> _applyVolumeBoost(double targetVolume) async {
+    final clamped = targetVolume.clamp(0.0, 3.0);
+    final baseVolume = clamped <= 1.0 ? clamped : 1.0;
+
+    _controller?.setVolume(baseVolume);
+    await VolumeController.instance.setVolume(baseVolume);
+
+    if (Platform.isAndroid) {
+      try {
+        await _audioBoostChannel.invokeMethod('setBoost', {'boost': clamped});
+      } catch (_) {}
+    }
   }
 
   Future<dynamic> _evaluateJS(String source) async {
@@ -2359,6 +2372,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
       }
       VolumeController.instance.showSystemUI = true;
       VolumeController.instance.removeListener();
+      if (Platform.isAndroid) {
+        _audioBoostChannel.invokeMethod('releaseBoost');
+      }
       WakelockPlus.disable();
 
       SystemChrome.setPreferredOrientations([

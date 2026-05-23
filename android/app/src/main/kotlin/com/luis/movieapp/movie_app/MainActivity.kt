@@ -1,6 +1,7 @@
 package com.luis.movieapp.movie_app
 
 import android.content.Intent
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
@@ -19,6 +20,8 @@ class MainActivity : PipCallbackHelperActivityWrapper() {
 
     private val CHANNEL = "com.luis.movieapp/webview_touch"
     private val INSTALL_CHANNEL = "com.luis.movieapp/install_apk"
+    private val AUDIO_BOOST_CHANNEL = "com.luis.movieapp/audio_boost"
+    private var loudnessEnhancer: LoudnessEnhancer? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -98,6 +101,26 @@ class MainActivity : PipCallbackHelperActivityWrapper() {
                     else -> result.notImplemented()
                 }
             }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, AUDIO_BOOST_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "setBoost" -> {
+                        val boost = (call.argument<Double>("boost") ?: 1.0).toFloat()
+                        try {
+                            applyAudioBoost(boost)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("BOOST_ERROR", e.message, null)
+                        }
+                    }
+                    "releaseBoost" -> {
+                        releaseAudioBoost()
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
         // Canal para control de PiP (Acciones Nativas y Expandir)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.luis.movieapp/pip_control")
             .setMethodCallHandler { call, result ->
@@ -116,6 +139,30 @@ class MainActivity : PipCallbackHelperActivityWrapper() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun applyAudioBoost(boost: Float) {
+        if (boost <= 1.0f) {
+            loudnessEnhancer?.enabled = false
+            return
+        }
+
+        if (loudnessEnhancer == null) {
+            loudnessEnhancer = LoudnessEnhancer(0)
+        }
+
+        val targetGainMb = ((20.0 * kotlin.math.log10(boost.toDouble())) * 100.0)
+            .toInt()
+            .coerceIn(0, 1200)
+
+        loudnessEnhancer?.setTargetGain(targetGainMb)
+        loudnessEnhancer?.enabled = true
+    }
+
+    private fun releaseAudioBoost() {
+        loudnessEnhancer?.enabled = false
+        loudnessEnhancer?.release()
+        loudnessEnhancer = null
     }
 
     private fun expandActivity() {
@@ -193,6 +240,11 @@ class MainActivity : PipCallbackHelperActivityWrapper() {
         try {
             unregisterReceiver(pipActionReceiver)
         } catch (e: Exception) {}
+    }
+
+    override fun onDestroy() {
+        releaseAudioBoost()
+        super.onDestroy()
     }
 
     private fun findWebView(view: View): WebView? {

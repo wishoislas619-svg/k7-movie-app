@@ -11,6 +11,7 @@ import 'package:movie_app/shared/widgets/video_extractor_dialog.dart';
 import '../../services/media_proxy_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../../movies/presentation/providers/history_provider.dart';
 import '../../../../core/services/ad_service.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:async';
@@ -27,6 +28,12 @@ class CastButton extends ConsumerStatefulWidget {
   final Duration currentPosition;
   final Duration? duration;
   final bool showImmediately;
+  final String? mediaId;
+  final String? episodeId;
+  final String? mediaType;
+  final String? subtitleLabel;
+  final String? videoOptionId;
+  final String? preferredLaunchMode;
 
   const CastButton({
     super.key,
@@ -39,6 +46,12 @@ class CastButton extends ConsumerStatefulWidget {
     this.headers,
     this.algorithm = 1,
     this.showImmediately = false,
+    this.mediaId,
+    this.episodeId,
+    this.mediaType,
+    this.subtitleLabel,
+    this.videoOptionId,
+    this.preferredLaunchMode,
   });
 
   @override
@@ -67,7 +80,13 @@ class _CastButtonState extends ConsumerState<CastButton>
 
     if (widget.showImmediately) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _openCastSelection();
+        if (widget.preferredLaunchMode == 'internal') {
+          _checkAdAndProceed(() => _openCastSheet());
+        } else if (widget.preferredLaunchMode == 'wvc') {
+          _checkAdAndProceed(() => _launchWebVideoCaster());
+        } else {
+          _openCastSelection();
+        }
       });
     }
   }
@@ -245,7 +264,10 @@ class _CastButtonState extends ConsumerState<CastButton>
       if (widget.algorithm == 3) {
         final deviceIp = CastService().connectedDevice?.address;
         await A3ProxyService().start(targetIp: deviceIp);
-        final proxied = A3ProxyService().generateSessionUrl(url, widget.headers ?? {});
+        final proxied = A3ProxyService().generateSessionUrl(
+          url,
+          widget.headers ?? {},
+        );
         print('--- [CAST] URL A3 generada (Vía Sesión): $proxied ---');
         return proxied;
       }
@@ -272,10 +294,7 @@ class _CastButtonState extends ConsumerState<CastButton>
       context: context,
       barrierDismissible: false,
       builder: (_) =>
-          VideoExtractorDialog(
-            url: url, 
-            extractionAlgorithm: widget.algorithm,
-          ),
+          VideoExtractorDialog(url: url, extractionAlgorithm: widget.algorithm),
     );
 
     if (result == null || result.videoUrl.isEmpty) return null;
@@ -290,13 +309,18 @@ class _CastButtonState extends ConsumerState<CastButton>
     if (widget.algorithm == 3) {
       final deviceIp = CastService().connectedDevice?.address;
       await A3ProxyService().start(targetIp: deviceIp);
-      final proxied = A3ProxyService().generateSessionUrl(result.videoUrl, headers);
-      print('--- [CAST] URL A3 generada (Tras Extracción, Vía Sesión): $proxied ---');
+      final proxied = A3ProxyService().generateSessionUrl(
+        result.videoUrl,
+        headers,
+      );
+      print(
+        '--- [CAST] URL A3 generada (Tras Extracción, Vía Sesión): $proxied ---',
+      );
       return proxied;
     }
 
     await MediaProxyService().start();
-    
+
     return MediaProxyService().getProxiedUrl(
       result.videoUrl,
       headers,
@@ -405,6 +429,7 @@ class _CastButtonState extends ConsumerState<CastButton>
   Future<void> _launchWebVideoCaster() async {
     final String? finalUrl = await _extractIfNeeded(widget.videoUrl);
     if (finalUrl == null || !mounted) return;
+    await _seedHistoryForCastStart();
 
     final String videoUrl = finalUrl;
     // El nombre de paquete correcto es .webvideo, no .browser
@@ -508,6 +533,47 @@ class _CastButtonState extends ConsumerState<CastButton>
   Future<void> _openCastSheet() async {
     final String? finalUrl = await _extractIfNeeded(widget.videoUrl);
     if (finalUrl == null || !mounted) return;
+    await _seedHistoryForCastStart();
+    final historyMediaId = widget.mediaId ?? widget.title;
+    var startPosition = widget.currentPosition;
+
+    if (widget.localFilePath != null && startPosition.inMilliseconds < 10000) {
+      final history = await ref
+          .read(historyProvider.notifier)
+          .getProgress(widget.episodeId ?? historyMediaId);
+      if (history != null &&
+          history.lastPosition > 10000 &&
+          history.totalDuration > 0 &&
+          mounted) {
+        final resume = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            backgroundColor: const Color(0xFF101010),
+            title: const Text(
+              'Reanudar cast',
+              style: TextStyle(color: Colors.white),
+            ),
+            content: Text(
+              '¿Quieres continuar desde ${_formatDuration(Duration(milliseconds: history.lastPosition))} o empezar desde el inicio?',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Desde inicio'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Reanudar'),
+              ),
+            ],
+          ),
+        );
+        if (resume == true) {
+          startPosition = Duration(milliseconds: history.lastPosition);
+        }
+      }
+    }
 
     showModalBottomSheet(
       context: context,
@@ -520,8 +586,14 @@ class _CastButtonState extends ConsumerState<CastButton>
         imageUrl: widget.imageUrl,
         headers: widget.headers,
         algorithm: widget.algorithm,
-        startPosition: widget.currentPosition,
+        startPosition: startPosition,
         duration: widget.duration,
+        mediaId: historyMediaId,
+        episodeId: widget.episodeId,
+        mediaType:
+            widget.mediaType ?? (widget.episodeId != null ? 'series' : 'movie'),
+        subtitleLabel: widget.subtitleLabel,
+        videoOptionId: widget.videoOptionId,
         onCastStarted: () {
           // Navegar al control remoto una sola vez, después del pop del sheet
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -534,6 +606,40 @@ class _CastButtonState extends ConsumerState<CastButton>
         },
       ),
     );
+  }
+
+  String _formatDuration(Duration d) {
+    final h = d.inHours > 0 ? '${d.inHours}:' : '';
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$h$m:$s';
+  }
+
+  Future<void> _seedHistoryForCastStart() async {
+    final historyMediaId = widget.mediaId ?? widget.title;
+    final historyId = widget.episodeId ?? historyMediaId;
+    final existing = await ref
+        .read(historyProvider.notifier)
+        .getProgress(historyId);
+
+    if (existing != null) return;
+
+    await ref
+        .read(historyProvider.notifier)
+        .saveProgress(
+          mediaId: historyMediaId,
+          episodeId: widget.episodeId,
+          mediaType:
+              widget.mediaType ??
+              (widget.episodeId != null ? 'series' : 'movie'),
+          position: 0,
+          duration: widget.duration?.inMilliseconds ?? 1,
+          title: widget.title,
+          subtitle: widget.subtitleLabel,
+          imagePath: widget.imageUrl ?? '',
+          videoOptionId: widget.videoOptionId,
+          lastCastWasCast: true,
+        );
   }
 
   @override
