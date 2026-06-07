@@ -67,6 +67,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
       body: PageView(
         controller: _pageController,
@@ -75,11 +76,9 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         },
         physics: const ClampingScrollPhysics(),
         children: [
-          _buildMoviesView(),
-          const SeriesGridPage(),
-          const TvChannelsPage(),
-          const DownloadsPage(),
-          const ProfilePage(),
+          RepaintBoundary(child: _buildMoviesView()),
+          const RepaintBoundary(child: SeriesGridPage()),
+          const RepaintBoundary(child: TvChannelsPage()),
         ],
       ),
       bottomNavigationBar: _buildBottomNav(),
@@ -1076,7 +1075,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             constraints: BoxConstraints(
               maxHeight: MediaQuery.of(ctx).size.height * 0.8,
             ),
-            child: SingleChildScrollView(
+              child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -1089,32 +1088,25 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
-                  ListTile(
-                    leading: const Icon(
-                      Icons.play_circle_fill,
-                      color: Color(0xFF00A3FF),
-                    ),
-                    title: Text(
-                      canResume ? 'Reanudar en la app' : 'Ver en la app',
-                      style: const TextStyle(color: Colors.white),
-                    ),
+                  _buildHistoryOptionCard(
+                    icon: Icons.play_circle_fill,
+                    iconColor: const Color(0xFF00A3FF),
+                    title: canResume ? 'Reanudar en la app' : 'Ver en la app',
+                    subtitle: canResume
+                        ? 'Continúa desde donde lo dejaste'
+                        : null,
                     onTap: () {
                       Navigator.pop(ctx);
                       _launchMedia(context, item, resume: canResume);
                     },
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.cast, color: Color(0xFF00A3FF)),
-                    title: const Text(
-                      'Transmitir por Cast local',
-                      style: TextStyle(color: Colors.white),
-                    ),
-                    subtitle: Text(
-                      canResume
-                          ? 'Retoma donde te quedaste en tu TV'
-                          : 'Enviar a TV con Cast interno',
-                      style: const TextStyle(color: Colors.white54),
-                    ),
+                  _buildHistoryOptionCard(
+                    icon: Icons.cast,
+                    iconColor: const Color(0xFF00A3FF),
+                    title: 'Transmitir por Cast local',
+                    subtitle: canResume
+                        ? 'Retoma donde te quedaste en tu TV'
+                        : 'Enviar a TV con Cast interno',
                     onTap: () {
                       Navigator.pop(ctx);
                       _launchHistoryCast(
@@ -1125,21 +1117,13 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                       );
                     },
                   ),
-                  ListTile(
-                    leading: const Icon(
-                      Icons.launch_rounded,
-                      color: Color(0xFF00FF87),
-                    ),
-                    title: const Text(
-                      'Transmitir con Web Video Caster',
-                      style: TextStyle(color: Colors.white),
-                    ),
-                    subtitle: Text(
-                      canResume
-                          ? 'Abre Web Video Caster y continua'
-                          : 'Abrir en Web Video Caster',
-                      style: const TextStyle(color: Colors.white54),
-                    ),
+                  _buildHistoryOptionCard(
+                    icon: Icons.launch_rounded,
+                    iconColor: const Color(0xFF00FF87),
+                    title: 'Transmitir con Web Video Caster',
+                    subtitle: canResume
+                        ? 'Abre Web Video Caster y continua'
+                        : 'Abrir en Web Video Caster',
                     onTap: () {
                       Navigator.pop(ctx);
                       _launchHistoryCast(
@@ -1150,26 +1134,19 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                       );
                     },
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.replay, color: Colors.white70),
-                    title: const Text(
-                      'Ver desde el principio',
-                      style: TextStyle(color: Colors.white),
-                    ),
+                  _buildHistoryOptionCard(
+                    icon: Icons.replay,
+                    iconColor: Colors.white70,
+                    title: 'Ver desde el principio',
                     onTap: () {
                       Navigator.pop(ctx);
                       _launchMedia(context, item, resume: false);
                     },
                   ),
-                  ListTile(
-                    leading: const Icon(
-                      Icons.info_outline,
-                      color: Colors.white70,
-                    ),
-                    title: const Text(
-                      'Selecionar Enlace',
-                      style: TextStyle(color: Colors.white),
-                    ),
+                  _buildHistoryOptionCard(
+                    icon: Icons.info_outline,
+                    iconColor: Colors.white70,
+                    title: 'Selecionar Enlace',
                     onTap: () {
                       Navigator.pop(ctx);
                       _goToDetails(context, item);
@@ -1182,6 +1159,62 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildHistoryOptionCard({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    String? subtitle,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: EnergyFlowBorder(
+        borderRadius: 12,
+        borderWidth: 1.2,
+        duration: const Duration(seconds: 5),
+        backgroundColor: const Color(0xFF1A1A1A),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Icon(icon, color: iconColor, size: 22),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      if (subtitle != null) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle!,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.white54,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 

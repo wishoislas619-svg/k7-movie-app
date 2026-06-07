@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_cast/dart_cast.dart' as dc;
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 class RokuAppInfo {
@@ -162,7 +163,26 @@ class RokuEcpService {
       '$baseUrl/launch/$appId',
     ).replace(queryParameters: params?.isEmpty ?? true ? null : params);
     final response = await http.post(uri).timeout(const Duration(seconds: 5));
-    return response.statusCode >= 200 && response.statusCode < 300;
+    final ok = response.statusCode >= 200 && response.statusCode < 300;
+    if (!ok) {
+      debugPrint(
+        '❌ [ROKU_ECP] launch $appId → HTTP ${response.statusCode}: ${response.body.length > 200 ? response.body.substring(0, 200) : response.body}',
+      );
+    }
+    return ok;
+  }
+
+  /// Instala un canal desde la tienda de Roku.
+  /// POST /install/{appId} — igual que launch pero instala si no está.
+  Future<bool> install(String baseUrl, String appId) async {
+    final uri = Uri.parse('$baseUrl/install/$appId');
+    try {
+      final response = await http.post(uri).timeout(const Duration(seconds: 8));
+      return response.statusCode >= 200 && response.statusCode < 300;
+    } catch (e) {
+      debugPrint('❌ [ROKU_ECP] install $appId → Exception: $e');
+      return false;
+    }
   }
 
   Future<void> keypress(String baseUrl, String key) async {

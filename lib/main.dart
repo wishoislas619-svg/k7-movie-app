@@ -28,7 +28,8 @@ import 'dart:io';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
-
+import 'features/cast/presentation/pages/cast_remote_page.dart';
+import 'features/cast/services/cast_service.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
@@ -189,7 +190,8 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
                     );
                   },
                 ),
-              // Zona de eliminación (X) al fondo cuando se arrastra (lógica simplificada aquí, el overlay la maneja)
+              // Floating Cast Bubble
+              _CastBubble(),
             ],
           ),
         );
@@ -366,6 +368,156 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
     }
 
     return _ActivityDetector(child: const MovieGridPage());
+  }
+}
+
+/// Floating bubble that appears when a Cast session is active.
+/// Tapping it opens the CastRemotePage.
+class _CastBubble extends StatefulWidget {
+  @override
+  State<_CastBubble> createState() => _CastBubbleState();
+}
+
+class _CastBubbleState extends State<_CastBubble>
+    with TickerProviderStateMixin {
+  final _castService = CastService();
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+  late AnimationController _gradientController;
+  double _bubbleX = 0;
+  double _bubbleY = 0;
+  bool _bubblePositioned = false;
+
+  static const _tornasolPairs = [
+    [Color(0xFF0022FF), Color(0xFF00A3FF)],
+    [Color(0xFF4A00E0), Color(0xFFCC33FF)],
+    [Color(0xFF6600CC), Color(0xFFE040FB)],
+    [Color(0xFF0022FF), Color(0xFF8E2DE2)],
+    [Color(0xFF006064), Color(0xFF00E5FF)],
+    [Color(0xFF4A00E0), Color(0xFF00FF87)],
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.9, end: 1.0).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+    _gradientController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 8),
+    )..repeat();
+    _castService.addListener(_onCastChanged);
+  }
+
+  @override
+  void dispose() {
+    _castService.removeListener(_onCastChanged);
+    _pulseController.dispose();
+    _gradientController.dispose();
+    super.dispose();
+  }
+
+  Color _lerpColor(Color a, Color b, double t) {
+    return Color.fromARGB(
+      a.alpha,
+      (a.red + (b.red - a.red) * t).round(),
+      (a.green + (b.green - a.green) * t).round(),
+      (a.blue + (b.blue - a.blue) * t).round(),
+    );
+  }
+
+  List<Color> _currentGradient() {
+    final t = _gradientController.value * _tornasolPairs.length;
+    final index = t.floor() % _tornasolPairs.length;
+    final frac = t - t.floor();
+    final a = _tornasolPairs[index];
+    final b = _tornasolPairs[(index + 1) % _tornasolPairs.length];
+    return [
+      _lerpColor(a[0], b[0], frac),
+      _lerpColor(a[1], b[1], frac),
+    ];
+  }
+
+  Color _currentShadowColor() {
+    final colors = _currentGradient();
+    return colors.last.withValues(alpha: 0.4);
+  }
+
+  void _onCastChanged() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_castService.isConnected || _castService.isRemotePageOpen) return const SizedBox.shrink();
+
+    if (!_bubblePositioned) {
+      final size = MediaQuery.of(context).size;
+      _bubbleX = size.width - 16 - 56;
+      _bubbleY = size.height - MediaQuery.of(context).padding.bottom - 90 - 56;
+      _bubblePositioned = true;
+    }
+
+    return Positioned(
+      left: _bubbleX,
+      top: _bubbleY,
+      child: AnimatedBuilder(
+        animation: Listenable.merge([_pulseAnimation, _gradientController]),
+        builder: (context, child) {
+          final gradientColors = _currentGradient();
+          return GestureDetector(
+            onTap: () {
+              navigatorKey.currentState?.push(
+                MaterialPageRoute(
+                  settings: const RouteSettings(name: '/cast_remote'),
+                  builder: (_) => const CastRemotePage(),
+                ),
+              );
+            },
+            onPanUpdate: (details) {
+              setState(() {
+                _bubbleX += details.delta.dx;
+                _bubbleY += details.delta.dy;
+              });
+            },
+            child: Transform.scale(
+              scale: _pulseAnimation.value,
+              child: Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: gradientColors,
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: _currentShadowColor(),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.cast_rounded,
+                  color: Colors.white,
+                  size: 28,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 }
 

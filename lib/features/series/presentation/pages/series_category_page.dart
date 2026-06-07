@@ -29,6 +29,7 @@ class _SeriesCategoryPageState extends State<SeriesCategoryPage> {
     final filteredSeries = widget.seriesList.where((s) => s.name.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: const Color(0xFF0A0A0A),

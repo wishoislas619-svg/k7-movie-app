@@ -25,6 +25,7 @@ class _HistoryViewAllPageState extends ConsumerState<HistoryViewAllPage> {
     final historyAsync = ref.watch(historyProvider);
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.transparent,

@@ -3,6 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:movie_app/features/movies/presentation/providers/history_provider.dart';
+import 'package:movie_app/features/series/domain/entities/episode.dart';
+import 'package:movie_app/features/series/domain/entities/season.dart';
+import 'package:movie_app/providers.dart';
+import 'package:movie_app/shared/widgets/video_extractor_dialog.dart';
 import '../../services/cast_service.dart';
 import '../../services/cast_device_info.dart';
 import '../widgets/cast_device_list_sheet.dart';
@@ -27,26 +31,78 @@ class CastRemotePage extends ConsumerStatefulWidget {
 class _CastRemotePageState extends ConsumerState<CastRemotePage> {
   final _castService = CastService();
   Timer? _progressTimer;
-  double _volume = 0.5; // Valor visual inicial
+  Timer? _uiTimer;
+  double _volume = 0.5;
   bool _isSeeking = false;
   double _seekValue = 0.0;
-  bool _isNavigatingAway = false; // Guard para evitar pops múltiples
+  bool _isNavigatingAway = false;
 
   @override
   void initState() {
     super.initState();
+    _castService.isRemotePageOpen = true;
     _castService.addListener(_onCastStateChanged);
     WakelockPlus.enable();
     _progressTimer = Timer.periodic(
       const Duration(seconds: 5),
       (_) => _saveCastProgress(),
     );
+    _uiTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) {
+        if (mounted) setState(() {});
+      },
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadEpisodeNavIfNeeded());
+  }
+
+  Future<void> _loadEpisodeNavIfNeeded() async {
+    if (_castService.currentMediaType != 'series' ||
+        _castService.currentMediaId == null ||
+        _castService.currentEpisodeId == null) return;
+    if (_castService.hasNextEpisode || _castService.hasPreviousEpisode) return;
+
+    final repo = ref.read(seriesRepositoryProvider);
+    final seasons = await repo.getSeasonsForSeries(_castService.currentMediaId!);
+    for (int i = 0; i < seasons.length; i++) {
+      final s = seasons[i];
+      final eps = await repo.getEpisodesForSeason(s.id);
+      final idx = eps.indexWhere((e) => e.id == _castService.currentEpisodeId);
+      if (idx != -1) {
+        Episode? next, prev;
+        Season? nextS, prevS;
+        if (idx + 1 < eps.length) {
+          next = eps[idx + 1];
+          nextS = s;
+        } else if (i + 1 < seasons.length) {
+          final nextEps = await repo.getEpisodesForSeason(seasons[i + 1].id);
+          if (nextEps.isNotEmpty) { next = nextEps.first; nextS = seasons[i + 1]; }
+        }
+        if (idx > 0) {
+          prev = eps[idx - 1];
+          prevS = s;
+        } else if (i > 0) {
+          final prevEps = await repo.getEpisodesForSeason(seasons[i - 1].id);
+          if (prevEps.isNotEmpty) { prev = prevEps.last; prevS = seasons[i - 1]; }
+        }
+        _castService.setEpisodeNavigation(
+          nextEpisode: next, nextSeason: nextS,
+          previousEpisode: prev, previousSeason: prevS,
+          seriesSeasons: seasons,
+          currentSeasonEpisodes: eps,
+          currentEpisodeIndex: idx,
+        );
+        break;
+      }
+    }
   }
 
   @override
   void dispose() {
+    _castService.isRemotePageOpen = false;
     _castService.removeListener(_onCastStateChanged);
     _progressTimer?.cancel();
+    _uiTimer?.cancel();
     _saveCastProgress();
     WakelockPlus.disable();
     super.dispose();
@@ -81,11 +137,15 @@ class _CastRemotePageState extends ConsumerState<CastRemotePage> {
     // Si se desconecta, cerramos esta pantalla UNA SOLA VEZ
     if (!_castService.isConnected && !_isNavigatingAway) {
       _isNavigatingAway = true;
-      Navigator.of(context).pop();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) Navigator.of(context).pop();
+      });
       return;
     }
 
-    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   void _openDeviceSheet() {
@@ -149,6 +209,11 @@ class _CastRemotePageState extends ConsumerState<CastRemotePage> {
         _castService.currentImageUrl != null &&
         _castService.currentImageUrl!.startsWith('http');
 
+    final bool isNearEnd = !_isSeeking &&
+        duration.inSeconds > 60 && // Skip near-end for very short content
+        position.inSeconds > (duration.inSeconds - 30) &&
+        _castService.hasNextEpisode;
+
     return Scaffold(
       backgroundColor: const Color(0xFF0D0D0D),
       body: Stack(
@@ -179,6 +244,8 @@ class _CastRemotePageState extends ConsumerState<CastRemotePage> {
                       _buildTitleSection(device),
                       const Spacer(),
                       _buildSeekBar(progress, position, duration),
+                      const SizedBox(height: 8),
+                      _buildEpisodeNav(),
                       const SizedBox(height: 8),
                       _buildMainControls(position, isLandscape: false),
                       const SizedBox(height: 24),
@@ -214,6 +281,8 @@ class _CastRemotePageState extends ConsumerState<CastRemotePage> {
                               const SizedBox(height: 4),
                               _buildSeekBar(progress, position, duration),
                               const SizedBox(height: 8),
+                              _buildEpisodeNav(),
+                              const SizedBox(height: 8),
                               _buildMainControls(position, isLandscape: true),
                               const SizedBox(height: 16),
                               _buildVolumeControl(),
@@ -227,7 +296,102 @@ class _CastRemotePageState extends ConsumerState<CastRemotePage> {
               },
             ),
           ),
+          // End-of-episode overlay
+          if (isNearEnd)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: MediaQuery.of(context).padding.bottom + 100,
+              child: _buildNextEpisodeBanner(),
+            ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildNextEpisodeBanner() {
+    final nextEp = _castService.nextEpisode;
+    final nextSeason = _castService.nextSeason;
+    final duration = _castService.duration;
+    final position = _castService.position;
+    final secondsLeft = (duration.inSeconds - position.inSeconds).clamp(0, 999);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF0022FF), Color(0xFF00A3FF)],
+          ),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF00A3FF).withOpacity(0.3),
+              blurRadius: 20,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'SIGUIENTE EPISODIO',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.7),
+                      fontSize: 10,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'S${nextSeason?.seasonNumber ?? '?'} E${nextEp?.episodeNumber ?? '?'}: ${nextEp?.name ?? '...'}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    'En $secondsLeft segundos...',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.6),
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            ElevatedButton.icon(
+              onPressed: () {
+                _castService.disconnect();
+                _playNextEpisode();
+              },
+              icon: const Icon(Icons.skip_next_rounded, size: 20),
+              label: const Text('VER AHORA'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                textStyle: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -507,6 +671,156 @@ class _CastRemotePageState extends ConsumerState<CastRemotePage> {
     );
   }
 
+  Widget _buildEpisodeNav() {
+    if (_castService.currentMediaType != 'series') return const SizedBox.shrink();
+
+    final hasPrev = _castService.hasPreviousEpisode;
+    final hasNext = _castService.hasNextEpisode;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _EpisodeNavButton(
+            label: 'ANTERIOR',
+            icon: Icons.skip_previous_rounded,
+            enabled: hasPrev,
+            onTap: hasPrev ? _playPreviousEpisode : null,
+          ),
+          const SizedBox(width: 24),
+          _EpisodeNavButton(
+            label: 'SIGUIENTE',
+            icon: Icons.skip_next_rounded,
+            enabled: hasNext,
+            onTap: hasNext ? _playNextEpisode : null,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _castEpisodeWithExtraction({
+    required Episode episode,
+    required Season season,
+    required String newTitle,
+  }) async {
+    if (episode.urls.isEmpty) return;
+
+    final eUrl = episode.urls.first;
+    var finalUrl = eUrl.url;
+    var finalHeaders = <String, String>{
+      'Referer': eUrl.url,
+      'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    };
+    var algorithm = eUrl.extractionAlgorithm;
+
+    // --- Igual que CastButton._extractIfNeeded para películas ---
+    // Siempre mostrar el extractor para alg 2 (WebView con JavaScript injection),
+    // porque al igual que en películas, la URL puede necesitar interacción del usuario.
+    final lower = eUrl.url.toLowerCase();
+    final isDirectVideo = lower.contains('.m3u8') ||
+        lower.contains('.mp4') ||
+        lower.contains('.mpd') ||
+        lower.contains('.mkv') ||
+        eUrl.url.startsWith('http://127.0.0.1');
+
+    if ((!isDirectVideo && algorithm > 0) || algorithm == 2) {
+      if (!mounted) return;
+      final result = await showDialog<VideoExtractionData>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => VideoExtractorDialog(
+          url: eUrl.url,
+          extractionAlgorithm: algorithm,
+        ),
+      );
+      if (result == null || result.videoUrl.isEmpty) return;
+
+      finalUrl = result.videoUrl;
+      finalHeaders = {};
+      if (result.headers != null) finalHeaders.addAll(result.headers!);
+      if (result.cookies != null) finalHeaders['Cookie'] = result.cookies!;
+      if (result.userAgent != null) {
+        finalHeaders['User-Agent'] = result.userAgent!;
+      }
+      finalHeaders['Referer'] = eUrl.url;
+    }
+
+    try {
+      await _castService.castUrl(
+        url: finalUrl,
+        title: newTitle,
+        imageUrl: _castService.currentImageUrl,
+        headers: finalHeaders,
+        startPosition: Duration.zero,
+        algorithm: algorithm,
+      );
+    } catch (e) {
+      debugPrint('❌ [CAST_REMOTE] Error al transmitir episodio: $e');
+      return;
+    }
+
+    _castService.setHistoryContext(
+      mediaId: _castService.currentMediaId,
+      episodeId: episode.id,
+      mediaType: 'series',
+      subtitleLabel:
+          'S${season.seasonNumber} E${episode.episodeNumber}: ${episode.name}',
+      imagePath: _castService.currentImageUrl,
+      videoOptionId: _castService.currentVideoOptionId,
+    );
+    _castService.setEpisodeNavigation(
+      nextEpisode: null,
+      nextSeason: null,
+      previousEpisode: null,
+      previousSeason: null,
+      seriesSeasons: null,
+      currentSeasonEpisodes: null,
+      currentEpisodeIndex: -1,
+    );
+
+    try {
+      await _loadEpisodeNavIfNeeded();
+    } catch (_) {}
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _playNextEpisode() async {
+    final nextEp = _castService.nextEpisode;
+    final nextSeason = _castService.nextSeason;
+    if (nextEp == null || nextSeason == null) return;
+
+    await _saveCastProgress();
+
+    final newTitle =
+        '${_castService.currentTitle?.split(' - ').first ?? ''} - S${nextSeason.seasonNumber} E${nextEp.episodeNumber}';
+
+    await _castEpisodeWithExtraction(
+      episode: nextEp,
+      season: nextSeason,
+      newTitle: newTitle,
+    );
+  }
+
+  Future<void> _playPreviousEpisode() async {
+    final prevEp = _castService.previousEpisode;
+    final prevSeason = _castService.previousSeason;
+    if (prevEp == null || prevSeason == null) return;
+
+    await _saveCastProgress();
+
+    final newTitle =
+        '${_castService.currentTitle?.split(' - ').first ?? ''} - S${prevSeason.seasonNumber} E${prevEp.episodeNumber}';
+
+    await _castEpisodeWithExtraction(
+      episode: prevEp,
+      season: prevSeason,
+      newTitle: newTitle,
+    );
+  }
+
   String _formatDuration(Duration d) {
     final h = d.inHours.toString().padLeft(2, '0');
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
@@ -515,11 +829,110 @@ class _CastRemotePageState extends ConsumerState<CastRemotePage> {
   }
 }
 
+/// Botón de navegación de episodios con texto y animación de presión
+class _EpisodeNavButton extends StatefulWidget {
+  final String label;
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback? onTap;
+
+  const _EpisodeNavButton({
+    required this.label,
+    required this.icon,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  @override
+  State<_EpisodeNavButton> createState() => _EpisodeNavButtonState();
+}
+
+class _EpisodeNavButtonState extends State<_EpisodeNavButton>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _pressController;
+  late Animation<double> _pressAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _pressController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 100),
+    );
+    _pressAnimation = Tween<double>(begin: 1.0, end: 0.92).animate(
+      CurvedAnimation(parent: _pressController, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _pressController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final opacity = widget.enabled ? 1.0 : 0.35;
+    return Opacity(
+      opacity: opacity,
+      child: AnimatedBuilder(
+        animation: _pressAnimation,
+        builder: (context, child) {
+          return Transform.scale(
+            scale: _pressAnimation.value,
+            child: GestureDetector(
+              onTapDown: widget.enabled ? (_) => _pressController.forward() : null,
+              onTapUp: widget.enabled
+                  ? (_) {
+                      _pressController.reverse();
+                      widget.onTap?.call();
+                    }
+                  : null,
+              onTapCancel: () => _pressController.reverse(),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: widget.enabled
+                      ? const Color(0xFF00A3FF).withOpacity(0.15)
+                      : Colors.white.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: widget.enabled
+                        ? const Color(0xFF00A3FF).withOpacity(0.4)
+                        : Colors.white.withOpacity(0.08),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(widget.icon, color: Colors.white, size: 18),
+                    const SizedBox(width: 8),
+                    Text(
+                      widget.label,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 /// Botón de control circular reutilizable
 class _ControlButton extends StatelessWidget {
   final IconData icon;
   final double size;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final String tooltip;
   final Color color;
 

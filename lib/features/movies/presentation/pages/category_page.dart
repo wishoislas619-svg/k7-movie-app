@@ -30,6 +30,7 @@ class _CategoryPageState extends State<CategoryPage> {
     final filteredMovies = widget.movies.where((m) => m.name.toLowerCase().contains(_searchQuery.toLowerCase())).toList();
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: const Color(0xFF0A0A0A),

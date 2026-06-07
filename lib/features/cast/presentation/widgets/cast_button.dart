@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:android_intent_plus/flag.dart';
+import 'package:movie_app/main.dart' show navigatorKey;
 import 'cast_device_list_sheet.dart';
 import '../../services/cast_service.dart';
 import '../pages/cast_remote_page.dart';
@@ -99,7 +100,9 @@ class _CastButtonState extends ConsumerState<CastButton>
   }
 
   void _onCastStateChanged() {
-    if (mounted) setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   void _openCastSelection() {
@@ -169,7 +172,10 @@ class _CastButtonState extends ConsumerState<CastButton>
                   Navigator.pop(context);
                   if (_castService.isConnected) {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const CastRemotePage()),
+                      MaterialPageRoute(
+                        settings: const RouteSettings(name: '/cast_remote'),
+                        builder: (_) => const CastRemotePage(),
+                      ),
                     );
                   } else {
                     _checkAdAndProceed(() => _openCastSheet());
@@ -595,13 +601,13 @@ class _CastButtonState extends ConsumerState<CastButton>
         subtitleLabel: widget.subtitleLabel,
         videoOptionId: widget.videoOptionId,
         onCastStarted: () {
-          // Navegar al control remoto una sola vez, después del pop del sheet
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _castService.isConnected) {
-              Navigator.of(
-                context,
-              ).push(MaterialPageRoute(builder: (_) => const CastRemotePage()));
-            }
+            navigatorKey.currentState?.push(
+              MaterialPageRoute(
+                settings: const RouteSettings(name: '/cast_remote'),
+                builder: (_) => const CastRemotePage(),
+              ),
+            );
           });
         },
       ),

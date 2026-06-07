@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:movie_app/core/constants/app_constants.dart';
+import 'package:movie_app/features/series/domain/entities/episode.dart';
+import 'package:movie_app/features/series/domain/entities/season.dart';
+import 'package:movie_app/features/movies/domain/entities/movie.dart';
 import 'package:dart_cast/dart_cast.dart' as dc;
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -40,6 +43,14 @@ class CastService extends ChangeNotifier {
   String? _dlnaEventUrl;
   String? _dlnaRenderingControlUrl;
   int? _currentAlgorithm;
+  Map<String, String>? _currentHeaders;
+  String? _currentSubtitleUrl;
+
+  // Fields for recast (server-side seeking)
+  String? _recastUrl;
+  Map<String, String>? _recastHeaders;
+  int? _recastAlgorithm;
+  dc.CastMediaType _recastMediaType = dc.CastMediaType.mp4;
   final dc.MediaProxy _localFileProxy = dc.MediaProxy();
 
   List<CastDeviceInfo> _devices = [];
@@ -50,6 +61,13 @@ class CastService extends ChangeNotifier {
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _isPlaying = false;
+
+  // Recast offset: when server-side seeking via stop+recast, the TV restarts
+  // from position 0 of the truncated manifest. This offset is added to the
+  // TV's reported position so the seek bar reflects the true content position.
+  Duration _recastOffset = Duration.zero;
+  bool _recastSeekActive = false;
+  bool useFfmpegStreaming = false; // true = remux HLS→MKV vía FFmpeg (auto para DLNA)
   String? _currentTitle;
   String? _currentImageUrl;
   String? _currentVideoUrl;
@@ -58,6 +76,19 @@ class CastService extends ChangeNotifier {
   String? _currentMediaType;
   String? _currentSubtitleLabel;
   String? _currentVideoOptionId;
+
+  // Whether the remote control page is currently visible.
+  bool _isRemotePageOpen = false;
+
+  // ── Episode Navigation ────────────────────────────────────────────────────
+  List<VideoOption>? _videoOptions;
+  Episode? _nextEpisode;
+  Season? _nextSeason;
+  Episode? _previousEpisode;
+  Season? _previousSeason;
+  List<Season> _seriesSeasons = [];
+  List<Episode> _currentSeasonEpisodes = [];
+  int _currentEpisodeIndex = -1;
 
   // ── Public Getters ─────────────────────────────────────────────────────────
   List<CastDeviceInfo> get devices => _devices;
@@ -77,6 +108,23 @@ class CastService extends ChangeNotifier {
   String? get currentMediaType => _currentMediaType;
   String? get currentSubtitleLabel => _currentSubtitleLabel;
   String? get currentVideoOptionId => _currentVideoOptionId;
+
+  bool get isRemotePageOpen => _isRemotePageOpen;
+  set isRemotePageOpen(bool value) {
+    _isRemotePageOpen = value;
+    notifyListeners();
+  }
+
+  List<VideoOption>? get videoOptions => _videoOptions;
+  Episode? get nextEpisode => _nextEpisode;
+  Season? get nextSeason => _nextSeason;
+  Episode? get previousEpisode => _previousEpisode;
+  Season? get previousSeason => _previousSeason;
+  List<Season> get seriesSeasons => _seriesSeasons;
+  List<Episode> get currentSeasonEpisodes => _currentSeasonEpisodes;
+  int get currentEpisodeIndex => _currentEpisodeIndex;
+  bool get hasNextEpisode => _nextEpisode != null;
+  bool get hasPreviousEpisode => _previousEpisode != null;
 
   // ── Discovery ──────────────────────────────────────────────────────────────
 
@@ -170,6 +218,27 @@ class CastService extends ChangeNotifier {
     _currentVideoOptionId = videoOptionId;
   }
 
+  void setEpisodeNavigation({
+    Episode? nextEpisode,
+    Season? nextSeason,
+    Episode? previousEpisode,
+    Season? previousSeason,
+    List<Season>? seriesSeasons,
+    List<Episode>? currentSeasonEpisodes,
+    int currentEpisodeIndex = -1,
+    List<VideoOption>? videoOptions,
+  }) {
+    _nextEpisode = nextEpisode;
+    _nextSeason = nextSeason;
+    _previousEpisode = previousEpisode;
+    _previousSeason = previousSeason;
+    if (seriesSeasons != null) _seriesSeasons = seriesSeasons;
+    if (currentSeasonEpisodes != null) _currentSeasonEpisodes = currentSeasonEpisodes;
+    _currentEpisodeIndex = currentEpisodeIndex;
+    if (videoOptions != null) _videoOptions = videoOptions;
+    notifyListeners();
+  }
+
   void _mergeDiscoveredDevices(Iterable<CastDeviceInfo> incoming) {
     final byEndpoint = <String, CastDeviceInfo>{
       for (final device in _devices) device.address: device,
@@ -245,19 +314,28 @@ class CastService extends ChangeNotifier {
       // Monitorear estado de reproducción
       _stateSubscription?.cancel();
       _stateSubscription = _session!.stateStream.listen((s) {
+        if (_recastSeekActive && s == dc.SessionState.idle) return;
         _log('Estado de sesión cambió → $s');
         _isPlaying = s == dc.SessionState.playing;
         notifyListeners();
       });
       _positionSubscription?.cancel();
       _positionSubscription = _session!.positionStream.listen((pos) {
-        _position = pos;
-        notifyListeners();
+        final adjustedPos = _recastSeekActive && _recastOffset > Duration.zero
+            ? pos + _recastOffset
+            : pos;
+        if (adjustedPos != _position && adjustedPos.inMilliseconds >= 0) {
+          _position = adjustedPos;
+          notifyListeners();
+        }
       });
       _durationSubscription?.cancel();
       _durationSubscription = _session!.durationStream.listen((dur) {
-        _duration = dur;
-        notifyListeners();
+        if (_recastSeekActive) return;
+        if (dur.inSeconds > 0) {
+          _duration = dur;
+          notifyListeners();
+        }
       });
 
       // Si es DLNA, extraemos URLs de control
@@ -332,6 +410,9 @@ class CastService extends ChangeNotifier {
     String? subtitleUrl,
     int? algorithm,
   }) async {
+    print(
+      '🔥🔥🔥🔥 CASTURL ENTRADA: duration=${duration?.inSeconds}s | device=${_connectedDevice?.deviceType} | url=$url',
+    );
     if (_connectedDevice?.deviceType == CastDeviceType.roku) {
       await _castUrlToRoku(
         url: url,
@@ -354,12 +435,22 @@ class CastService extends ChangeNotifier {
     _currentTitle = title;
     _currentImageUrl = imageUrl;
     _currentVideoUrl = url;
+    _currentHeaders = headers;
+    _currentSubtitleUrl = subtitleUrl;
+    _position = startPosition;
+    _duration = duration ?? Duration.zero;
 
+    final durationMin = duration != null
+        ? '${(duration.inSeconds / 60).toStringAsFixed(1)} min'
+        : 'desconocida';
+    // 🟢 Log verde de duración ANTES del proxy local
+    _log('✅ [DURACIÓN] Duración establecida: $durationMin (${duration?.inSeconds ?? 0}s)');
     _log('══════════════════════════════════════');
     _log('castUrl() iniciado');
     _log('  title    : $title');
     _log('  url      : $url');
     _log('  algorithm: $algorithm');
+    _log('  duration : $durationMin');
     _log('  startPos : ${startPosition.inSeconds}s');
     _log('  subtitle : $subtitleUrl');
 
@@ -381,6 +472,12 @@ class CastService extends ChangeNotifier {
       effectiveUrl = unproxied['url'];
       effectiveHeaders = Map<String, String>.from(unproxied['headers'] ?? {});
     }
+
+    _recastUrl = effectiveUrl;
+    _recastHeaders = effectiveHeaders;
+    _recastAlgorithm = effectiveAlgorithm;
+    _recastSeekActive = false;
+    _recastOffset = Duration.zero;
 
     final Map<String, String> combinedHeaders = {
       // Por defecto: UA Móvil (Algoritmo 1 / Estándar)
@@ -473,6 +570,16 @@ class CastService extends ChangeNotifier {
           effectiveUrl,
           combinedHeaders,
         );
+      } else if (useFfmpegStreaming && !isDlna) {
+        _log('🎬 CAST: Usando FFmpeg streaming (remux HLS→fMP4)');
+        await MediaProxyService().start();
+        finalUrl = await MediaProxyService().getFfmpegUrl(
+          effectiveUrl,
+          combinedHeaders,
+        );
+        mediaType = dc.CastMediaType.mp4;
+        // La duración se conoce al completarse FFmpeg, no intentar calcular
+        // El seek progresivo funciona via range requests sobre el fichero creciente
       } else {
         await MediaProxyService().start();
         finalUrl = MediaProxyService().getProxiedUrl(
@@ -485,7 +592,7 @@ class CastService extends ChangeNotifier {
         );
       }
 
-      if (duration == null || duration == Duration.zero) {
+      if (!useFfmpegStreaming && (duration == null || duration == Duration.zero)) {
         try {
           _log(
             '⏱️ CAST: Calculando duración HLS nativa para habilitar SEEK...',
@@ -580,34 +687,62 @@ class CastService extends ChangeNotifier {
       }
     }
 
+    // Para DLNA: codificar posición inicial en la URL para server-side seeking
+    // (evita dart_cast's Seek SOAP que falla con 711 en Samsung).
+    final bool usePosInUrl = isDlna &&
+        startPosition > Duration.zero &&
+        (finalUrl.contains('/proxy') || finalUrl.contains('/bridge'));
+    if (usePosInUrl) {
+      finalUrl += '&pos=${startPosition.inSeconds}';
+      _log('  CAST: Server-side seek inicial (pos=${startPosition.inSeconds}s)');
+    }
+
+    // Re-aplicar _duration por si los bloques de fallback HLS (Bridge / Dinámico)
+    // resolvieron la duración real después de que la establecimos inicialmente.
+    _duration = duration ?? Duration.zero;
+
+    final resolvedMin = duration != null
+        ? '${(duration.inSeconds / 60).toStringAsFixed(1)} min'
+        : 'desconocida';
+    _log('✅ [DURACIÓN] Duración final (tras proxy): $resolvedMin');
     _log('--- [CAST_READY] URL Final: $finalUrl ---');
     _log('  Llamando session.loadMedia() con URL: $finalUrl');
 
     try {
-      _log('🚀 [LOAD] Sending to TV: $finalUrl');
+      final durStr = duration != null
+          ? '${duration.inHours.toString().padLeft(2, '0')}:${duration.inMinutes.remainder(60).toString().padLeft(2, '0')}:${duration.inSeconds.remainder(60).toString().padLeft(2, '0')}'
+          : 'desconocida';
 
-      // Creamos el objeto media con los datos optimizados
+      // Usar dart_cast.loadMedia() siempre — su DIDL-Lite ya funciona con Samsung
+      // (sin error 716) y ya incluye duration si CastMedia.duration no es nulo.
+      final effectiveDuration =
+          _duration != null && _duration! > Duration.zero ? _duration : null;
+      final effDurStr = effectiveDuration != null
+          ? '${effectiveDuration.inHours.toString().padLeft(2, '0')}:${effectiveDuration.inMinutes.remainder(60).toString().padLeft(2, '0')}:${effectiveDuration.inSeconds.remainder(60).toString().padLeft(2, '0')}'
+          : 'ninguna';
+      final protocolLabel = isDlna ? 'DLNA' : 'Chromecast';
+      print(
+        '🔥🔥🔥 [ENVIANDO_AHORA] $protocolLabel → loadMedia | duration="$effDurStr" ($effectiveDuration) | URL=$finalUrl',
+      );
+      _recastMediaType = mediaType;
+      // Para DLNA con pos en URL: startPosition=0 para que dart_cast no intente
+      // su propio Seek SOAP (falla con 711). El server-side seek via &pos= lo
+      // maneja el proxy.
       final media = dc.CastMedia(
         url: finalUrl,
         title: _sanitizeTitleForDlna(title),
         type: mediaType,
         imageUrl: imageUrl,
-        startPosition: startPosition,
-        duration: duration,
+        startPosition: usePosInUrl ? Duration.zero : startPosition,
+        duration: effectiveDuration,
       );
-
-      // En dart_cast, loadMedia requiere un objeto CastMedia
       await _session!.loadMedia(media);
 
-      // En DLNA, a veces loadMedia no dispara el Play automáticamente o falla por timeout de respuesta
-      if (isDlna) {
-        _log('  DLNA: Forzando Play tras loadMedia para asegurar arranque...');
-        await Future.delayed(const Duration(milliseconds: 1000));
-        try {
-          await _session!.play();
-        } catch (_) {}
+      if (usePosInUrl) {
+        _recastSeekActive = true;
+        _recastOffset = startPosition;
+        _log('  CAST: Offset activado (${_recastOffset.inSeconds}s)');
       }
-
       _log('  ✅ Transmisión iniciada correctamente');
     } catch (e, stack) {
       _logErr('loadMedia falló: $e');
@@ -626,10 +761,19 @@ class CastService extends ChangeNotifier {
     Duration startPosition = Duration.zero,
     Duration? duration,
   }) async {
+    _recastSeekActive = false;
+    _recastOffset = Duration.zero;
     final cleanTitle = _sanitizeTitleForDlna(title);
     _currentTitle = cleanTitle;
     _currentImageUrl = imageUrl;
     _currentVideoUrl = filePath;
+    _position = startPosition;
+    _duration = duration ?? Duration.zero;
+
+    final durMin = duration != null
+        ? '${(duration.inSeconds / 60).toStringAsFixed(1)} min'
+        : 'desconocida';
+    _log('✅ [DURACIÓN] LocalFile duración establecida: $durMin (${duration?.inSeconds ?? 0}s)');
 
     if (_connectedDevice?.deviceType == CastDeviceType.roku) {
       final file = File(filePath);
@@ -741,47 +885,12 @@ class CastService extends ChangeNotifier {
 
     _log('  Llamando session.loadMedia() con URL: $proxyUrl');
     try {
-      if (isDlna && _dlnaControlUrl != null) {
-        _log(
-          '  DLNA Senior: Usando carga manual con DIDL-Lite para habilitar controles...',
-        );
-        final success = await _loadMediaDlnaSenior(
-          url: proxyUrl,
-          title: title,
-          mediaType: dc.CastMediaType.mp4,
-          imageUrl: imageUrl,
-          duration: effectiveDuration,
-        );
-        if (success) {
-          _log('  ✅ Carga manual DLNA completada');
-
-          // Esperar a que la TV procese la URI antes de mandar Play
-          await Future.delayed(const Duration(milliseconds: 1500));
-
-          try {
-            await play();
-          } catch (e) {
-            if (e.toString().contains('701')) {
-              _log(
-                '  ⚠️ TV devolvió 701 en Play, probablemente ya está iniciando...',
-              );
-            } else {
-              rethrow;
-            }
-          }
-
-          notifyListeners();
-          return;
-        }
-      }
-
+      // dart_cast.loadMedia() ya construye su propio DIDL-Lite con la
+      // duración de CastMedia.duration, y envía Play automáticamente.
       await _session!.loadMedia(media);
       _log('  ✅ loadMedia local completado');
     } catch (e, stack) {
-      _logErr(
-        '  loadMedia fallback falló: $e (posiblemente la TV ya tiene la URI cargada)',
-      );
-      // No relanzamos: si la TV ya recibió la URI via SOAP directo, está reproduciendo.
+      _logErr('  loadMedia falló: $e');
     }
     _log('══════════════════════════════════════');
     notifyListeners();
@@ -957,12 +1066,16 @@ class CastService extends ChangeNotifier {
 
           if (relTime != null && relTime != 'NOT_IMPLEMENTED') {
             final newPos = _parseDlnaDuration(relTime);
-            if (newPos != _position) {
-              _position = newPos;
+            final adjustedPos = _recastSeekActive && _recastOffset > Duration.zero
+                ? newPos + _recastOffset
+                : newPos;
+            if (adjustedPos != _position) {
+              _position = adjustedPos;
               notifyListeners();
             }
           }
-          if (duration != null &&
+          if (!_recastSeekActive &&
+              duration != null &&
               duration != 'NOT_IMPLEMENTED' &&
               duration != '0:00:00') {
             final newDur = _parseDlnaDuration(duration);
@@ -1136,8 +1249,14 @@ class CastService extends ChangeNotifier {
     _currentTitle = title;
     _currentImageUrl = imageUrl;
     _currentVideoUrl = url;
+    _currentHeaders = headers;
     _position = startPosition;
     _duration = duration ?? Duration.zero;
+
+    final durMin = duration != null
+        ? '${(duration.inSeconds / 60).toStringAsFixed(1)} min'
+        : 'desconocida';
+    _log('✅ [DURACIÓN] Roku duración establecida: $durMin (${duration?.inSeconds ?? 0}s)');
 
     final combinedHeaders = <String, String>{
       'User-Agent':
@@ -1164,7 +1283,42 @@ class CastService extends ChangeNotifier {
       );
     }
 
-    _log('Roku: consultando apps instaladas...');
+    final isHls = finalUrl.toLowerCase().contains('.m3u8') || finalUrl.contains('playlist');
+    final effectiveMediaType = _currentMediaType ?? 'movie';
+    final streamFormat = isHls
+        ? 'hls'
+        : finalUrl.toLowerCase().contains('.mp4')
+            ? 'mp4'
+            : finalUrl.toLowerCase().contains('.mkv')
+                ? 'mkv'
+                : null;
+
+    // Fallback HLS: resolver duración desde el manifiesto si no nos la dieron
+    if (isHls && (duration == null || duration == Duration.zero)) {
+      try {
+        _log('⏱️ ROKU: Calculando duración HLS para habilitar SEEK...');
+        final double dSeconds = await MediaProxyService().getHlsDuration(
+          url,
+          headers: combinedHeaders,
+        );
+        if (dSeconds > 0) {
+          duration = Duration(milliseconds: (dSeconds * 1000).toInt());
+          _log('⏱️ ROKU: Duración obtenida: ${duration.inSeconds}s');
+        }
+      } catch (e) {
+        _log('⚠️ ROKU: Error al calcular duración (ignorado): $e');
+      }
+    }
+
+    // Re-aplicar _duration por si el fallback HLS la resolvió
+    _duration = duration ?? Duration.zero;
+
+    final durationMin = duration != null
+        ? '${(duration.inSeconds / 60).toStringAsFixed(1)} min'
+        : 'desconocida';
+    _log('Roku: duración=$durationMin, streamFormat=$streamFormat');
+    _log('Roku: buscando Media Player entre las apps instaladas...');
+
     final apps = await _rokuEcp.queryApps(baseUrl);
     RokuAppInfo? mediaPlayer;
     for (final app in apps) {
@@ -1177,32 +1331,74 @@ class CastService extends ChangeNotifier {
       }
     }
 
-    if (mediaPlayer == null) {
-      throw Exception(
-        'Roku detectado, pero no encontré Roku Media Player instalado. Instala "Roku Media Player" o usa un Roku con DLNA/Media Player habilitado.',
+    // IDs conocidos del Roku Media Player: 2285 (clásico), 15536 (nuevo)
+    final candidateIds = [
+      if (mediaPlayer != null) mediaPlayer.id,
+      '2285',
+      '15536',
+    ];
+    String? appId;
+    for (final id in candidateIds) {
+      if (id == null) continue;
+      _log(
+        '⏱️ [DURACIÓN_ANTES_FRAGMENTO] Roku: duration=${duration?.inSeconds ?? 0}s en params launch (antes del primer fragmento proxeado)',
       );
+      print(
+        '🔥🔥🔥 [ENVIANDO_AHORA] Roku → launch app=$id | duration=${duration?.inSeconds ?? 0}s | URL=$finalUrl',
+      );
+      _log('Roku: intentando lanzar app ID $id...');
+      final ok = await _rokuEcp.launch(
+        baseUrl,
+        id,
+        params: {
+          'contentId': finalUrl,
+          'mediaType': 'movie',
+          'title': _sanitizeTitleForDlna(title),
+          if (streamFormat != null) 'streamFormat': streamFormat,
+          if (duration != null && duration.inSeconds > 0)
+            'duration': duration.inSeconds.toString(),
+        },
+      );
+      if (ok) {
+        appId = id;
+        _log('Roku: lanzamiento exitoso con app ID $id');
+        break;
+      }
+      // Si launch falló, intentar instalar primero (puede no estar instalado)
+      _log('Roku: intentando instalar app ID $id...');
+      final installed = await _rokuEcp.install(baseUrl, id);
+      if (installed) {
+        _log('Roku: instalado, reintentando launch en 2s...');
+        await Future.delayed(const Duration(seconds: 2));
+        final ok2 = await _rokuEcp.launch(
+          baseUrl,
+          id,
+          params: {
+            'contentId': finalUrl,
+            'mediaType': 'movie',
+            'title': _sanitizeTitleForDlna(title),
+            if (streamFormat != null) 'streamFormat': streamFormat,
+            if (duration != null && duration.inSeconds > 0)
+              'duration': duration.inSeconds.toString(),
+          },
+        );
+        if (ok2) {
+          appId = id;
+          _log('Roku: lanzamiento exitoso con app ID $id (tras instalar)');
+          break;
+        }
+      }
     }
 
-    _log(
-      'Roku: lanzando ${mediaPlayer.name} (${mediaPlayer.id}) con URL: $finalUrl',
-    );
-
-    final params = <String, String>{
-      'contentId': finalUrl,
-      'mediaType': 'movie',
-      'url': finalUrl,
-      'u': finalUrl,
-      't': 'v',
-      'title': _sanitizeTitleForDlna(title),
-    };
-
-    final launched = await _rokuEcp.launch(
-      baseUrl,
-      mediaPlayer.id,
-      params: params,
-    );
-    if (!launched) {
-      throw Exception('Roku rechazó el comando de reproducción.');
+    if (appId == null) {
+      _logErr('Roku: todos los IDs fallaron. mediaType=$effectiveMediaType, streamFormat=$streamFormat');
+      throw Exception(
+        'Roku rechazó la transmisión. Verifica:\n'
+        '1. Roku tenga "Control por apps móviles" en Permisivo\n'
+        '   (Ajustes → Sistema → Config. avanzada → Control por apps móviles)\n'
+        '2. Roku y el teléfono estén en la misma red WiFi\n'
+        '3. El canal Media Player esté instalado',
+      );
     }
 
     await Future.delayed(const Duration(milliseconds: 900));
@@ -1215,118 +1411,12 @@ class CastService extends ChangeNotifier {
   /// Samsung TV rechaza peticiones con títulos que contienen extensiones
   /// de archivo, indicadores de formato (HLS/TS) o caracteres no ASCII
   /// sin escapar en el DIDL-Lite.
-  Future<bool> _loadMediaDlnaSenior({
-    required String url,
-    required String title,
-    dc.CastMediaType? mediaType,
-    String? imageUrl,
-    Duration? duration,
-  }) async {
-    _log('🛰️ [DLNA_SENIOR] Target: $_dlnaControlUrl');
-    if (_dlnaControlUrl == null) return false;
-
-    String finalUrl = url;
-    dc.CastMediaType? finalMediaType = mediaType;
-
-    // 🌉 REFUERZO DE ÚLTIMA MILLA: Si el HLS llega aquí sin proxeat, lo capturamos
-    if (url.contains('.m3u8') && !url.contains('/bridge')) {
-      print(
-        '🌉 [BRIDGE_FORCE] Detectado HLS en el punto de salida. Forzando Puente...',
-      );
-      await MediaProxyService().start();
-
-      final String proxyBase = MediaProxyService().getProxiedUrl(
-        '',
-        null,
-        useLocalhost: false,
-        toCast: true,
-      );
-      final String host = proxyBase
-          .split('/proxy')[0]
-          .replaceFirst('http://', '');
-      final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
-      finalUrl = 'http://$host/bridge.mp4?url=$bUrl&a=1';
-      finalMediaType = dc.CastMediaType.mp4;
-
-      print('🌉 [BRIDGE_FORCE] URL transformada: $finalUrl');
-    }
-
-    final durationStr = duration != null
-        ? _formatDurationForDlna(duration)
-        : "0:00:00";
-    final sanitizedTitle = _sanitizeTitleForDlna(title);
-
-    // MimeType dinámico según el contenido
-    String mimeType = 'video/mp4';
-    if (finalUrl.contains('/bridge')) {
-      mimeType = 'video/mp2t'; // MPEG-TS es el nuevo estándar del puente
-    } else if (finalMediaType == dc.CastMediaType.hls) {
-      mimeType = 'application/vnd.apple.mpegurl';
-    } else if (finalMediaType == dc.CastMediaType.mkv) {
-      mimeType = 'video/x-matroska';
-    } else if (finalMediaType == dc.CastMediaType.mpegTs) {
-      mimeType = 'video/mp2t';
-    }
-
-    // DIDL-Lite: formato estándar compatible con Samsung/LG/Sony
-    // DLNA.ORG_OP=01 → Habilita seek por byte-range (adelantar/atrasar)
-    // DLNA.ORG_FLAGS → Bits de capacidades: Streaming + Time-based seek
-    // DLNA.ORG_PN → Profile Name (Samsung lo requiere para reconocer el codec)
-    String dlnaProfile = 'AVC_MP4_HP_HD_AAC';
-    if (mimeType.contains('mp2t')) dlnaProfile = 'MPEG_TS_HD_NA_ISO';
-
-    final String dlnaFlags =
-        'DLNA.ORG_PN=$dlnaProfile;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000';
-    final String protocolInfo = 'http-get:*:$mimeType:$dlnaFlags';
-
-    // El metadata DIDL-Lite DEBE estar escapado dentro del SOAP CurrentURIMetaData.
-    // Samsung requiere xmlns:sec y suele fallar si falta o si hay namespaces extraños como dlna:.
-    // Incluimos pv (PacketVideo) que es un estándar común en DLNA.
-    final metadata =
-        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
-        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
-        'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" '
-        'xmlns:sec="http://www.sec.co.kr/" '
-        'xmlns:pv="http://www.pv.com/pvns/">'
-        '<item id="0" parentID="0" restricted="0">'
-        '<dc:title>${_escapeXml(sanitizedTitle)}</dc:title>'
-        '<upnp:class>object.item.videoItem</upnp:class>'
-        '<res protocolInfo="$protocolInfo" duration="$durationStr">${_escapeXml(finalUrl)}</res>'
-        '</item></DIDL-Lite>';
-
-    _log(
-      '📜 [DLNA_METADATA] Title: $sanitizedTitle | Mime: $mimeType | Duration: $durationStr',
-    );
-
-    final success = await _sendDlnaSoapAction(
-      controlUrl: _dlnaControlUrl!,
-      serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
-      action: 'SetAVTransportURI',
-      args: {
-        'InstanceID': '0',
-        'CurrentURI': _escapeXml(finalUrl),
-        'CurrentURIMetaData': _escapeXml(metadata),
-      },
-    );
-
-    return success != null;
-  }
-
   String _formatDurationForDlna(Duration d) {
     String twoDigits(int n) => n.toString().padLeft(2, '0');
     final hours = twoDigits(d.inHours);
     final minutes = twoDigits(d.inMinutes.remainder(60));
     final seconds = twoDigits(d.inSeconds.remainder(60));
     return "$hours:$minutes:$seconds";
-  }
-
-  String _escapeXml(String input) {
-    return input
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&apos;');
   }
 
   String _sanitizeTitleForDlna(String title) {
@@ -1475,21 +1565,134 @@ class CastService extends ChangeNotifier {
 
     if (_connectedDevice?.protocol == dc.CastProtocol.dlna &&
         _dlnaControlUrl != null) {
+      final target = _formatDurationForDlna(position);
+      // 1. Intento con REL_TIME
+      //    NOTA: _sendDlnaSoapAction NO lanza excepción en HTTP 500 — devuelve null.
+      //    Por eso chequeamos el valor de retorno explícitamente.
       try {
-        final target = _formatDurationForDlna(position);
-        await _sendDlnaSoapAction(
+        final r1 = await _sendDlnaSoapAction(
           controlUrl: _dlnaControlUrl!,
           serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
           action: 'Seek',
           args: {'InstanceID': '0', 'Unit': 'REL_TIME', 'Target': target},
         );
+        if (r1 != null) {
+          _log('  ✅ Seek REL_TIME exitoso');
+          _position = position;
+          notifyListeners();
+          return;
+        }
+        throw Exception('REL_TIME seek returned null (HTTP error)');
       } catch (e) {
         if (e.toString().contains('701')) {
           _log('  ⚠️ TV ocupada (701). Reintentando Seek en 1s...');
           await Future.delayed(const Duration(seconds: 1));
           return seekTo(position);
         }
-        rethrow;
+        _log('  ⚠️ Seek REL_TIME falló: ${e.toString().length > 100 ? e.toString().substring(0, 100) : e.toString()}');
+      }
+      // 2. Fallback con ABS_TIME (algunas TVs Samsung/LG viejas)
+      try {
+        final r2 = await _sendDlnaSoapAction(
+          controlUrl: _dlnaControlUrl!,
+          serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+          action: 'Seek',
+          args: {'InstanceID': '0', 'Unit': 'ABS_TIME', 'Target': target},
+        );
+        if (r2 != null) {
+          _log('  ✅ Seek ABS_TIME exitoso');
+          _position = position;
+          notifyListeners();
+          return;
+        }
+        throw Exception('ABS_TIME seek returned null');
+      } catch (e) {
+        _log('  ⚠️ Seek ABS_TIME también falló');
+      }
+      // 3. Reintentamos ABS_TIME tras 3s (la TV puede estar ocupada)
+      _log(
+        '  ⏳ Seek falló (711/701). Reintentando ABS_TIME en 3s...',
+      );
+      await Future.delayed(const Duration(seconds: 3));
+      try {
+        final r3 = await _sendDlnaSoapAction(
+          controlUrl: _dlnaControlUrl!,
+          serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+          action: 'Seek',
+          args: {'InstanceID': '0', 'Unit': 'ABS_TIME', 'Target': target},
+        );
+        if (r3 != null) {
+          _log('  ✅ Seek diferido exitoso a ${position.inSeconds}s');
+          _position = position;
+          notifyListeners();
+          return;
+        }
+      } catch (e) {
+        _log('  ⚠️ Seek diferido también falló');
+      }
+      // 4. Stop + recast con server-side seeking (pos en la URL del proxy).
+      //    El proxy reescribirá el manifiesto HLS para saltar segmentos.
+      if (_recastUrl != null) {
+        _log('  ⏹️ Recasteando con server-side seek (pos=${position.inSeconds}s)...');
+        await stop();
+        await Future.delayed(const Duration(milliseconds: 600));
+        await MediaProxyService().start();
+
+        // Usar solo cabeceras mínimas para evitar URL > 1024 chars (SOAP 500 en Samsung)
+        final Map<String, String> minimalHeaders = {};
+        final h = _recastHeaders ?? {};
+        if (h.containsKey('User-Agent'))
+          minimalHeaders['User-Agent'] = h['User-Agent']!;
+        if (h.containsKey('Referer'))
+          minimalHeaders['Referer'] = h['Referer']!;
+        if (h.containsKey('Cookie'))
+          minimalHeaders['Cookie'] = h['Cookie']!;
+        if (h.containsKey('Origin'))
+          minimalHeaders['Origin'] = h['Origin']!;
+        if (!minimalHeaders.containsKey('User-Agent')) {
+          // Fallback: mismo UA por defecto que en castUrl
+          minimalHeaders['User-Agent'] =
+              'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 '
+              '(KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
+        }
+
+        final posUrl = MediaProxyService().getProxiedUrl(
+          _recastUrl!,
+          minimalHeaders,
+          useLocalhost: false,
+          toCast: true,
+          algorithm: _recastAlgorithm,
+          remux: false,
+          pos: position.inSeconds,
+        );
+        final effectiveDuration =
+            _duration > Duration.zero ? _duration : null;
+        try {
+          // loadMedia ya envía Play internamente
+          await _session!.loadMedia(dc.CastMedia(
+            url: posUrl,
+            title: _currentTitle ?? '',
+            type: _recastMediaType,
+            imageUrl: _currentImageUrl,
+            startPosition: Duration.zero,
+            duration: effectiveDuration,
+          ));
+          _recastSeekActive = true;
+          _recastOffset = position;
+          _position = position;
+          notifyListeners();
+          _log('  ✅ Recast exitoso a ${position.inSeconds}s (offset=${_recastOffset.inSeconds}s)');
+        } catch (e) {
+          _log('  ❌ Recast falló: $e');
+          _recastSeekActive = false;
+          _recastOffset = Duration.zero;
+          _position = position;
+          notifyListeners();
+        }
+      } else {
+        _log('  ⚠️ Sin datos de recast. Solo UI.');
+        _position = position;
+        notifyListeners();
       }
     }
 

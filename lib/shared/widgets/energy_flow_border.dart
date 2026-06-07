@@ -33,7 +33,10 @@ class _EnergyFlowBorderState extends State<EnergyFlowBorder> with SingleTickerPr
     _controller = AnimationController(
       vsync: this,
       duration: widget.duration,
-    )..repeat();
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _controller.repeat();
+    });
   }
 
   @override

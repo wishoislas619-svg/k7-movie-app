@@ -75,7 +75,9 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
   }
 
   void _rebuild() {
-    if (mounted) setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   void _startScan() {
@@ -478,14 +480,14 @@ class _CastDeviceListSheetState extends ConsumerState<CastDeviceListSheet> {
             width: double.infinity,
             child: ElevatedButton.icon(
               onPressed: () {
+                final nav = Navigator.of(context, rootNavigator: true);
                 Navigator.pop(context);
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted) {
-                    Navigator.of(
-                      context,
-                    ).push(MaterialPageRoute(builder: (_) => CastRemotePage()));
-                  }
-                });
+                nav.push(
+                  MaterialPageRoute(
+                    settings: const RouteSettings(name: '/cast_remote'),
+                    builder: (_) => CastRemotePage(),
+                  ),
+                );
               },
               icon: const Icon(Icons.open_in_new, size: 16),
               label: const Text('Abrir Control Remoto'),

@@ -2,7 +2,12 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
+import 'package:path_provider/path_provider.dart';
 
 class MediaProxyService {
   static final MediaProxyService _instance = MediaProxyService._internal();
@@ -11,6 +16,139 @@ class MediaProxyService {
 
   static String? lastCookies;
   static String? deviceUserAgent;
+  String _sessionCookies = ''; // cookies seteadas por el CDN (Set-Cookie)
+  String _lastOriginCookie = ''; // cookie del extractor para re-combinar
+
+
+  // --- Streaming FFmpeg (progresivo) ---
+  final Map<String, _FfmpegStream> _activeStreams = {};
+  String? _streamsDir;
+
+  Future<String> _ensureStreamsDir() async {
+    if (_streamsDir != null) return _streamsDir!;
+    final appDir = await getApplicationDocumentsDirectory();
+    final dir = Directory('${appDir.path}/streams');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    _streamsDir = dir.path;
+    return dir.path;
+  }
+
+  /// Inicia FFmpeg para remuxear HLS → MKV progresivo.
+  /// Retorna inmediatamente con el ID del stream (no espera a que FFmpeg produzca datos).
+  Future<String> startFfmpegStream(
+    String url,
+    Map<String, String> headers,
+  ) async {
+    final id = DateTime.now().millisecondsSinceEpoch.toString();
+    final outDir = await _ensureStreamsDir();
+    final outputPath = '$outDir/$id.mp4';
+
+    // Construir cabeceras HTTP para FFmpeg (-headers)
+    final headerLines = <String>[];
+    for (final key in ['User-Agent', 'Referer', 'Cookie', 'Origin', 'Accept', 'Accept-Language']) {
+      final val = headers[key];
+      if (val != null && val.isNotEmpty) {
+        headerLines.add('$key: $val');
+      }
+    }
+    final headerStr = headerLines.join('\\r\\n');
+
+    // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
+    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
+    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    print('🎬 [FFMPEG] Starting stream $id: $cmd');
+
+    _activeStreams[id] = _FfmpegStream(
+      id: id,
+      outputPath: outputPath,
+    );
+
+    FFmpegKit.executeAsync(cmd, (session) async {
+      final rc = await session.getReturnCode();
+      final isOk = ReturnCode.isSuccess(rc);
+      print('🎬 [FFMPEG] Stream $id ended: rc=$rc success=$isOk');
+      final entry = _activeStreams[id];
+      if (entry != null) {
+        entry.isComplete = true;
+        entry.completer.complete();
+      }
+    });
+
+    return id;
+  }
+
+  Future<void> _handleFfmpegStream(HttpRequest request) async {
+    final id = request.uri.pathSegments.last;
+    final entry = _activeStreams[id];
+    if (entry == null) {
+      request.response.statusCode = 404;
+      await request.response.close();
+      return;
+    }
+
+    final file = File(entry.outputPath);
+    final rangeHeader = request.headers.value('range');
+
+    try {
+      // Responder inmediatamente al TV (el SetAVTransportURI espera respuesta HTTP
+      // rápida, no puede bloquear esperando a FFmpeg).
+      request.response.statusCode = 200;
+      request.response.headers.set('Content-Type', 'video/mp4');
+      request.response.headers.set('Accept-Ranges', 'bytes');
+      request.response.headers.set('Connection', 'keep-alive');
+      request.response.headers.set('transferMode.dlna.org', 'Streaming');
+
+      // Sin Content-Length → chunked encoding (stream progresivo)
+
+      if (rangeHeader != null && rangeHeader.startsWith('bytes=')) {
+        final parts = rangeHeader.substring(6).split('-');
+        final start = int.parse(parts[0]);
+
+        // Esperar a que FFmpeg tenga datos hasta start
+        while (true) {
+          final currentSize = await file.length();
+          if (currentSize > start || entry.isComplete) {
+            final newSize = await file.length();
+            final end = (parts.length > 1 && parts[1].isNotEmpty)
+                ? int.parse(parts[1]).clamp(start, newSize - 1)
+                : newSize - 1;
+            final contentLength = end - start + 1;
+            request.response.statusCode = 206;
+            request.response.headers.set('Content-Length', contentLength.toString());
+            request.response.headers.set('Content-Range', 'bytes $start-$end/$newSize');
+            await file.openRead(start, end + 1).pipe(request.response);
+            break;
+          }
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+      } else {
+        // Sin Range: stream progresivo chunked
+        // Esperar primer chunk de FFmpeg
+        const chunkSize = 64 * 1024;
+        int offset = 0;
+        while (!entry.isComplete || offset < await file.length()) {
+          final currentSize = await file.length();
+          if (currentSize > offset) {
+            final end = (offset + chunkSize).clamp(0, currentSize);
+            final chunk = await file.openRead(offset, end).toList();
+            for (final data in chunk) {
+              request.response.add(data);
+            }
+            await request.response.flush();
+            offset = end;
+          } else {
+            if (entry.isComplete) break;
+            await Future.delayed(const Duration(milliseconds: 200));
+          }
+        }
+      }
+
+      await request.response.close();
+    } catch (e) {
+      print('⚠️ [FFMPEG] Stream $id error: $e');
+      try { await request.response.close(); } catch (_) {}
+    }
+  }
 
   HttpServer? _server;
   int _port = 0;
@@ -119,6 +257,8 @@ class MediaProxyService {
           _handleProxyRequest(request);
         } else if (request.uri.path.startsWith('/a3/')) {
           _handleA3Request(request);
+        } else if (request.uri.path.startsWith('/ffstream/')) {
+          _handleFfmpegStream(request);
         } else {
           request.response.statusCode = HttpStatus.notFound;
           request.response.close();
@@ -139,6 +279,8 @@ class MediaProxyService {
         request.uri.queryParameters['headers'];
     final algoParam = request.uri.queryParameters['a'];
     final remuxParam = request.uri.queryParameters['remux'] == '1';
+    final posParam = request.uri.queryParameters['pos'];
+    int? pos = int.tryParse(posParam ?? '');
 
     if (encodedUrl == null) {
       request.response.statusCode = HttpStatus.badRequest;
@@ -157,22 +299,11 @@ class MediaProxyService {
         .toString()
         .substring(7);
     final Map<String, String> headers = {};
-    final bool isManifestRequest =
-        url.contains('.m3u8') ||
-        url.contains('playlist') ||
-        url.contains('master');
 
-    // 1. Cabeceras de la TV
-    request.headers.forEach((name, values) {
-      final n = name.toLowerCase();
-      if (n != 'host' && n != 'connection') {
-        if (isManifestRequest && n == 'range')
-          return; // Quitar range solo en manifiestos
-        headers[name] = values.join(', ');
-      }
-    });
-
-    // 2. Cabeceras proxiadas (Inyectadas por el extractor)
+    // Cabeceras proxiadas (extraídas del navegador por el extractor).
+    // NO reenviar cabeceras de la TV (DLNA manda Accept, User-Agent,
+    // transferMode.dlna.org, etc.) porque el CDN detecta que no es un
+    // navegador real y sirve placeholders PNG en vez de segmentos de vídeo.
     if (encodedHeaders != null) {
       try {
         final decoded = jsonDecode(
@@ -183,6 +314,49 @@ class MediaProxyService {
         }
       } catch (_) {}
     }
+
+    // Re-combinar cookies de sesión: las del extractor (auth del sitio) más
+    // las cookies que el CDN haya seteado durante la sesión (Set-Cookie).
+    if (_sessionCookies.isNotEmpty) {
+      final extractorCookie = headers['Cookie'] ?? '';
+      final merged = extractorCookie.isEmpty
+          ? _sessionCookies
+          : '$extractorCookie; $_sessionCookies';
+      headers['Cookie'] = merged;
+    }
+    if (_lastOriginCookie.isEmpty && headers.containsKey('Cookie')) {
+      _lastOriginCookie = headers['Cookie'] ?? '';
+    }
+
+    // Refrescar cookies desde el WebView (usa el mismo almacén de cookies que
+    // Chrome/WebView del dispositivo, manteniendo la sesión activa).
+    try {
+      final webCookies = await CookieManager.instance().getCookies(
+        url: WebUri(url),
+      );
+      if (webCookies.isNotEmpty) {
+        final webCookieStr =
+            webCookies.map((c) => '${c.name}=${c.value}').join('; ');
+        final existing = headers['Cookie'] ?? '';
+        headers['Cookie'] =
+            existing.isEmpty ? webCookieStr : '$existing; $webCookieStr';
+        print('🍪 [PROXY][$requestId] Refreshed ${webCookies.length} cookies from WebView');
+      }
+    } catch (_) {
+      // CookieManager puede fallar si no hay WebView activo, ignorar
+    }
+
+    // Añadir cabeceras típicas de navegador que faltan (el Dart HTTP client no las
+    // envía por defecto, y algunos CDNs las requieren para servir segmentos reales).
+    headers.putIfAbsent('Accept', () => '*/*');
+    headers.putIfAbsent('Accept-Language', () => 'es-ES,es;q=0.9,en;q=0.8');
+    headers.putIfAbsent('Sec-Fetch-Dest', () => 'empty');
+    headers.putIfAbsent('Sec-Fetch-Mode', () => 'cors');
+    headers.putIfAbsent('Sec-Fetch-Site', () => 'cross-site');
+
+    // Reenviar solo Range del cliente (para búsqueda/seek por rango)
+    final tvRange = request.headers.value('range');
+    if (tvRange != null) headers['Range'] = tvRange;
 
 
 
@@ -203,6 +377,14 @@ class MediaProxyService {
           (streamedResponse.headers['content-type'] ?? '').toLowerCase();
 
       print('📡 [PROXY][$requestId] Response Status: ${streamedResponse.statusCode} | Type: $upstreamContentType');
+
+      // Capturar Set-Cookie del CDN para mantener sesión entre peticiones
+      final setCookie = streamedResponse.headers['set-cookie'];
+      if (setCookie != null && setCookie.isNotEmpty) {
+        print('🍪 [PROXY][$requestId] Set-Cookie from CDN: "$setCookie"');
+        // Almacenar para próximas peticiones
+        _sessionCookies = setCookie;
+      }
 
       bool isHls =
           upstreamContentType.contains('mpegurl') ||
@@ -237,6 +419,7 @@ class MediaProxyService {
           requestHost,
           algorithm: int.tryParse(algoParam ?? ''),
           remux: remuxParam,
+          startPos: (pos != null && pos > 0) ? pos.toDouble() : null,
         );
 
         request.response.headers.contentType = ContentType.parse(
@@ -271,6 +454,79 @@ class MediaProxyService {
 
 
 
+  /// Desenvuelve un PNG que contiene datos de video reales (anti-leeching de TikTok).
+  ///
+  /// TikTok envuelve segmentos TS legítimos en contenedores PNG. El PNG puede
+  /// tener los datos de video en chunks IDAT (comprimidos con zlib) o simplemente
+  /// con un prefijo PNG. Esta función extrae los bytes de video reales.
+  Uint8List _unwrapPng(Uint8List data) {
+    if (data.length < 8) return data;
+    // Verificar firma PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (data[0] != 0x89 || data[1] != 0x50 || data[2] != 0x4E || data[3] != 0x47) {
+      return data;
+    }
+
+    // Método 1: parsear chunks PNG válidos y extraer/decomprimir IDAT
+    int offset = 8;
+    final idatChunks = <Uint8List>[];
+    bool foundIend = false;
+    int? iendEnd;
+
+    while (offset + 8 <= data.length) {
+      final len = (data[offset] << 24) |
+          (data[offset + 1] << 16) |
+          (data[offset + 2] << 8) |
+          data[offset + 3];
+      if (len < 0 || offset + 12 + len > data.length) break;
+
+      final type = String.fromCharCodes(data.sublist(offset + 4, offset + 8));
+
+      if (type == 'IDAT') {
+        idatChunks.add(data.sublist(offset + 8, offset + 8 + len));
+      } else if (type == 'IEND') {
+        foundIend = true;
+        iendEnd = offset + 12 + len;
+        break;
+      }
+
+      offset += 12 + len;
+    }
+
+    final idatTotal = idatChunks.fold(0, (s, c) => s + c.length);
+    final idatBytes = Uint8List(idatTotal);
+    {
+      int pos = 0;
+      for (final chunk in idatChunks) {
+        idatBytes.setRange(pos, pos + chunk.length, chunk);
+        pos += chunk.length;
+      }
+    }
+
+    // Intentar descompresión zlib (estándar PNG)
+    if (idatBytes.isNotEmpty) {
+      try {
+        final decompressed = zlib.decoder.convert(idatBytes);
+        if (decompressed.length > 100) return Uint8List.fromList(decompressed);
+      } catch (_) {
+        // Si falla la descompresión, los datos podrían no estar comprimidos
+        if (idatBytes.length > 100) return idatBytes;
+      }
+    }
+
+    // Método 2: si hay IEND, servir datos posteriores (algunos CDNs concatenan
+    // TS después del marcador IEND del PNG)
+    if (foundIend && iendEnd != null && iendEnd < data.length) {
+      final trailing = data.sublist(iendEnd);
+      // Verificar sync byte MPEG-TS (0x47) en los primeros bytes
+      if (trailing.length > 100) {
+        return trailing;
+      }
+    }
+
+    // No se pudo desenvolver; devolver datos originales
+    return data;
+  }
+
   void _serveStream(
     HttpRequest request,
     http.StreamedResponse response,
@@ -283,6 +539,41 @@ class MediaProxyService {
     String requestId, {
     bool remux = false,
   }) async {
+    // Detectar respuesta PNG (TikTok envuelve TS real en contenedor PNG)
+    if (upstreamContentType.contains('image/png')) {
+      try {
+        final chunks = <List<int>>[];
+        if (firstChunk != null) chunks.add(firstChunk);
+        await for (final chunk in stream) {
+          chunks.add(chunk);
+        }
+        final totalLen = chunks.fold(0, (s, c) => s + c.length);
+        final body = Uint8List(totalLen);
+        {
+          int pos = 0;
+          for (final chunk in chunks) {
+            body.setRange(pos, pos + chunk.length, chunk);
+            pos += chunk.length;
+          }
+        }
+        final unwrapped = _unwrapPng(body);
+
+        request.response.statusCode = response.statusCode;
+        request.response.headers.set('Content-Type', 'video/MP2T');
+        request.response.headers.set('Access-Control-Allow-Origin', '*');
+        request.response.headers.set('Connection', 'keep-alive');
+        request.response.add(unwrapped);
+        await request.response.close();
+      } catch (e) {
+        print('⚠️ [PROXY][$requestId] PNG unwrap error: $e');
+        request.response.statusCode = 500;
+        await request.response.close();
+      } finally {
+        client.close();
+      }
+      return;
+    }
+
     request.response.statusCode = response.statusCode;
 
     // Copiar cabeceras base
@@ -297,14 +588,9 @@ class MediaProxyService {
     request.response.headers.set('Access-Control-Allow-Origin', '*');
     request.response.headers.set('Connection', 'keep-alive');
 
-    // Flujo normal para otros archivos
-    if (url.toLowerCase().contains('.ts') ||
-        upstreamContentType.contains('mp2t') ||
-        upstreamContentType.contains('mpegts')) {
-      request.response.headers.set('content-type', 'video/MP2T');
-    } else {
-      request.response.headers.set('content-type', upstreamContentType);
-    }
+    // Forzar video/MP2T — el proxy solo sirve segmentos de vídeo y algunas
+    // CDNs los entregan como image/png, lo que impide la reproducción en TVs.
+    request.response.headers.set('content-type', 'video/MP2T');
     if (firstChunk != null) request.response.add(firstChunk);
     try {
       await request.response.addStream(stream);
@@ -325,18 +611,31 @@ class MediaProxyService {
     String requestHost, {
     int? algorithm,
     bool remux = false,
+    double? startPos,
   }) {
     final baseUri = Uri.parse(baseUriStr);
+    final baseQuery = baseUri.query; // preservar para segmentos (CDN token)
     final lines = body.split('\n');
     final rewrittenLines = <String>[];
     bool hasEndList = false;
     final isMasterPlaylist = body.contains('#EXT-X-STREAM-INF');
+    final bool shouldSkip = startPos != null && startPos > 0 && !isMasterPlaylist;
+    double cumulativeDuration = 0;
+    double? pendingExtinf;
 
     for (var line in lines) {
       final trimmedLine = line.trim();
       if (trimmedLine.isEmpty) continue;
 
       if (trimmedLine.startsWith('#')) {
+        if (shouldSkip) {
+          final extinfMatch = RegExp(r'#EXTINF:([\d.]+)').firstMatch(trimmedLine);
+          if (extinfMatch != null) {
+            pendingExtinf = double.tryParse(extinfMatch.group(1) ?? '0') ?? 0;
+            continue;
+          }
+        }
+
         if (trimmedLine.contains('#EXT-X-ENDLIST')) hasEndList = true;
         if (trimmedLine.contains('#EXT-X-PLAYLIST-TYPE')) {
           // Ya tiene tipo de playlist, no tocar
@@ -354,7 +653,10 @@ class MediaProxyService {
         ).firstMatch(trimmedLine);
         if (uriMatch != null) {
           final internalUrl = uriMatch.group(1)!;
-          final absoluteUri = baseUri.resolve(internalUrl);
+          var absoluteUri = baseUri.resolve(internalUrl);
+          if (baseQuery.isNotEmpty && absoluteUri.query.isEmpty) {
+            absoluteUri = absoluteUri.replace(query: baseQuery);
+          }
           final proxiedUrl = _buildProxiedUrl(
             absoluteUri.toString(),
             headers,
@@ -367,8 +669,33 @@ class MediaProxyService {
           rewrittenLines.add(trimmedLine);
         }
       } else {
-        // Es un fragmento o un sub-manifiesto
-        final absoluteUri = baseUri.resolve(trimmedLine);
+        // URL line — segment or sub-manifest
+        if (shouldSkip && pendingExtinf != null) {
+          final segmentEnd = cumulativeDuration + pendingExtinf;
+          if (segmentEnd < startPos!) {
+            cumulativeDuration = segmentEnd;
+            pendingExtinf = null;
+            continue;
+          }
+          if (cumulativeDuration < startPos!) {
+            final offset = startPos! - cumulativeDuration;
+            final remaining = pendingExtinf - offset;
+            if (remaining > 0) {
+              rewrittenLines.add('#EXTINF:${remaining.toStringAsFixed(1)},');
+            } else {
+              rewrittenLines.add('#EXTINF:${pendingExtinf.toStringAsFixed(1)},');
+            }
+          } else {
+            rewrittenLines.add('#EXTINF:${pendingExtinf.toStringAsFixed(1)},');
+          }
+          cumulativeDuration += pendingExtinf;
+          pendingExtinf = null;
+        }
+
+        var absoluteUri = baseUri.resolve(trimmedLine);
+        if (baseQuery.isNotEmpty && absoluteUri.query.isEmpty) {
+          absoluteUri = absoluteUri.replace(query: baseQuery);
+        }
         final proxiedUrl = _buildProxiedUrl(
           absoluteUri.toString(),
           headers,
@@ -536,6 +863,7 @@ class MediaProxyService {
     int? algorithm,
     bool remux = false,
     bool toCast = false,
+    int? pos,
   }) {
     if (algorithm == 3 && !toCast) {
       // Para reproducción local en algoritmo 3, devolvemos la URL original.
@@ -547,13 +875,35 @@ class MediaProxyService {
     String host = (useLocalhost || _localIp.isEmpty)
         ? '127.0.0.1:$_port'
         : '$_localIp:$_port';
-    return _buildProxiedUrl(
+    var proxyUrl = _buildProxiedUrl(
       url,
       headers,
       host,
       algorithm: algorithm,
       remux: remux,
     );
+    if (pos != null && pos > 0) {
+      proxyUrl += '&pos=$pos';
+    }
+    return proxyUrl;
+  }
+
+  /// Crea un stream progresivo FFmpeg (remux HLS→MKV) y retorna URL local.
+  /// El stream se sirve en /ffstream/$id y puede reproducirse mientras FFmpeg
+  /// sigue descargando (progresivo). Soporta range requests del TV.
+  Future<String> getFfmpegUrl(
+    String url,
+    Map<String, String>? headers, {
+    bool useLocalhost = false,
+  }) async {
+    String host = (useLocalhost || _localIp.isEmpty)
+        ? '127.0.0.1:$_port'
+        : '$_localIp:$_port';
+
+    final id = await startFfmpegStream(url, headers ?? {});
+    final streamUrl = 'http://$host/ffstream/$id';
+    print('🎬 [FFMPEG] fMP4 stream URL: $streamUrl');
+    return streamUrl;
   }
 
   Future<void> _refreshLocalIp({String? targetIp}) async {
@@ -791,6 +1141,15 @@ class _A3Entry {
   final bool toCast;
 
   _A3Entry(this.url, this.headers, this.baseUrl, {this.toCast = false});
+}
+
+class _FfmpegStream {
+  final String id;
+  final String outputPath;
+  final Completer<void> completer = Completer<void>();
+  bool isComplete = false;
+
+  _FfmpegStream({required this.id, required this.outputPath});
 }
 
 

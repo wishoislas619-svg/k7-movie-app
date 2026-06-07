@@ -203,6 +203,7 @@ class _TvChannelsPageState extends ConsumerState<TvChannelsPage> {
   }
   Widget build(BuildContext context) {
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
       body: CustomScrollView(
         controller: _scrollController,

@@ -199,6 +199,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   Season? _nextSeason;
   Episode? _previousEpisode;
   Season? _previousSeason;
+  int _currentEpisodeIndex = -1;
+  List<Season> _seriesSeasons = [];
+  List<Episode> _currentSeasonEpisodes = [];
   List<Movie> _movieRecommendations = [];
   List<Series> _seriesRecommendations = [];
   bool _isPushingNextEpisode = false;
@@ -305,9 +308,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
     if (mounted && CastService().isConnected) {
       if (_controller != null && _controller!.value.isPlaying) {
         _controller!.pause();
-        setState(() {});
       }
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   Future<void> _ensureStoragePermissions() async {
@@ -1848,6 +1853,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
             imageUrl: widget.imagePath,
             headers: _getHeadersForCast(),
             startPosition: lastPosition ?? Duration.zero,
+            duration: _controller!.value.duration,
             algorithm: _effectiveAlgorithm,
           );
         }
@@ -3593,6 +3599,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
 
         if (idx != -1) {
           currentSeasonId = s.id;
+          _currentEpisodeIndex = idx;
+          _seriesSeasons = seasons;
+          _currentSeasonEpisodes = eps;
           if (eps[idx].isSeriesFinale) isFinale = true;
 
           // --- LOGIC FOR NEXT ---
@@ -3653,6 +3662,20 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
             .take(10)
             .toList();
       }
+    }
+    if (widget.mediaType == 'series') {
+      CastService().setEpisodeNavigation(
+        nextEpisode: _nextEpisode,
+        nextSeason: _nextSeason,
+        previousEpisode: _previousEpisode,
+        previousSeason: _previousSeason,
+        seriesSeasons: _seriesSeasons,
+        currentSeasonEpisodes: _currentSeasonEpisodes,
+        currentEpisodeIndex: _currentEpisodeIndex,
+        videoOptions: widget.videoOptions,
+      );
+    } else {
+      CastService().setEpisodeNavigation();
     }
     if (mounted) setState(() {});
   }

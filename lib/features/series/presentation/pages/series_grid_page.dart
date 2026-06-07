@@ -38,6 +38,7 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
     final categoriesAsync = ref.watch(seriesCategoriesProvider);
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
       body: seriesAsync.when(
         data: (allSeries) {
@@ -57,7 +58,8 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
           
           return categoriesAsync.when(
             data: (categories) {
-               return RefreshIndicator(
+               return RepaintBoundary(
+                child: RefreshIndicator(
                 onRefresh: () async {
                   await ref.read(seriesListProvider.notifier).loadSeries();
                   await ref.read(seriesCategoriesProvider.notifier).loadCategories();
@@ -144,7 +146,8 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                     ),
                   ],
                 ),
-              );
+              ),
+            );
             },
             loading: () => const Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
             error: (e, s) => Center(child: Text('Error: $e', style: const TextStyle(color: Colors.white))),
