@@ -122,7 +122,7 @@ class TorrentStreamingService {
   Future<TorrentPlaybackSession> start({
     required String infoHash,
     int? fileIndex,
-    int preloadBytes = 15 * 1024 * 1024,
+    int preloadBytes = 64 * 1024 * 1024,
     Duration metadataTimeout = const Duration(seconds: 120),
   }) async {
     print('TORRENT_DBG: start() infohash=$infoHash fileIdx=$fileIndex preloadBytes=$preloadBytes');
