@@ -659,17 +659,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
       _isInitialLoading = false;
       // Pausa extendida + pre-check HTTP para que el servidor local de libtorrent estabilice
       if (_isLibtorrentStream) {
-        print('⏳ [TORRENT_PREP] Waiting for local HTTP server to stabilize...');
-        await Future.delayed(const Duration(seconds: 5));
-        // Pre-flight check: verify HTTP server responds with HEAD request
-        try {
-          final client = http.Client();
-          final response = await client.head(Uri.parse(videoUrl)).timeout(const Duration(seconds: 5));
-          print('✅ [TORRENT_PREP] HTTP server responded: ${response.statusCode}');
-          client.close();
-        } catch (e) {
-          print('⚠️ [TORRENT_PREP] HTTP server not ready yet: $e');
-        }
+        print('⏳ [TORRENT_PREP] Waiting for local HTTP server...');
+        await _waitForHttpServer(Uri.parse(videoUrl), timeout: const Duration(seconds: 30));
       }
       await _initializeVideoPlayer(videoUrl);
       // Disparar reproducción (incluye _checkResume que hace play)
@@ -723,6 +714,32 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
           );
     } catch (e) {
       print("⚠️ [SAVE_PROGRESS] Error saving progress: $e");
+    }
+  }
+
+  Future<void> _waitForHttpServer(Uri url, {Duration timeout = const Duration(seconds: 30)}) async {
+    final client = http.Client();
+    try {
+      final deadline = DateTime.now().add(timeout);
+      int attempts = 0;
+      while (DateTime.now().isBefore(deadline)) {
+        attempts++;
+        try {
+          final response = await client.head(url).timeout(const Duration(seconds: 3));
+          if (response.statusCode < 500) {
+            print('✅ [TORRENT_PREP] HTTP server ready on attempt $attempts: ${response.statusCode}');
+            client.close();
+            return;
+          }
+        } catch (e) {
+          print('⚠️ [TORRENT_PREP] HTTP server not ready (attempt $attempts): $e');
+        }
+        await Future.delayed(const Duration(seconds: 1));
+      }
+      print('⚠️ [TORRENT_PREP] HTTP server wait timed out after $timeout');
+      client.close();
+    } catch (_) {
+      client.close();
     }
   }
 

@@ -144,32 +144,20 @@ class TorrentStreamingService {
         throw Exception('No se pudo iniciar el stream del torrent.');
       }
 
-      // Optimiza el arranque: precarga agresiva para evitar timeout de ExoPlayer
-      // El torrent termina muy rápido y se pausa, necesitamos mucho buffer previo
-      // PERO solo si el torrent NO ha terminado aún (preloadStream crashea en torrents finished)
-      final torrentInfoAfterStart = engine.torrents[torrentId];
-      if (torrentInfoAfterStart != null && !torrentInfoAfterStart.isFinished) {
-        try {
-          engine.setCacheSettings(
-            stream.id,
-            capacity: 512 * 1024 * 1024,  // 512MB cache
-            readAheadPct: 95,
-            connectionsLimit: 80,
-          );
-          engine.preloadStream(stream.id, preloadBytes: 64 * 1024 * 1024); // 64MB preload
-        } catch (_) {}
-      } else {
-        print('TORRENT_DBG: torrent already finished, skipping preloadStream to avoid crash');
-        // Still set cache settings even if finished
-        try {
-          engine.setCacheSettings(
-            stream.id,
-            capacity: 512 * 1024 * 1024,
-            readAheadPct: 95,
-            connectionsLimit: 80,
-          );
-        } catch (_) {}
-      }
+      // Mantener el torrent activo para que el servidor HTTP siga sirviendo
+      engine.resumeTorrent(torrentId);
+      print('TORRENT_DBG: resumed torrent after startStream torrentId=$torrentId');
+
+      // Configurar cache para buffering agresivo (sin preloadStream que crashea)
+      engine.setCacheSettings(
+        stream.id,
+        capacity: 512 * 1024 * 1024,
+        readAheadPct: 95,
+        connectionsLimit: 80,
+      );
+
+      // Esperar a que el stream esté activo antes de devolver la sesión
+      await _waitForStreamReady(engine, stream.id, timeout: const Duration(seconds: 30));
 
       final session = TorrentPlaybackSession(
         torrentId: torrentId,
@@ -177,8 +165,6 @@ class TorrentStreamingService {
         url: stream.url,
         name: stream.url,
       );
-      // Se mantiene el stream vivo mientras dure la reproducción.
-      // Iniciar keep-alive para evitar que el torrent se pause
       _startTorrentKeepAlive(engine, torrentId, stream.id);
       return session;
     } catch (_) {
@@ -190,29 +176,44 @@ class TorrentStreamingService {
 
   Timer? _keepAliveTimer;
 
+  Future<void> _waitForStreamReady(
+    LibtorrentFlutter engine,
+    int streamId, {
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    print('TORRENT_DBG: waiting for stream $streamId to become active...');
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final stream = engine.streams[streamId];
+      if (stream != null && stream.isActive) {
+        print('TORRENT_DBG: stream ready, state=${stream.streamState} url=${stream.url}');
+        return;
+      }
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+    print('TORRENT_DBG: stream wait timed out, continuing anyway');
+  }
+
   void _startTorrentKeepAlive(LibtorrentFlutter engine, int torrentId, int streamId) {
     _keepAliveTimer?.cancel();
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       final torrentInfo = engine.torrents[torrentId];
       final streamInfo = engine.streams[streamId];
       if (torrentInfo == null || streamInfo == null || !streamInfo.isActive) {
+        // Stream ya no activo, intentar reanudar torrent
+        if (torrentInfo != null) {
+          engine.resumeTorrent(torrentId);
+          print('TORRENT_DBG: keep-alive resuming torrent (stream inactive) torrentId=$torrentId');
+        }
         _keepAliveTimer?.cancel();
         return;
       }
-      // Si el torrent ya terminó (finished), reanudar para mantener el stream vivo
-      if (torrentInfo.isFinished) {
-        if (torrentInfo.isPaused) {
-          print('TORRENT_DBG: keep-alive resuming finished torrentId=$torrentId');
-          engine.resumeTorrent(torrentId);
-        }
-        return;
-      }
-      if (torrentInfo.isPaused) {
-        print('TORRENT_DBG: keep-alive resuming paused torrentId=$torrentId');
+      // Mantener el torrent activo - reanudar si está pausado o terminó
+      if (torrentInfo.isPaused || torrentInfo.isFinished) {
         engine.resumeTorrent(torrentId);
+        print('TORRENT_DBG: keep-alive resuming paused/finished torrentId=$torrentId');
       }
-      // Also ensure file priorities are maintained - keep cache settings fresh
-      // NO preloadStream en keep-alive: el preload inicial es suficiente y evita crash en torrents finished
+      // Refrescar configuración de cache
       try {
         engine.setCacheSettings(
           streamId,
