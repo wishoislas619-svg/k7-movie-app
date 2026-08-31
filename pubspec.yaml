@@ -63,7 +63,7 @@ dependencies:
   device_info_plus: ^11.3.3
   google_sign_in: 6.2.1
   google_mobile_ads: ^7.0.0
-  unity_ads_plugin: ^0.3.11
+  unity_ads_plugin: ^0.4.0
   dart_cast: ^0.4.3
   storage_space: ^1.0.1
   file_picker: ^11.0.2
@@ -71,6 +71,7 @@ dependencies:
   android_intent_plus: ^6.0.0
   flutter_native_splash: ^2.4.7
   simple_pip_mode: ^1.1.0
+  libtorrent_flutter: ^2.0.0
 
 dev_dependencies:
   flutter_test:

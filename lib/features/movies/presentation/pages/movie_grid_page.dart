@@ -31,6 +31,8 @@ import 'package:movie_app/shared/widgets/tv_focus_wrapper.dart';
 import 'package:movie_app/shared/utils/responsive_layout.dart';
 import 'package:movie_app/shared/widgets/vip_promo_widgets.dart';
 import 'package:movie_app/core/services/vip_promo_service.dart';
+import 'package:movie_app/features/addons/presentation/pages/addons_manager_page.dart';
+import 'package:movie_app/features/addons/presentation/pages/smart_search_page.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -79,6 +81,8 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           RepaintBoundary(child: _buildMoviesView()),
           const RepaintBoundary(child: SeriesGridPage()),
           const RepaintBoundary(child: TvChannelsPage()),
+          const RepaintBoundary(child: DownloadsPage()),
+          const RepaintBoundary(child: ProfilePage()),
         ],
       ),
       bottomNavigationBar: _buildBottomNav(),
@@ -310,48 +314,30 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       backgroundColor: Colors.black.withOpacity(0.5),
       floating: true,
       elevation: 0,
-      flexibleSpace: SafeArea(
-        child: Stack(
-          children: [
-            Align(
-              alignment: Alignment.center,
-              child: Consumer(
-                builder: (context, ref, _) {
-                  final role = ref.watch(authStateProvider)?.role ?? 'user';
-                  return VipStarButton(role: role);
-                },
-              ),
-            ),
-          ],
-        ),
+      flexibleSpace: const SafeArea(
+        child: SizedBox.shrink(),
       ),
       title: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)],
-              ),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: const Text(
-              'K7',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-                color: Colors.white,
-              ),
-            ),
+          Consumer(
+            builder: (context, ref, _) {
+              final role = ref.watch(authStateProvider)?.role ?? 'user';
+              return VipStarButton(role: role);
+            },
           ),
           const SizedBox(width: 8),
-          const Text(
-            'MOVIE',
-            style: TextStyle(
-              letterSpacing: 2,
-              fontWeight: FontWeight.normal,
-              fontSize: 16,
-              color: Colors.white,
+          const Flexible(
+            child: Text(
+              'MOVIE',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                letterSpacing: 2,
+                fontWeight: FontWeight.normal,
+                fontSize: 16,
+                color: Colors.white,
+              ),
             ),
           ),
         ],
@@ -365,7 +351,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             selectedItemBuilder: (BuildContext context) {
               return [
                 const SizedBox(
-                  width: 80,
+                  width: 52,
                   child: Align(
                     alignment: Alignment.centerRight,
                     child: Text(
@@ -377,7 +363,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                 ),
                 ...categories.map(
                   (c) => SizedBox(
-                    width: 80,
+                    width: 52,
                     child: Align(
                       alignment: Alignment.centerRight,
                       child: Text(
@@ -414,6 +400,30 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             color: Colors.white70,
           ),
           onPressed: () => setState(() => _isSearching = !_isSearching),
+        ),
+        IconButton(
+          icon: const Icon(Icons.extension, color: Color(0xFF00A3FF)),
+          tooltip: 'Addons',
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const AddonsManagerPage(),
+              ),
+            );
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.travel_explore, color: Color(0xFF00A3FF)),
+          tooltip: 'Búsqueda inteligente',
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const SmartSearchPage(),
+              ),
+            );
+          },
         ),
       ],
     );

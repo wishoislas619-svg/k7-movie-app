@@ -81,6 +81,9 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
   final int? creditsStartTime;
   final int extractionAlgorithm;
 
+  /// Subtítulos externos (p. ej. los que devuelve Torrentio por stream).
+  final List<SubtitleInfo>? externalSubtitles;
+
   const VideoPlayerPage({
     super.key,
     required this.movieName,
@@ -98,6 +101,7 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.introEndTime,
     this.creditsStartTime,
     this.extractionAlgorithm = 1,
+    this.externalSubtitles,
     this.initialVolume,
     this.initialBrightness,
     this.headers,
@@ -213,6 +217,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   List<InternalServerInfo> _videasyServers = [];
   bool _isExtractingServers = false;
   int _effectiveAlgorithm = 0;
+  bool _isLibtorrentStream = false;
   bool _hasAutoSelectedServer = false;
   Set<String> _failedVideasyServers = {};
   InternalServerInfo? _currentVideasyServer;
@@ -242,10 +247,24 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
     if (widget.videoOptions.isNotEmpty) {
       _currentOption = widget.videoOptions.first;
       final lcUrl = _currentOption.videoUrl.toLowerCase();
-      if (lcUrl.contains('embed.su') || lcUrl.contains('videasy')) {
+      
+      // Detectar streams locales de libtorrent (HTTP con range, no HLS)
+      // Formato: http://127.0.0.1:PORT/stream/<infohash>/...
+      _isLibtorrentStream = Uri.tryParse(lcUrl)?.hasScheme == true &&
+          lcUrl.contains('/stream/') &&
+          ['127.0.0.1', 'localhost', '10.0.2.2'].contains(
+              Uri.tryParse(lcUrl)?.host ?? '');
+
+      if (_isLibtorrentStream) {
+        // Stream directo de torrent: usar algoritmo 4 para torrents
+        _effectiveAlgorithm = 4; // 4 = torrent stream
+        print('🎯 [ALGO_DETECT] Torrent stream detectado → _effectiveAlgorithm=4');
+      } else if (lcUrl.contains('embed.su') || lcUrl.contains('videasy')) {
         _effectiveAlgorithm = 3;
+        print('🎯 [ALGO_DETECT] embed.su/videasy → _effectiveAlgorithm=3');
       } else {
         _effectiveAlgorithm = widget.extractionAlgorithm;
+        print('🎯 [ALGO_DETECT] extractionAlgorithm del widget → _effectiveAlgorithm=$_effectiveAlgorithm');
       }
     } else {
       _effectiveAlgorithm = widget.extractionAlgorithm;
@@ -265,10 +284,25 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
       _isWebViewExtracting = false;
       _isLoading = false;
       _isInitialLoading = false;
+    } else if (_isLibtorrentStream) {
+      // Stream de torrent local: reproducción directa sin webview ni scraper
+      _isWebViewExtracting = false;
+      _isLoading = false;
+      _isInitialLoading = false;
+      _useProxy = false; // No usar proxy para streams locales
     }
 
     _initSettings();
     _checkAdRequirement();
+
+    if (widget.externalSubtitles != null && widget.externalSubtitles!.isNotEmpty) {
+      _internalSubtitles = [
+        ..._internalSubtitles,
+        ...widget.externalSubtitles!.where(
+            (s) => !_internalSubtitles.any((e) => e.url == s.url)),
+      ];
+    }
+
     CastService().addListener(_onCastStateChanged);
     _pipControlChannel.setMethodCallHandler(_handlePipAction);
   }
@@ -337,15 +371,22 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
     final appUser = ref.read(authStateProvider);
     final role = appUser?.role.toLowerCase() ?? 'user';
 
+    print('🔍 [AD_CHECK] role=$role isLocal=${widget.isLocal} _isLibtorrentStream=$_isLibtorrentStream _effectiveAlgorithm=$_effectiveAlgorithm');
+
+    // Permisos de almacenamiento para local/torrent independientemente del rol
+    if (widget.isLocal || _isLibtorrentStream) {
+      await _ensureStoragePermissions();
+    }
+
     if (role == 'admin' || role == 'uservip' || widget.isLocal) {
-      // Si es VIP, Admin o video local descargado
-      if (widget.isLocal) {
-        await _ensureStoragePermissions();
-      }
+      // Si es VIP, Admin o video local descargado: reproducción directa sin anuncios
+      print('✅ [AD_CHECK] SKIP ADS - VIP/Admin/Local → direct playback');
       _startPlayback();
       return;
     }
 
+    // Para usuarios normales (incluye torrent), mostrar anuncio antes de reproducir
+    print('📺 [AD_CHECK] Normal user → SHOWING AD before playback');
     if (mounted) {
       setState(() {
         _isLoadingAd = true;
@@ -361,18 +402,36 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
     }
 
     try {
+      print('🎫 [AD_TICKET] Creating ad ticket...');
       final ticketId = const Uuid().v4();
+      
+      // media_id debe ser UUID válido; si no lo es, generar uno determinístico basado en el original
+      String mediaIdForTicket = widget.mediaId;
+      try {
+        // Validar si es UUID válido
+        final uuidRegex = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false);
+        if (!uuidRegex.hasMatch(mediaIdForTicket)) {
+          // Generar UUID v5 determinístico (namespace DNS + mediaId original)
+          mediaIdForTicket = const Uuid().v5(const Uuid().v4(), mediaIdForTicket);
+          print('🔧 [AD_TICKET] mediaId no es UUID, generado uno determinístico: $mediaIdForTicket');
+        }
+      } catch (_) {
+        mediaIdForTicket = const Uuid().v4();
+      }
+      
       await Supabase.instance.client.from('ad_tickets').insert({
         'id': ticketId,
         'user_id': user.id,
         'media_type': widget.mediaType,
-        'media_id': widget.mediaId,
+        'media_id': mediaIdForTicket,
       });
 
       print('--- [AD_DEBUG] TICKET_ID: $ticketId ---');
+      print('📱 [AD_LOAD] Calling AdService.showRewardedAd...');
       AdService.showRewardedAd(
         ticketId: ticketId,
         onAdWatched: (String completedTicketId) {
+          print('✅ [AD_CALLBACK] onAdWatched ticketId=$completedTicketId _effectiveAlgorithm=$_effectiveAlgorithm');
           if (mounted) {
             setState(() {
               _isLoadingAd = false;
@@ -382,6 +441,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
 
             // Ya no damos play aquí, lo hará _checkResume tras validar historial
             if (_controller == null || !_controller!.value.isInitialized) {
+              print('🔄 [AD_CALLBACK] Controller no listo → _startPlayback()');
               _startPlayback();
             }
 
@@ -403,6 +463,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
           }
         },
         onAdFailed: (String error) {
+          print('❌ [AD_CALLBACK] onAdFailed error=$error');
           if (mounted) {
             setState(() {
               _isLoadingAd = false;
@@ -412,6 +473,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
           }
         },
         onAdDismissedIncomplete: () {
+          print('⚠️ [AD_CALLBACK] onAdDismissedIncomplete - user closed ad early');
           if (mounted) {
             setState(() {
               _isLoadingAd = false;
@@ -425,6 +487,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         },
       );
     } catch (e) {
+      print('❌ [AD_TICKET] Error creating ticket or loading ad: $e');
       if (mounted) {
         setState(() {
           _isLoadingAd = false;
@@ -435,7 +498,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   }
 
   Future<void> _pollVerification(String ticketId) async {
-    int retries = 15; // Un poco más de paciencia (30 seg total)
+    int retries = 15;
+    print('🔄 [POLL_VERIFICATION] Iniciando polling ticketId=$ticketId');
     while (retries > 0) {
       if (!mounted) return;
       try {
@@ -449,6 +513,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         );
 
         if (response.status == 200) {
+          print('✅ [POLL_VERIFICATION] Verified ticketId=$ticketId');
           if (mounted) {
             setState(() {
               _isAdVerified = true;
@@ -458,13 +523,16 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
 
             // Reanudar o iniciar según el caso
             if (_isMidrollShown) {
+              print('▶️ [POLL_VERIFICATION] Midroll shown → _controller.play()');
               _controller?.play();
             } else {
               // Si ya está inicializado, dar play. Si no, iniciar proceso.
               if (_controller != null && _controller!.value.isInitialized) {
+                print('▶️ [POLL_VERIFICATION] Controller listo → _controller.play()');
                 _controller!.play();
               } else {
-                _startPlayback();
+                print('🔄 [POLL_VERIFICATION] Controller no listo → _startPlayback()');
+                await _startPlayback();
               }
             }
 
@@ -565,7 +633,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
     }
   }
 
-  void _startPlayback() {
+  Future<void> _startPlayback() async {
     _isAdVerified = true;
     // Asegurar modo inmersivo al empezar la peli
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -585,10 +653,27 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
       _controller?.addListener(_onVideoTick);
       _startHideTimer();
       _startProgressTimer();
-    } else if (widget.isLocal || isDirect) {
+    } else if (widget.isLocal || isDirect || _isLibtorrentStream) {
+      // Streams de torrent local (libtorrent) también usan reproducción directa
       _isLoading = false;
       _isInitialLoading = false;
-      _initializeVideoPlayer(videoUrl);
+      // Pausa extendida + pre-check HTTP para que el servidor local de libtorrent estabilice
+      if (_isLibtorrentStream) {
+        print('⏳ [TORRENT_PREP] Waiting for local HTTP server to stabilize...');
+        await Future.delayed(const Duration(seconds: 5));
+        // Pre-flight check: verify HTTP server responds with HEAD request
+        try {
+          final client = http.Client();
+          final response = await client.head(Uri.parse(videoUrl)).timeout(const Duration(seconds: 5));
+          print('✅ [TORRENT_PREP] HTTP server responded: ${response.statusCode}');
+          client.close();
+        } catch (e) {
+          print('⚠️ [TORRENT_PREP] HTTP server not ready yet: $e');
+        }
+      }
+      await _initializeVideoPlayer(videoUrl);
+      // Disparar reproducción (incluye _checkResume que hace play)
+      if (mounted) _checkResume(_controller!);
     } else {
       // Si es Algoritmo 3, activar la pantalla de carga dedicada
       if (_effectiveAlgorithm == 3) {
@@ -1791,6 +1876,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         _controller = VideoPlayerController.file(File(videoUrl));
       } else {
         final formatProbeUrl = effectiveUrl.toLowerCase();
+
+        // La URL local de libtorrent (stream por HTTP con range) no es HLS: contiene
+        // "/stream/" pero es MP4 progresivo. Excluirla evita forzar formatHint hls
+        // (si no, ExoPlayer falla y el torrent se descarta de inmediato).
+        final isLibtorrentStream = Uri.tryParse(effectiveUrl)?.hasScheme == true &&
+            (effectiveUrl.contains('/stream/')) &&
+            (['127.0.0.1', 'localhost', '10.0.2.2'].contains(
+                Uri.tryParse(effectiveUrl)?.host ?? ''));
+
         final bool isHls =
             !formatProbeUrl.contains('bridge=1') &&
             !formatProbeUrl.contains('/proxy.mp4') &&
@@ -1802,7 +1896,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
                 formatProbeUrl.contains('.txt') ||
                 formatProbeUrl.contains('/stream/') ||
                 formatProbeUrl.contains('playlist') ||
-                formatProbeUrl.contains('master'));
+                formatProbeUrl.contains('master')) &&
+            !isLibtorrentStream;
 
         // El formatHint debe seguir a la URL final. En algoritmo 3 el HLS puede
         // salir como MP4 fragmentado por el bridge, y ExoPlayer no debe tratarlo
@@ -1834,15 +1929,49 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
           requestHeaders.addAll(widget.headers!);
         }
 
+        // Para streams locales de libtorrent, no enviar headers CORS innecesarios
+        // El servidor local HTTP no los necesita y pueden causar problemas
+        if (_isLibtorrentStream) {
+          requestHeaders.clear();
+          requestHeaders['Accept'] = '*/*';
+        }
+
+        // Para streams de torrent, usar formatHint: other para evitar el
+        // sniffing de formato de ExoPlayer que puede causar timeout.
+        // También reintentar la inicialización si falla por timeout del servidor local.
+        final isLibtorrentForFormatHint = _isLibtorrentStream;
+
         _controller = VideoPlayerController.networkUrl(
           Uri.parse(effectiveUrl),
-          formatHint: isHls ? VideoFormat.hls : null,
+          formatHint: isLibtorrentForFormatHint
+              ? VideoFormat.other
+              : (isHls ? VideoFormat.hls : null),
           httpHeaders: requestHeaders,
         );
+        print('TORRENT_DBG: inicializando player url=$effectiveUrl isHls=$isHls isLibtorrentStream=$isLibtorrentStream effectiveAlgorithm=$_effectiveAlgorithm');
       }
 
       if (_controller != null) {
-        await _controller!.initialize();
+        // Reintentar inicialización para streams de torrent si hay timeout.
+        final bool _isLibRetry = _isLibtorrentStream;
+        int _initAttempts = 0;
+        final int _maxInitAttempts = _isLibRetry ? 3 : 1;
+        while (true) {
+          try {
+            await _controller!.initialize();
+            print('TORRENT_DBG: initialize() OK');
+            break;
+          } catch (e) {
+            _initAttempts++;
+            print(
+              '⚠️ [TORRENT_RETRY] Intento $_initAttempts/$_maxInitAttempts fallido: $e',
+            );
+            if (_initAttempts >= _maxInitAttempts) {
+              rethrow;
+            }
+            await Future.delayed(const Duration(seconds: 2));
+          }
+        }
 
         // Si estamos conectados a Cast, enviamos la nueva URL automáticamente
         if (CastService().isConnected) {
@@ -4441,6 +4570,15 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
                           _startHideTimer();
                         },
                       ),
+                      IconButton(
+                        icon: const Icon(Icons.audiotrack,
+                            color: Colors.white),
+                        tooltip: 'Pistas de audio',
+                        onPressed: () {
+                          _showAudioTracksDialog();
+                          _startHideTimer();
+                        },
+                      ),
                       if (_effectiveAlgorithm == 3 ||
                           _videasyServers.isNotEmpty)
                         IconButton(
@@ -5242,6 +5380,11 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
                                   onTap: () {
                                     Navigator.pop(context);
                                     setState(() => _currentSubtitle = sub);
+                                    if (sub.url.startsWith('http')) {
+                                      _selectExternalSubtitle(sub);
+                                    } else if (sub.url == 'local_file') {
+                                      _checkSavedSubtitle();
+                                    }
                                   },
                                 );
                               }),
@@ -5279,6 +5422,126 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         ),
       ],
     );
+  }
+
+  Future<void> _showAudioTracksDialog() async {
+    if (_controller == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('El reproductor aún no está listo.'),
+        ),
+      );
+      return;
+    }
+    List<VideoAudioTrack> tracks = [];
+    try {
+      tracks = await _controller!.getAudioTracks();
+    } catch (_) {
+      // No soportado en esta plataforma/versión.
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF151515),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: Row(
+            children: [
+              const Icon(Icons.audiotrack, color: Color(0xFF00A3FF)),
+              const SizedBox(width: 8),
+              const Text(
+                'Pistas de audio',
+                style: TextStyle(color: Colors.white, fontSize: 16),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'IDIOMA / PISTA',
+                    style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  if (tracks.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text(
+                        'Este archivo no expone pistas de audio seleccionables, '
+                        'o tu plataforma no lo soporta.',
+                        style: TextStyle(color: Colors.white38, fontSize: 13),
+                      ),
+                    )
+                  else
+                    ...tracks.map((track) {
+                      final selected = track.isSelected;
+                      final label = [
+                        track.language ?? track.label,
+                        if (track.channelCount != null)
+                          '${track.channelCount}ch',
+                        _formatBitrate(track.bitrate),
+                      ].where((e) => e != null && e.isNotEmpty).join(' · ');
+                      final display = label.isEmpty ? track.id : label;
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(
+                          Icons.music_note,
+                          color: Colors.white38,
+                          size: 20,
+                        ),
+                        title: Text(
+                          display,
+                          style: TextStyle(
+                            color: selected
+                                ? const Color(0xFF00A3FF)
+                                : Colors.white70,
+                          ),
+                        ),
+                        trailing: selected
+                            ? const Icon(
+                                Icons.check,
+                                color: Color(0xFF00A3FF),
+                              )
+                            : null,
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _selectAudioTrack(track.id);
+                        },
+                      );
+                    }),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatBitrate(num? bitrate) {
+    if (bitrate == null || bitrate <= 0) return '';
+    return '${(bitrate / 1000).round()}kbps';
+  }
+
+  Future<void> _selectAudioTrack(String trackId) async {
+    if (_controller == null) return;
+    try {
+      await _controller!.selectAudioTrack(trackId);
+    } catch (e) {
+      print('Audio track select error: $e');
+    }
   }
 
   Future<void> _manualScrapeSubtitles() async {
@@ -5473,6 +5736,17 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
       _controller?.setClosedCaptionFile(Future.value(captionFile));
     } catch (e) {
       print("Parse error: $e");
+    }
+  }
+
+  Future<void> _selectExternalSubtitle(SubtitleInfo sub) async {
+    try {
+      final resp = await http.get(Uri.parse(sub.url));
+      if (resp.statusCode == 200) {
+        _loadExternalSubtitleFromContent(resp.body);
+      }
+    } catch (e) {
+      print('Subtitle fetch error: $e');
     }
   }
 

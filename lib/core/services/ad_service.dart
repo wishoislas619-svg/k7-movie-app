@@ -19,13 +19,16 @@ class AdService {
     required Function(String error) onAdFailed, 
     required Function() onAdDismissedIncomplete, 
   }) async {
+    print('📱 [AdService] showRewardedAd called ticketId=$ticketId');
 
     // 1. INTENTO PRIMARIO: Google AdMob
+    print('📱 [AdService] Loading AdMob rewarded ad...');
     RewardedAd.load(
       adUnitId: rewardedAdUnitId,
       request: const AdRequest(),
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (RewardedAd ad) {
+          print('✅ [AdService] AdMob ad loaded successfully');
           ad.setServerSideOptions(ServerSideVerificationOptions(customData: ticketId));
           bool userEarnedReward = false;
 

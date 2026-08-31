@@ -83,9 +83,6 @@ class _VipStarButtonState extends State<VipStarButton>
             child: Icon(
               _isVip ? Icons.star_rounded : Icons.star_border_rounded,
               color: _isVip ? Colors.white : const Color(0xFF00A3FF),
-              shadows: _isVip
-                  ? const [Shadow(color: Colors.white, blurRadius: 8)]
-                  : const [Shadow(color: Color(0xFF00A3FF), blurRadius: 1.5)],
             ),
           ),
         );

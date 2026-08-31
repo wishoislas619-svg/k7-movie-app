@@ -23,6 +23,10 @@ import 'features/series/domain/repositories/series_repository.dart';
 import 'features/series/data/repositories/series_category_repository_supabase_impl.dart';
 import 'features/series/domain/repositories/series_category_repository.dart';
 
+// Addons
+import 'features/addons/data/repositories/addon_repository_impl.dart';
+import 'features/addons/domain/repositories/addon_repository.dart';
+
 // SQLite
 final sqliteServiceProvider = Provider<SqliteService>((ref) => SqliteService());
 
@@ -57,6 +61,11 @@ final seriesRepositoryProvider = Provider<SeriesRepository>((ref) {
 
 final seriesCategoryRepositoryProvider = Provider<SeriesCategoryRepository>((ref) {
   return SeriesCategoryRepositorySupabaseImpl();
+});
+
+// ── Addons (Torrentio/debrid) ─────────────────────────────────────────────────
+final addonRepositoryProvider = Provider<AddonRepository>((ref) {
+  return AddonRepositoryImpl();
 });
 
 // ── UI State ──────────────────────────────────────────────────────────────────
