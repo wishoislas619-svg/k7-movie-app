@@ -175,6 +175,7 @@ class TorrentStreamingService {
   }
 
   Timer? _keepAliveTimer;
+  StreamSubscription<Map<int, TorrentInfo>>? _torrentUpdatesSub;
 
   Future<void> _waitForStreamReady(
     LibtorrentFlutter engine,
@@ -196,7 +197,22 @@ class TorrentStreamingService {
 
   void _startTorrentKeepAlive(LibtorrentFlutter engine, int torrentId, int streamId) {
     _keepAliveTimer?.cancel();
-    _keepAliveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _torrentUpdatesSub?.cancel();
+    _torrentUpdatesSub = engine.torrentUpdates.listen((torrents) {
+      final t = torrents[torrentId];
+      if (t == null) return;
+      // Reanudar INMEDIATAMENTE cuando el torrent termina para que el servidor HTTP siga sirviendo
+      if (t.isFinished && t.isPaused) {
+        engine.resumeTorrent(torrentId);
+        print('TORRENT_DBG: IMMEDIATE resume on finished torrentId=$torrentId');
+      }
+      // También reanudar si está pausado por cualquier razón
+      if (t.isPaused && !t.isFinished) {
+        engine.resumeTorrent(torrentId);
+        print('TORRENT_DBG: IMMEDIATE resume on paused torrentId=$torrentId');
+      }
+    });
+    _keepAliveTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       final torrentInfo = engine.torrents[torrentId];
       final streamInfo = engine.streams[streamId];
       if (torrentInfo == null || streamInfo == null || !streamInfo.isActive) {
@@ -206,6 +222,7 @@ class TorrentStreamingService {
           print('TORRENT_DBG: keep-alive resuming torrent (stream inactive) torrentId=$torrentId');
         }
         _keepAliveTimer?.cancel();
+        _torrentUpdatesSub?.cancel();
         return;
       }
       // Mantener el torrent activo - reanudar si está pausado o terminó
@@ -228,6 +245,8 @@ class TorrentStreamingService {
   void _stopTorrentKeepAlive() {
     _keepAliveTimer?.cancel();
     _keepAliveTimer = null;
+    _torrentUpdatesSub?.cancel();
+    _torrentUpdatesSub = null;
   }
 
   int _pickFileIndex(List<FileInfo> files, int? requested) {
@@ -278,26 +297,24 @@ class TorrentStreamingService {
                 Exception(t.errorMsg.isNotEmpty ? t.errorMsg : 'Error del torrent'));
           }
           sub.cancel();
-        } else if (t.hasMetadata == true ||
-            t.state != TorrentState.downloadingMetadata) {
-          // Metadata received - fetch files IMMEDIATELY before torrent can finish
-          print('TORRENT_DBG: metadata ready (hasMetadata=${t.hasMetadata}, state=${t.state}), fetching files now');
+        } else if (_isMetadataReady(t, engine, torrentId)) {
+          // Metadata really available - fetch files IMMEDIATELY
           final files = engine.getFiles(torrentId);
           if (files.isNotEmpty) {
             if (!completer.isCompleted) completer.complete(files);
             sub.cancel();
-          } else {
-            print('TORRENT_DBG: files still empty, will retry in fallback');
           }
+        } else {
+          print('TORRENT_DBG: still waiting (hasMetadata=${t.hasMetadata}, state=${t.state})');
         }
       }
     });
     // Race-condition fix: check directly after subscription
     final afterSub = engine.torrents[torrentId]?.state;
     final afterSubHasMetadata = engine.torrents[torrentId]?.hasMetadata;
+    final afterSubTorrent = engine.torrents[torrentId];
     print('TORRENT_DBG: _waitForMetadata re-check after subscription: state=$afterSub hasMetadata=$afterSubHasMetadata');
-    if (afterSubHasMetadata == true ||
-        (afterSub != null && afterSub != TorrentState.downloadingMetadata)) {
+    if (afterSubTorrent != null && _isMetadataReady(afterSubTorrent, engine, torrentId)) {
       print('TORRENT_DBG: metadata already available in re-check, fetching files');
       final files = engine.getFiles(torrentId);
       if (files.isNotEmpty) {
@@ -327,8 +344,7 @@ class TorrentStreamingService {
         return;
       }
       consecutiveNulls = 0;
-      if (current.hasMetadata == true ||
-          current.state != TorrentState.downloadingMetadata) {
+      if (_isMetadataReady(current, engine, torrentId)) {
         print('TORRENT_DBG: polling detected metadata ready (hasMetadata=${current.hasMetadata}, state=${current.state})');
         final files = engine.getFiles(torrentId);
         if (files.isNotEmpty) {
@@ -349,6 +365,21 @@ class TorrentStreamingService {
     } finally {
       await sub.cancel();
       pollTimer?.cancel();
+    }
+  }
+
+  /// Determina si los metadatos (lista de archivos) ya están realmente disponibles.
+  /// Evita tratar estados intermedios (p.ej. `checkingFiles`) como "metadata listo"
+  /// cuando `getFiles` aún devuelve vacío, que causaba un bucle inútil de reintentos.
+  bool _isMetadataReady(TorrentInfo t, LibtorrentFlutter engine, int torrentId) {
+    // Error siempre cuenta como listo para manejo en el caller (no usado aquí)
+    if (t.hasMetadata == true) return true;
+    if (t.state == TorrentState.downloadingMetadata) return false;
+    // Estados posteriores a la metadata: solo listo si los archivos existen
+    try {
+      return engine.getFiles(torrentId).isNotEmpty;
+    } catch (_) {
+      return false;
     }
   }
 
