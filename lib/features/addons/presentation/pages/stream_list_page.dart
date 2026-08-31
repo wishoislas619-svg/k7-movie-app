@@ -182,8 +182,8 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           fileIndex: stream.fileIdx,
         );
         torrentSession = session;
-        directUrl = session.url;
-        print('TORRENT_DBG: start() OK streamId=${session.streamId} url=${session.url}');
+        directUrl = session.localPath;
+        print('TORRENT_DBG: start() OK streamId=${session.streamId} localPath=${session.localPath}');
       } catch (e, st) {
         print('TORRENT_DBG: start() FALLÓ: $e\n$st');
         if (mounted) {

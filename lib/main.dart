@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
+import 'package:video_player_media_kit/video_player_media_kit.dart';
 import 'features/movies/domain/entities/movie.dart';
 import 'core/theme/app_theme.dart';
 import 'core/constants/app_constants.dart';
@@ -35,6 +36,24 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // media_kit como backend de video_player (usado para reproducir archivos
+  // locales descargados de torrents sin depender del servidor HTTP de libtorrent).
+  // En Android desactivamos la construcción de subtítulos manual; activamos las
+  // librerías de vídeo nativas. iOS/macOS/Windows/Linux quedan en el backend
+  // por defecto de video_player (AvFoundation/ExoPlayer) para no alterar el resto.
+  try {
+    VideoPlayerMediaKit.ensureInitialized(
+      android: true,
+      iOS: false,
+      macOS: false,
+      windows: false,
+      linux: false,
+    );
+  } catch (e) {
+    debugPrint("Error inicializando media_kit backend: $e");
+  }
+
   WakelockPlus.enable();
   
   // Habilitar todas las orientaciones por defecto en toda la app

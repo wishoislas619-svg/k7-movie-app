@@ -248,17 +248,19 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
       _currentOption = widget.videoOptions.first;
       final lcUrl = _currentOption.videoUrl.toLowerCase();
       
-      // Detectar streams locales de libtorrent (HTTP con range, no HLS)
-      // Formato: http://127.0.0.1:PORT/stream/<infohash>/...
+      // Detectar streams locales de libtorrent. Dos formatos posibles:
+      //   - Legacy HTTP with range: http://127.0.0.1:PORT/stream/<infohash>/...
+      //   - Nuevo: file://<ruta real en disco> tras pre-descargar ~1 minuto.
       _isLibtorrentStream = Uri.tryParse(lcUrl)?.hasScheme == true &&
-          lcUrl.contains('/stream/') &&
-          ['127.0.0.1', 'localhost', '10.0.2.2'].contains(
-              Uri.tryParse(lcUrl)?.host ?? '');
+          (lcUrl.contains('/stream/') &&
+              ['127.0.0.1', 'localhost', '10.0.2.2'].contains(
+                  Uri.tryParse(lcUrl)?.host ?? '')) ||
+          lcUrl.startsWith('file://');
 
       if (_isLibtorrentStream) {
         // Stream directo de torrent: usar algoritmo 4 para torrents
         _effectiveAlgorithm = 4; // 4 = torrent stream
-        print('🎯 [ALGO_DETECT] Torrent stream detectado → _effectiveAlgorithm=4');
+        print('🎯 [ALGO_DETECT] Torrent stream detectado (${lcUrl.startsWith('file://') ? 'archivo local' : 'http'}) → _effectiveAlgorithm=4');
       } else if (lcUrl.contains('embed.su') || lcUrl.contains('videasy')) {
         _effectiveAlgorithm = 3;
         print('🎯 [ALGO_DETECT] embed.su/videasy → _effectiveAlgorithm=3');
@@ -657,8 +659,10 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
       // Streams de torrent local (libtorrent) también usan reproducción directa
       _isLoading = false;
       _isInitialLoading = false;
-      // Pausa extendida + pre-check HTTP para que el servidor local de libtorrent estabilice
-      if (_isLibtorrentStream) {
+      // Pausa extendida + pre-check HTTP para que el servidor local de libtorrent estabilice.
+      // Para torrents pre-descargados a fichero (file://) NO hay servidor HTTP: se
+      // reproduce el archivo local directamente, sin esperar ni hacer sniffing.
+      if (_isLibtorrentStream && !videoUrl.startsWith('file://')) {
         print('⏳ [TORRENT_PREP] Waiting for local HTTP server...');
         await _waitForHttpServer(Uri.parse(videoUrl), timeout: const Duration(seconds: 30));
       }
@@ -1906,8 +1910,26 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
     });
 
     try {
-      if (widget.isLocal) {
-        _controller = VideoPlayerController.file(File(videoUrl));
+      // Archivo local (fichero real en disco): tanto si es contenido local del
+      // widget como si es un torrent pre-descargado a disco (file://...). El
+      // reproductor (media_kit vía video_player_media_kit en Android) reproduce
+      // el fichero directamente: sin sniffing HTTP, sin timeouts.
+      final isLocalFileTorrent =
+          videoUrl.startsWith('file://') || effectiveUrl.startsWith('file://');
+      if (widget.isLocal || isLocalFileTorrent) {
+        final fileUri = effectiveUrl.startsWith('file://')
+            ? effectiveUrl
+            : videoUrl.startsWith('file://')
+                ? videoUrl
+                : null;
+        print('🎬 [TORRENT_FILE] Reproduciendo archivo local (media_kit backend): '
+            '${fileUri ?? videoUrl} isLocal=${widget.isLocal}');
+        final fileController = fileUri != null
+            ? VideoPlayerController.file(File(fileUri.startsWith('file://')
+                ? fileUri.substring('file://'.length)
+                : fileUri))
+            : VideoPlayerController.file(File(videoUrl));
+        _controller = fileController;
       } else {
         final formatProbeUrl = effectiveUrl.toLowerCase();
 
