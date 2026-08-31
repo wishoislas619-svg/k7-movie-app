@@ -115,11 +115,14 @@ class TorrentStreamingService {
     try {
       final files = await _waitForMetadata(engine, torrentId, timeout: metadataTimeout);
       print('TORRENT_DBG: _waitForMetadata returned ${files.length} files');
+      _logFileList(files);
       if (files.isEmpty) {
         engine.disposeTorrent(torrentId);
         throw Exception('Torrent sin archivos reproducibles.');
       }
       final target = _pickFileIndex(files, fileIndex);
+      print('TORRENT_DBG: ▶ TARGET FILE seleccionado: fileIndex=$target ${target >= 0 && target < files.length ? files[target].name : '(out of range)'} '
+          '${target >= 0 && target < files.length ? '| path=${files[target].path} size=${files[target].size} streamable=${files[target].isStreamable}' : ''} (solicitado=$fileIndex)');
 
       // Prioritize the target file
       if (target >= 0 && target < files.length) {
@@ -187,7 +190,8 @@ class TorrentStreamingService {
     while (DateTime.now().isBefore(deadline)) {
       final stream = engine.streams[streamId];
       if (stream != null && stream.isActive) {
-        print('TORRENT_DBG: stream ready, state=${stream.streamState} url=${stream.url}');
+        print('TORRENT_DBG: stream ready, state=${stream.streamState} fileSize=${stream.fileSize} '
+            'url=${stream.url} fileIndex=${stream.fileIndex} buffer=${stream.bufferSeconds}s');
         return;
       }
       await Future.delayed(const Duration(milliseconds: 500));
@@ -198,18 +202,21 @@ class TorrentStreamingService {
   void _startTorrentKeepAlive(LibtorrentFlutter engine, int torrentId, int streamId) {
     _keepAliveTimer?.cancel();
     _torrentUpdatesSub?.cancel();
+    // Log del estado del torrent en cada actualización para poder DEPURAR
+    // por qué se pausa / se queda sin datos. Además reanuda SOLO si el torrent
+    // terminó de descargar (finished) y quedó pausado, que es cuando el servidor
+    // HTTP deja de servir y cierra el socket que ExoPlayer está leyendo.
     _torrentUpdatesSub = engine.torrentUpdates.listen((torrents) {
       final t = torrents[torrentId];
       if (t == null) return;
+      print('TORRENT_DBG: [upd] state=${t.state} paused=${t.isPaused} finished=${t.isFinished} '
+          'progress=${(t.progress * 100).toStringAsFixed(1)}% '
+          'dl=${t.downloadRate ~/ 1024}KB/s up=${t.uploadRate ~/ 1024}KB/s '
+          'peers=${t.numPeers} seeds=${t.numSeeds} done=${t.totalDone}B wanted=${t.totalWanted}B');
       // Reanudar INMEDIATAMENTE cuando el torrent termina para que el servidor HTTP siga sirviendo
       if (t.isFinished && t.isPaused) {
         engine.resumeTorrent(torrentId);
-        print('TORRENT_DBG: IMMEDIATE resume on finished torrentId=$torrentId');
-      }
-      // También reanudar si está pausado por cualquier razón
-      if (t.isPaused && !t.isFinished) {
-        engine.resumeTorrent(torrentId);
-        print('TORRENT_DBG: IMMEDIATE resume on paused torrentId=$torrentId');
+        print('TORRENT_DBG: ▶ resume porque finished+paused torrentId=$torrentId');
       }
     });
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 2), (_) {
@@ -217,19 +224,22 @@ class TorrentStreamingService {
       final streamInfo = engine.streams[streamId];
       if (torrentInfo == null || streamInfo == null || !streamInfo.isActive) {
         // Stream ya no activo, intentar reanudar torrent
-        if (torrentInfo != null) {
+        if (torrentInfo != null && (torrentInfo.isPaused || torrentInfo.isFinished)) {
           engine.resumeTorrent(torrentId);
-          print('TORRENT_DBG: keep-alive resuming torrent (stream inactive) torrentId=$torrentId');
+          print('TORRENT_DBG: keep-alive resuming torrent (stream inactive) torrentId=$torrentId state=${torrentInfo.state}');
         }
         _keepAliveTimer?.cancel();
         _torrentUpdatesSub?.cancel();
         return;
       }
-      // Mantener el torrent activo - reanudar si está pausado o terminó
-      if (torrentInfo.isPaused || torrentInfo.isFinished) {
+      // Reanudar solo cuando terminó y se pausó (servidor dejó de servir)
+      if (torrentInfo.isFinished && torrentInfo.isPaused) {
         engine.resumeTorrent(torrentId);
-        print('TORRENT_DBG: keep-alive resuming paused/finished torrentId=$torrentId');
+        print('TORRENT_DBG: keep-alive resume finished+paused torrentId=$torrentId');
       }
+      print('TORRENT_DBG: [timer] streamState=${streamInfo.streamState} buffer=${streamInfo.bufferSeconds.toStringAsFixed(1)}s '
+          'readHead=${streamInfo.readHead}/${streamInfo.fileSize} peers=${streamInfo.activePeers} '
+          'dl=${streamInfo.downloadRate ~/ 1024}KB/s bufpcs=${streamInfo.bufferPieces}');
       // Refrescar configuración de cache
       try {
         engine.setCacheSettings(
@@ -381,6 +391,22 @@ class TorrentStreamingService {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Registra en logs la lista completa de archivos del torrent para poder
+  /// decodificar qué es lo que trae el enlace extraído por el addon.
+  void _logFileList(List<FileInfo> files, {int max = 200}) {
+    print('TORRENT_DBG: ── FILE LIST (${files.length} archivos) ──');
+    final printable = files.length > max ? files.sublist(0, max) : files;
+    for (final f in printable) {
+      print('TORRENT_DBG:   [${f.index}] ${f.name} | path=${f.path} '
+          '| size=${f.size}B (${(f.size / (1024 * 1024)).toStringAsFixed(2)}MB) '
+          '| streamable=${f.isStreamable}');
+    }
+    if (files.length > max) {
+      print('TORRENT_DBG:   ... y ${files.length - max} archivos más');
+    }
+    print('TORRENT_DBG: ── FIN FILE LIST ──');
   }
 
   /// Libera el stream y el torrent cuando termina la reproducción.

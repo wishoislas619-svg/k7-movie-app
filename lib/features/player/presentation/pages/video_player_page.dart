@@ -725,12 +725,29 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
       while (DateTime.now().isBefore(deadline)) {
         attempts++;
         try {
-          final response = await client.head(url).timeout(const Duration(seconds: 3));
-          if (response.statusCode < 500) {
-            print('✅ [TORRENT_PREP] HTTP server ready on attempt $attempts: ${response.statusCode}');
+          // GET con Range de los primeros bytes: esto fuerza al servidor HTTP de
+          // libtorrent a BUFFERIZAR el inicio del archivo (descargar las piezas),
+          // de modo que cuando ExoPlayer intente sniffear el formato (leer el
+          // ftyp/header) los bytes ya estén disponibles y NO cierre el socket.
+          // Un simple HEAD no reserva datos y provoca SocketTimeoutException en
+          // FragmentedMp4Extractor.sniff.
+          final response = await client
+              .get(url, headers: {'Range': 'bytes=0-131071', 'Accept': '*/*'})
+              .timeout(const Duration(seconds: 5));
+          if (response.statusCode == 200 || response.statusCode == 206) {
+            final contentType = response.headers['content-type'] ?? '?';
+            final contentLength = response.headers['content-length'] ?? '?';
+            final contentRange = response.headers['content-range'] ?? '?';
+            final bytesGot = response.bodyBytes.length;
+            print('✅ [TORRENT_PREP] HTTP server ready on attempt $attempts: ${response.statusCode} '
+                '| Content-Type=$contentType | Content-Length=$contentLength | Content-Range=$contentRange '
+                '| bytesRecibidos=$bytesGot');
+            print('📦 [TORRENT_PREP] Primeros bytes (hex): ${response.bodyBytes.take(64).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
+            print('📋 [TORRENT_PREP] Primeros bytes (ascii): "${String.fromCharCodes(response.bodyBytes.take(64))}"');
             client.close();
             return;
           }
+          print('⚠️ [TORRENT_PREP] Respuesta inesperada en attempt $attempts: ${response.statusCode}');
         } catch (e) {
           print('⚠️ [TORRENT_PREP] HTTP server not ready (attempt $attempts): $e');
         }
@@ -1966,6 +1983,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
           httpHeaders: requestHeaders,
         );
         print('TORRENT_DBG: inicializando player url=$effectiveUrl isHls=$isHls isLibtorrentStream=$isLibtorrentStream effectiveAlgorithm=$_effectiveAlgorithm');
+        if (_isLibtorrentStream) {
+          print('🎬 [TORRENT_LINK] URL extraída por el addon (original): ${_currentOption.videoUrl}');
+          print('🎬 [TORRENT_LINK] → servidor local libtorrent: $effectiveUrl');
+          print('🎬 [TORRENT_LINK] formatHint=${isLibtorrentForFormatHint ? 'other (sniff auto)' : 'auto'} isHls=$isHls');
+          print('🎬 [TORRENT_LINK] quality=${_currentOption.resolution} headers=${requestHeaders.keys.toList()}');
+        }
       }
 
       if (_controller != null) {
