@@ -164,13 +164,8 @@ class TorrentStreamingService {
 
       // Prioridades de archivo: SOLO el archivo objetivo se descarga (nonzero),
       // el resto se marca 0 (dont_download) para no desperdiciar ancho de banda
-      // en muestras/avisos.
-      // IMPORTANTE: NO usamos startStream. Su lógica nativa marca el archivo
-      // como head+tail (el MIDDLE entero a dont_download por pieza), de modo que
-      // en cuanto descarga la cabecera+cola (un par de piezas) el torrent pasa a
-      // `finished` y se detiene (~2.78MB). Para reproducir un archivo local que
-      // `media_kit` pueda leer tenemos que descargar el fichero completo de forma
-      // normal (rarest-first), no sólo un pequeño ventanuco.
+      // en muestras/avisos. La prioridad de archivo multiplica la prioridad por
+      // pieza que fija startStream, así que los ficheros no objetivo quedan a 0.
       if (target >= 0 && target < files.length) {
         final priorities = List<int>.filled(files.length, 0);
         priorities[target] = 1;
@@ -178,10 +173,23 @@ class TorrentStreamingService {
         print('TORRENT_DBG: setFilePriorities target=$target (others=0/skip)');
       }
 
-      // Forzar inicio explícito (setFilePriorities ya hace resume, pero lo
-      // aseguramos) y dejar que libtorrent baje el archivo objetivo entero.
-      engine.resumeTorrent(torrentId);
-      print('TORRENT_DBG: descarga iniciada (sin stream) torrentId=$torrentId');
+      // startStream: la lógica nativa (PARCHEADA en torrent_bridge.cpp) ahora
+      // mantiene TODO el archivo con prioridad no-cero (nunca pasa a `finished`
+      // de forma prematura) y da top_priority al INICIO (primeros 256MB), de modo
+      // que libtorrent descarga las piezas 0..N en orden PRIMERO: se escribe un
+      // tramo de cabecera contiguo en disco rápido para poder reproducirlo.
+      // No usamos su URL HTTP; sólo empleamos su motor para dirigir la descarga
+      // secuencial del fichero local (media_kit reproduce file://).
+      var streamId = 0;
+      if (target >= 0 && target < files.length) {
+        final stream = engine.startStream(torrentId, fileIndex: target);
+        streamId = stream.id;
+        print('TORRENT_DBG: startStream(parcheado) id=$streamId torrentId=$torrentId'
+            ' targetFile=$target → descarga head-first a fichero');
+      } else {
+        engine.resumeTorrent(torrentId);
+        print('TORRENT_DBG: resumeTorrent fallback torrentId=$torrentId');
+      }
 
       final targetSize = targetFile?.size ?? 0;
       final desired = (preloadBytes <= 0 || targetSize == 0)
@@ -196,7 +204,7 @@ class TorrentStreamingService {
       print('TORRENT_DBG: preload completado en ${waited.inSeconds}s → reproduciendo archivo local');
       final session = TorrentPlaybackSession(
         torrentId: torrentId,
-        streamId: 0, // sin stream HTTP; descarga a fichero
+        streamId: streamId,
         localPath: 'file://$localPath',
         name: localPath,
       );
