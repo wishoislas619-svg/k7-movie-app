@@ -16,6 +16,10 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../../../movies/domain/entities/movie.dart';
 import '../../data/datasources/video_service.dart';
 import 'package:video_player/video_player.dart';
+import 'package:video_player_platform_interface/video_player_platform_interface.dart'
+    show VideoPlayerPlatform;
+import 'package:video_player_media_kit/src/media_kit_video_player.dart' as vmk;
+import 'package:media_kit/media_kit.dart' as media_kit;
 import 'package:http/http.dart' as http;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
@@ -44,6 +48,32 @@ class SubtitleInfo {
   final String language;
   final String url;
   SubtitleInfo({required this.language, required this.url});
+}
+
+class SubtitleTrackInfo {
+  final int index;
+  final String language;
+  final String label;
+  final bool isSelected;
+  final String? codec;
+
+  SubtitleTrackInfo({
+    required this.index,
+    required this.language,
+    required this.label,
+    required this.isSelected,
+    this.codec,
+  });
+
+  factory SubtitleTrackInfo.fromMap(Map<dynamic, dynamic> map) {
+    return SubtitleTrackInfo(
+      index: map['index'] as int,
+      language: map['language'] as String? ?? 'unknown',
+      label: map['label'] as String? ?? 'Track ${map['index']}',
+      isSelected: map['selected'] as bool? ?? false,
+      codec: map['codec'] as String?,
+    );
+  }
 }
 
 class InternalServerInfo {
@@ -158,8 +188,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   List<VideoQuality> _internalQualities = [];
   VideoQuality? _currentQuality;
 
-  List<SubtitleInfo> _internalSubtitles = [];
+List<SubtitleInfo> _internalSubtitles = [];
   SubtitleInfo? _currentSubtitle;
+  bool _embeddedSubsDisabled = false;
   bool _hasIncrementedView = false;
 
   InAppWebViewController? _webViewController;
@@ -179,6 +210,9 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   );
   static const _pipControlChannel = MethodChannel(
     'com.luis.movieapp/pip_control',
+  );
+  static const _trackSelectionChannel = MethodChannel(
+    'com.luis.movieapp/track_selection',
   );
 
   bool _isSwitchingStream = false;
@@ -1822,6 +1856,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         });
 
         // Aplicar los valores cargados
+        // K7 FIX: si el volumen guardado quedó en ~0 (mute), nunca se escucha
+        // nada. Aseguramos un nivel base audible para que el audio suene.
+        if (_volume < 0.08) {
+          _volume = 0.6;
+          print('🔊 [VOL] Volumen guardado en $_volume → subido a 0.6 (anti-mute)');
+        }
         await _applyVolumeBoost(_volume);
         ScreenBrightness().setScreenBrightness(_brightness);
       }
@@ -1922,14 +1962,24 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
             : videoUrl.startsWith('file://')
                 ? videoUrl
                 : null;
+        final filePath = fileUri != null
+            ? (fileUri.startsWith('file://')
+                ? fileUri.substring('file://'.length)
+                : fileUri)
+            : videoUrl;
         print('🎬 [TORRENT_FILE] Reproduciendo archivo local (media_kit backend): '
             '${fileUri ?? videoUrl} isLocal=${widget.isLocal}');
-        final fileController = fileUri != null
-            ? VideoPlayerController.file(File(fileUri.startsWith('file://')
-                ? fileUri.substring('file://'.length)
-                : fileUri))
-            : VideoPlayerController.file(File(videoUrl));
-        _controller = fileController;
+        
+        // Detectar MKV para logging (el backend media_kit reproduce MP4/MKV/etc.
+        // indistintamente; NO hace falta networkUrl ni formatHint — de hecho
+        // networkUrl(Uri.parse('file://...')) NO codifica espacios/acentos del
+        // nombre de archivo (típico en torrents) y mpv se queda colgado en
+        // "Cargando video...". file() usa Uri.file() que codifica bien).
+        final isMkv = filePath.toLowerCase().endsWith('.mkv') || 
+            filePath.toLowerCase().contains('.mkv');
+        
+        _controller = VideoPlayerController.file(File(filePath));
+        print('🎬 [TORRENT_FILE] Contenedor ${isMkv ? 'MKV (por nombre)' : 'no-MKV'} → file()');
       } else {
         final formatProbeUrl = effectiveUrl.toLowerCase();
 
@@ -2020,7 +2070,12 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         final int _maxInitAttempts = _isLibRetry ? 3 : 1;
         while (true) {
           try {
-            await _controller!.initialize();
+            // Watchdog: para archivos locales (torrent descargado a disco) el
+            // demuxer de mpv puede quedarse colgado si el archivo está truncado
+            // o con un codec no soportado → en vez de "Cargando video..." para
+            // siempre, lanzamos error a los 25s.
+            const initTimeout = Duration(seconds: 25);
+            await _controller!.initialize().timeout(initTimeout);
             print('TORRENT_DBG: initialize() OK');
             break;
           } catch (e) {
@@ -2028,12 +2083,30 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
             print(
               '⚠️ [TORRENT_RETRY] Intento $_initAttempts/$_maxInitAttempts fallido: $e',
             );
-            if (_initAttempts >= _maxInitAttempts) {
+            final isLocalTorrentFile =
+                effectiveUrl.startsWith('file://') || videoUrl.startsWith('file://');
+            final isTimeout = e is TimeoutException ||
+                (e.toString().contains('Timeout') &&
+                    isLocalTorrentFile);
+            if (_initAttempts >= _maxInitAttempts ||
+                (isTimeout && isLocalTorrentFile)) {
+              if (isTimeout && isLocalTorrentFile) {
+                print('🎬 [TORRENT_FILE] ⚠ initialize() colgado 25s: el archivo '
+                    'local no puede abrirse (¿truncado o codec no soportado?).');
+              }
               rethrow;
             }
             await Future.delayed(const Duration(seconds: 2));
           }
         }
+
+        // Auto-seleccionar primera pista de audio para archivos MKV. Con
+        // timeout: si la consulta de pistas se cuelga, no podemos bloquear el
+        // final del loading para siempre.
+        try {
+          await _autoSelectAudioTrack()
+              .timeout(const Duration(seconds: 5), onTimeout: () {});
+        } catch (_) {}
 
         // Si estamos conectados a Cast, enviamos la nueva URL automáticamente
         if (CastService().isConnected) {
@@ -2176,6 +2249,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
                       "▶️ [INIT] Play automático tras seek inicial de rotación.",
                     );
                     _controller?.play();
+                    _kickSilentAudioAfterPlay();
                   }
                 });
               });
@@ -2184,6 +2258,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
                 "▶️ [INIT] Reanudación ya verificada, no hay posición extraída, iniciando Play automático desde 0:00.",
               );
               _controller?.play();
+              _kickSilentAudioAfterPlay();
             }
           }
         }
@@ -2469,6 +2544,7 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
         await _audioBoostChannel.invokeMethod('setBoost', {'boost': clamped});
       } catch (_) {}
     }
+    print('🔊 [VOL] target=$targetVolume base=$baseVolume (mpv+stream) aplicado');
   }
 
   Future<dynamic> _evaluateJS(String source) async {
@@ -5327,6 +5403,97 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
               children: [
                 _buildProfessionalSection(),
                 const Divider(color: Colors.white12, height: 30),
+                // Subtítulos incrustados (MKV)
+                FutureBuilder<List<SubtitleTrackInfo>>(
+                  future: _getEmbeddedSubtitleTracks(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 10),
+                        child: Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
+                      );
+                    }
+                    final tracks = snapshot.data ?? [];
+                    if (tracks.isEmpty) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 10),
+                        child: Text(
+                          'Sin subtítulos incrustados (MKV)',
+                          style: TextStyle(color: Colors.white38, fontSize: 13),
+                        ),
+                      );
+                    }
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'SUBTÍTULOS INCRUSTADOS (MKV)',
+                          style: TextStyle(
+                            color: Colors.grey,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            Icons.subtitles_off,
+                            color: _embeddedSubsDisabled
+                                ? const Color(0xFF00A3FF)
+                                : Colors.white38,
+                            size: 20,
+                          ),
+                          title: Text(
+                            'Desactivar subtítulos',
+                            style: TextStyle(
+                              color: _embeddedSubsDisabled
+                                  ? const Color(0xFF00A3FF)
+                                  : Colors.white70,
+                              fontSize: 14,
+                            ),
+                          ),
+                          onTap: () {
+                            Navigator.pop(context);
+                            _disableEmbeddedSubtitleTracks();
+                          },
+                        ),
+                        const Divider(color: Colors.white10),
+                        ...tracks.map((track) {
+                          final currentSelected = track.isSelected;
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(
+                              Icons.closed_caption,
+                              color: currentSelected ? const Color(0xFF00A3FF) : Colors.white38,
+                              size: 20,
+                            ),
+                            title: Text(
+                              track.label,
+                              style: TextStyle(
+                                color: currentSelected ? const Color(0xFF00A3FF) : Colors.white70,
+                                fontSize: 14,
+                              ),
+                            ),
+                            subtitle: track.codec != null
+                                ? Text('Codec: ${track.codec}', style: const TextStyle(color: Colors.white38, fontSize: 11))
+                                : null,
+                            trailing: currentSelected
+                                ? const Icon(Icons.check, color: Color(0xFF00A3FF), size: 18)
+                                : null,
+                            onTap: () {
+                              _selectEmbeddedSubtitleTrack(track.index);
+                              Navigator.pop(context);
+                            },
+                          );
+                        }),
+                        const Divider(color: Colors.white10),
+                      ],
+                    );
+                  },
+                ),
+                const Divider(color: Colors.white12, height: 30),
                 const Text(
                   'EXTRAER DE LA PÁGINA',
                   style: TextStyle(
@@ -5486,6 +5653,163 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
     );
   }
 
+  // Devuelve el Player de media_kit si el backend activo es media_kit (torrents/locales).
+  media_kit.Player? _mediaKitPlayer() {
+    if (_controller == null) return null;
+    final instance = VideoPlayerPlatform.instance;
+    if (instance is vmk.MediaKitVideoPlayer) {
+      return instance.playerFor(_controller!.playerId);
+    }
+    return null;
+  }
+
+  // Método para obtener pistas de subtítulos incrustadas (MKV) via media_kit
+  Future<List<SubtitleTrackInfo>> _getEmbeddedSubtitleTracks() async {
+    if (_controller == null) return [];
+    final player = _mediaKitPlayer();
+    if (player != null) {
+      final tracks = player.state.tracks.subtitle
+          .where((t) => !t.uri && !t.data && t.id != 'auto' && t.id != 'no')
+          .toList();
+      final selectedId = player.state.track.subtitle.id;
+      _embeddedSubsDisabled = selectedId == 'no';
+      return tracks.asMap().entries.map((e) {
+        final t = e.value;
+        final label = t.title ??
+            t.language ??
+            'Pista ${e.key + 1}';
+        return SubtitleTrackInfo(
+          index: e.key,
+          language: t.language ?? 'desconocido',
+          label: label,
+          isSelected: t.id == selectedId,
+          codec: t.codec,
+        );
+      }).toList();
+    }
+    // Fallback a canal nativo (otras plataformas)
+    try {
+      final result = await _trackSelectionChannel.invokeMethod('getSubtitleTracks');
+      if (result is List) {
+        return result.map((e) => SubtitleTrackInfo.fromMap(e)).toList();
+      }
+    } catch (_) {
+      // No soportado en esta plataforma/versión
+    }
+    return [];
+  }
+
+  Future<void> _selectEmbeddedSubtitleTrack(int trackIndex) async {
+    if (_controller == null) return;
+    final player = _mediaKitPlayer();
+    if (player != null) {
+      final tracks = player.state.tracks.subtitle
+          .where((t) => !t.uri && !t.data && t.id != 'auto' && t.id != 'no')
+          .toList();
+      if (trackIndex >= 0 && trackIndex < tracks.length) {
+        await player.setSubtitleTrack(tracks[trackIndex]);
+        _embeddedSubsDisabled = false;
+      } else {
+        await player.setSubtitleTrack(media_kit.SubtitleTrack.auto());
+        _embeddedSubsDisabled = false;
+      }
+      return;
+    }
+    try {
+      await _trackSelectionChannel.invokeMethod('selectSubtitleTrack', {'index': trackIndex});
+      _embeddedSubsDisabled = false;
+    } catch (_) {
+      // No soportado
+    }
+  }
+
+  // Desactiva los subtítulos incrustados (media_kit: sid=no, cierra captions).
+  Future<void> _disableEmbeddedSubtitleTracks() async {
+    final player = _mediaKitPlayer();
+    if (player != null) {
+      try {
+        await player.setSubtitleTrack(media_kit.SubtitleTrack.no());
+        _embeddedSubsDisabled = true;
+        print('🎬 [SUBS] Subtítulos incrustados desactivados (sid=no)');
+        return;
+      } catch (_) {
+        print('🎬 [SUBS] fallo desactivando vía media_kit');
+      }
+    }
+    // Fallback: desactivar captions web/canal nativo
+    try {
+      await _trackSelectionChannel.invokeMethod('selectSubtitleTrack', {'index': -1});
+    } catch (_) {
+      // No soportado
+    }
+    setState(() {
+      _currentSubtitle = null;
+      _captionNotifier.value = null;
+      _embeddedSubsDisabled = true;
+      _controller?.setClosedCaptionFile(null);
+    });
+  }
+
+  Future<void> _autoSelectAudioTrack() async {
+    if (_controller == null) return;
+    // El backend media_kit publica la lista de pistas un instante después de initialize().
+    List<VideoAudioTrack> tracks = const [];
+    for (var attempt = 0; attempt < 8; attempt++) {
+      try {
+        tracks = await _controller!.getAudioTracks();
+      } catch (_) {
+        tracks = const [];
+      }
+      if (tracks.isNotEmpty) break;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    if (tracks.isEmpty) {
+      print('🎵 [AUTO_AUDIO] sin pistas de audio detectadas');
+      return;
+    }
+    final selected = tracks.where((t) => t.isSelected).firstOrNull;
+    final target = selected ?? tracks.first;
+    await _controller!.selectAudioTrack(target.id);
+
+    // Reasegurar que el volumen software no quedó en 0 (silencio por mute).
+    if (_volume <= 0.0) {
+      _volume = 1.0;
+      try {
+        await _controller!.setVolume(1.0);
+      } catch (_) {}
+    }
+
+    print('🎵 [AUTO_AUDIO] ${tracks.length} pista(s) detectadas. '
+        '[sel=${target.language ?? target.label}] (id=${target.id}, codec=${target.codec}, ch=${target.channelCount}lb)');
+    for (final t in tracks) {
+      print('🎵 [AUTO_AUDIO]  • id=${t.id} lang=${t.language} label=${t.label} '
+          'codec=${t.codec} ch=${t.channelCount} sr=${t.sampleRate} sel=${t.isSelected}');
+    }
+  }
+
+  /// WORKAROUND: en Android, mpv/media_kit arranca el AudioTrack entregando
+  /// silencio (ceros) hasta que ocurre un seek. El log del dispositivo muestra
+  /// `[audioTrackData][zero]` desde el inicio y audio real solo tras un seek
+  /// grande. Aplicamos un micro-seek forzado justo después de que el playback
+  /// comience para reiniciar la cadena de audio sin desplazar la posición.
+  void _kickSilentAudioAfterPlay() {
+    if (!Platform.isAndroid) return;
+    Future<void>.delayed(const Duration(milliseconds: 400), () async {
+      if (!mounted) return;
+      final player = _mediaKitPlayer();
+      if (player == null) return;
+      try {
+        print('🔊 [AUDIO_DEV] AO=${player.state.audioDevice.name} '
+            'devices=${player.state.audioDevices.map((d) => d.name).join(', ')}');
+        final pos = player.state.position;
+        await player.seek(pos + const Duration(milliseconds: 10));
+        print('🎵 [AUDIO_KICK] micro-seek forzado en $pos para reactivar audio');
+      } catch (_) {
+        print('🎵 [AUDIO_KICK] micro-seek no disponible');
+      }
+    });
+  }
+
   Future<void> _showAudioTracksDialog() async {
     if (_controller == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -5496,11 +5820,16 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
       return;
     }
     List<VideoAudioTrack> tracks = [];
-    try {
-      tracks = await _controller!.getAudioTracks();
-    } catch (_) {
-      // No soportado en esta plataforma/versión.
+    for (var attempt = 0; attempt < 6; attempt++) {
+      try {
+        tracks = await _controller!.getAudioTracks();
+      } catch (_) {
+        tracks = [];
+      }
+      if (tracks.isNotEmpty) break;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
     }
+    final supportAvailable = _controller!.isAudioTrackSupportAvailable();
 
     showDialog(
       context: context,
@@ -5538,12 +5867,14 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
                   ),
                   const SizedBox(height: 6),
                   if (tracks.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                       child: Text(
-                        'Este archivo no expone pistas de audio seleccionables, '
-                        'o tu plataforma no lo soporta.',
-                        style: TextStyle(color: Colors.white38, fontSize: 13),
+                        supportAvailable
+                            ? 'Este archivo no expone pistas de audio seleccionables.'
+                            : 'Este archivo no expone pistas de audio seleccionables, '
+                                'o tu plataforma no lo soporta.',
+                        style: const TextStyle(color: Colors.white38, fontSize: 13),
                       ),
                     )
                   else

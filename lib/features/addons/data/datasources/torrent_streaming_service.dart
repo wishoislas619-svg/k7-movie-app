@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:path_provider/path_provider.dart';
@@ -21,16 +20,39 @@ class TorrentPlaybackSession {
   });
 }
 
-/// Abstracción sobre `libtorrent_flutter` para reproducir torrents sin debrid.
+/// Datos de progreso emitidos durante la descarga completa.
+class TorrentDownloadProgress {
+  final double percent;
+  final double downloadedMB;
+  final double totalMB;
+  final double speedMBps;
+  final int peers;
+  final int seeds;
+  final String state;
+  final bool finished;
+
+  const TorrentDownloadProgress({
+    required this.percent,
+    required this.downloadedMB,
+    required this.totalMB,
+    required this.speedMBps,
+    required this.peers,
+    required this.seeds,
+    required this.state,
+    required this.finished,
+  });
+}
+
+/// Abstracción sobre `libtorrent_flutter` para reproducir torrents sin debrid
+/// mediante **streaming HTTP on-demand** (modelo TorrServer/Stremio).
 ///
-/// En lugar de depender del servidor HTTP interno (que no sirve datos a tiempo
-/// y provoca `SocketTimeoutException` en ExoPlayer), esta clase descarga el
-/// archivo objetivo a disco de forma secuencial (piezas 0..N del fichero),
-/// espera a tener pre-descargado ~1 minuto (~15-20 MB) y devuelve la ruta
-/// local del archivo ya escrito en disco. El reproductor (media_kit vía
-/// `video_player_media_kit`) reproduce ese archivo local sin sniffing ni
-/// timeouts: un fichero real que, además, sigue creciendo mientras el torrent
-/// continúa descargando.
+/// `start()` arranca el servidor HTTP interno nativo (`startStream`) sobre el
+/// archivo objetivo y devuelve su URL (`http://127.0.0.1:PORT/stream/...`). El
+/// servidor (port de lt2http) sirve los bytes exactos que pide el reproductor:
+/// ante un rango, sube la prioridad de las piezas que faltan, espera a que
+/// lleguen y responde 206. media_kit reproduce la URL directamente. Esto evita
+/// el salto-al-final de los .mkv esparciosos (el índex vive al final del
+/// archivo), permite seek y usa descarga en paralelo rarest-first.
 class TorrentStreamingService {
   TorrentStreamingService._();
   static final TorrentStreamingService instance = TorrentStreamingService._();
@@ -113,17 +135,25 @@ class TorrentStreamingService {
     return 'magnet:?xt=urn:btih:$infoHash$trackers';
   }
 
-  /// Inicia la descarga de un torrent y devuelve la ruta local del archivo
-  /// objetivo una vez pre-descargado lo suficiente para empezar a reproducir.
+  /// Inicia la reproducción de un torrent con el modelo tipo Stremio:
+  /// descarga SECUENCIAL en orden (piezas 0,1,2,...) a través del servidor
+  /// HTTP interno nativo (`http://127.0.0.1:PORT/stream/...`), y devuelve la
+  /// sesión cuando ya hay un buffer contiguo de [preloadBytes] descargado
+  /// (por defecto 50MB) "por delante". Así media_kit/ExoPlayer arranca con
+  /// datos suficientes y el seek dentro de lo descargado no salta.
   ///
-  /// [preloadBytes] indica cuántos bytes del inicio del archivo queremos en
-  /// disco antes de devolver la sesión (≈1 minuto de vídeo ≈ 10-20 MB por
-  /// defecto). Como no conocemos el bitrate exacto, usamos un tamaño fijo.
+  /// Al hacer seek adelantado a una zona aún no descargada, el servidor nativo
+  /// re-ancla la descarga y sigue en orden desde esa posición.
+  ///
+  /// [bufferTimeout] es el tiempo máximo que esperamos a alcanzar el umbral de
+  /// preload antes de devolver la URL (si no se alcanza, se devuelve igualmente
+  /// con lo descargado para no bloquear la reproducción).
   Future<TorrentPlaybackSession> start({
     required String infoHash,
     int? fileIndex,
-    int preloadBytes = 64 * 1024 * 1024,
+    int preloadBytes = 50 * 1024 * 1024,
     Duration metadataTimeout = const Duration(seconds: 120),
+    Duration bufferTimeout = const Duration(seconds: 120),
   }) async {
     print('TORRENT_DBG: start() infohash=$infoHash fileIdx=$fileIndex preloadBytes=$preloadBytes');
     await _ensureInit();
@@ -152,17 +182,15 @@ class TorrentStreamingService {
           '${targetFile != null ? '| name=${targetFile.name} size=${targetFile.size}B' : '(out of range)'} '
           '(solicitado=$fileIndex)');
 
-      // Ruta real en disco: saveDir + path relativo dentro del torrent.
-      // Limpiamos separadores y evitamos path traversal.
+      // Ruta real en disco (sólo como fallback si startStream no devuelve URL).
       final relPath = (targetFile?.path ?? '')
           .replaceAll('\\', '/')
           .split('/')
           .where((s) => s.isNotEmpty && s != '.' && s != '..')
           .join('/');
       final localPath = p.join(saveDir, relPath);
-      print('TORRENT_DBG: ▶ LOCAL FILE path=$localPath');
 
-      // Prioridades de archivo: SOLO el archivo objetivo se descarga (nonzero),
+      // Prioridades de archivo: SOLO el archivo objetivo se habilita (nonzero),
       // el resto se marca 0 (dont_download) para no desperdiciar ancho de banda
       // en muestras/avisos. La prioridad de archivo multiplica la prioridad por
       // pieza que fija startStream, así que los ficheros no objetivo quedan a 0.
@@ -173,40 +201,56 @@ class TorrentStreamingService {
         print('TORRENT_DBG: setFilePriorities target=$target (others=0/skip)');
       }
 
-      // startStream: la lógica nativa (PARCHEADA en torrent_bridge.cpp) ahora
-      // mantiene TODO el archivo con prioridad no-cero (nunca pasa a `finished`
-      // de forma prematura) y da top_priority al INICIO (primeros 256MB), de modo
-      // que libtorrent descarga las piezas 0..N en orden PRIMERO: se escribe un
-      // tramo de cabecera contiguo en disco rápido para poder reproducirlo.
-      // No usamos su URL HTTP; sólo empleamos su motor para dirigir la descarga
-      // secuencial del fichero local (media_kit reproduce file://).
+      // startStream: arranca el servidor HTTP interno nativo (port de
+      // lt2http/TorrServer). El servidor sirve el archivo, y su read thread
+      // descarga de forma SECUENCIAL en orden (piezas 0,1,2,...) con pipeline,
+      // priorizando la pieza actual + las siguientes (ver serve_range). Así el
+      // archivo virtual se "rellena" en orden y la reproducción vía
+      // http://127.0.0.1:PORT/stream/... no salta al final (los cues del .mkv
+      // ya no son un problema porque se sirve por HTTP con Content-Range).
       var streamId = 0;
+      String url = '';
       if (target >= 0 && target < files.length) {
         final stream = engine.startStream(torrentId, fileIndex: target);
         streamId = stream.id;
-        print('TORRENT_DBG: startStream(parcheado) id=$streamId torrentId=$torrentId'
-            ' targetFile=$target → descarga head-first a fichero');
+        url = stream.url;
+        print('TORRENT_DBG: startStream(secuencial) id=$streamId torrentId=$torrentId'
+            ' targetFile=$target url=$url');
       } else {
         engine.resumeTorrent(torrentId);
         print('TORRENT_DBG: resumeTorrent fallback torrentId=$torrentId');
       }
 
-      final targetSize = targetFile?.size ?? 0;
-      final desired = (preloadBytes <= 0 || targetSize == 0)
-          ? (targetSize > 0 ? targetSize : preloadBytes)
-          : preloadBytes.clamp(1, targetSize);
-
-      // Esperar a tener pre-descargado el inicio del archivo.
-      final waited = await _waitForPreload(engine, torrentId, desired,
-          localPath: 'file://$localPath');
+      // Modelo Stremio: esperamos a tener pre-descargado un buffer contiguo
+      // (~50MB "por delante") pidiendo rangos progresivos al servidor HTTP.
+      // Esto alimenta serve_range (que descarga en orden) y garantiza que el
+      // reproductor arranque con margen antes de que la descarga le alcance.
+      // OJO: si el archivo objetivo es MÁS PEQUEÑO que preloadBytes (p.ej. este
+      // torrent tiene 86 ficheros pequeños), pedir `bytes=0-50MB` pediría más
+      // allá del EOF y nunca se "alcanzaría" el umbral. Limitamos el target al
+      // tamaño real del archivo cuando lo conocemos (double con lt_get_files).
+      if (url.isNotEmpty) {
+        final realSize = (targetFile?.size ?? 0) > 0 ? targetFile!.size : preloadBytes;
+        final effectivePreload = (preloadBytes > 0 && realSize > 0)
+            ? (preloadBytes < realSize ? preloadBytes : realSize)
+            : preloadBytes;
+        print('TORRENT_DBG: preload target efectivo=${effectivePreload}B '
+            '(preloadBytes=$preloadBytes fileSize=$realSize)');
+        await _waitForStreamStart(engine, torrentId, streamId,
+            url: url,
+            preloadBytes: effectivePreload,
+            fileSize: realSize,
+            timeout: bufferTimeout);
+      }
       _startKeepAlive(engine, torrentId);
 
-      print('TORRENT_DBG: preload completado en ${waited.inSeconds}s → reproduciendo archivo local');
+      final playbackUrl = url.isNotEmpty ? url : 'file://$localPath';
+      print('TORRENT_DBG: reproduciendo vía streaming HTTP secuencial url=$playbackUrl');
       final session = TorrentPlaybackSession(
         torrentId: torrentId,
         streamId: streamId,
-        localPath: 'file://$localPath',
-        name: localPath,
+        localPath: playbackUrl,
+        name: playbackUrl,
       );
       return session;
     } catch (_) {
@@ -216,151 +260,567 @@ class TorrentStreamingService {
     }
   }
 
+  /// ══════════════════════════════════════════════════════════════════════
+  /// MODO DESCARGA COMPLETA (MÁXIMA VELOCIDAD)
+  ///
+  /// El usuario decidió abandonar el proxy HTTP + buffer incremental (que
+  /// nunca llegó a servir bytes de forma fiable). Este método descarga **el
+  /// archivo completo del torrent a disco usando todo el ancho de banda
+  /// disponible en paralelo** y devuelve la ruta `file://` para reproducirla
+  /// con media_kit/ExoPlayer como si fuera un archivo local. Al estar el
+  /// fichero completo en disco, el seek NUNCA salta ni se queda colgado.
+  ///
+  /// Por qué es lo más rápido posible (sin código nativo extra):
+  ///  - `addMagnet(..., streamOnly: false)` NO activa stop_when_ready ni
+  ///    sequential_download: libtorrent descarga con el picker **rarest-first**
+  ///    y con **paralelización de bloques entre todos los peers disponibles**
+  ///    (`whole_pieces_threshold=0`, configurado en la sesión).
+  ///  - La sesión ya está configurada con `downloadRateLimit=0` (sin límite),
+  ///    `connectionsLimit=200` a nivel sesión y `max_queued_disk_bytes=64MB`.
+  ///    Al NO pasar por `startStream` (que capaba a 25 conexiones por torrent
+  ///    y le ponía prioridades por pieza serializadas), el torrent hereda los
+  ///    200 peers del sesión → máxima fanout.
+  ///  - `setFilePriorities` marca SOLO el archivo objetivo con prioridad alta y
+  ///    el resto a 0 (dont_download): todo el ancho de banda va al fichero que
+  ///    vamos a reproducir, sin desperdiciarlo en muestras/avisos.
+  ///
+  /// Estamos a `progress/downloadRate/numPeers/isFinished` vía el polling del
+  /// motor. Rendimos cuando el archivo objetivo está completo.
+  /// ══════════════════════════════════════════════════════════════════════
+  /// MODO DESCARGA COMPLETA (MÁXIMA VELOCIDAD - LIMPIO Y OPTIMIZADO)
+  ///
+  /// Descarga el archivo objetivo del torrent a disco usando todo el ancho
+  /// de banda disponible. Sin pausas artificiales, sin fallback de File.length()
+  /// (pre-allocated), con progreso real via stats del torrent y timeouts agresivos.
+  Future<TorrentPlaybackSession> downloadAndPlay({
+    required String infoHash,
+    int? fileIndex,
+    Duration metadataTimeout = const Duration(seconds: 30),
+    Duration maxWait = const Duration(minutes: 10),
+    int? knownSeeders,
+    int? knownPeers,
+    int? knownSizeBytes,
+    void Function(TorrentDownloadProgress)? onProgress,
+  }) async {
+    print('TORRENT_DBG: downloadAndPlay() infohash=$infoHash fileIdx=$fileIndex');
+    await _ensureInit();
+    final engine = LibtorrentFlutter.instance;
+    final saveDir = _saveDir!;
+
+    // Limpia torrents anteriores para no saturar almacenamiento.
+    try {
+      final dir = Directory(saveDir);
+      if (dir.existsSync()) {
+        dir.deleteSync(recursive: true);
+        dir.createSync(recursive: true);
+        print('TORRENT_DBG: downloadAndPlay limpieza directorio torrents OK');
+      }
+    } catch (_) {}
+
+    final magnet = _magnet(infoHash);
+    final torrentId = engine.addMagnet(magnet, saveDir, false);
+    print('TORRENT_DBG: downloadAndPlay addMagnet(id=$torrentId, streamOnly=false) OK');
+
+    try {
+      // ── 1. METADATA con reintentos rápidos (no 120s bloqueados) ──
+      List<FileInfo> files = [];
+      int metadataRetries = 3;
+      while (metadataRetries > 0) {
+        try {
+          files = await _waitForMetadata(engine, torrentId, timeout: metadataTimeout);
+          if (files.isNotEmpty) break;
+        } catch (_) {}
+        metadataRetries--;
+        if (metadataRetries > 0) {
+          print('TORRENT_DBG: metadata timeout, reintentando... ($metadataRetries)');
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      }
+      if (files.isEmpty) {
+        engine.disposeTorrent(torrentId);
+        throw Exception('Torrent sin archivos reproducibles (metadata timeout).');
+      }
+      print('TORRENT_DBG: downloadAndPlay metadata: ${files.length} files');
+      _logFileList(files);
+
+      // ── 2. SELECCIONAR ARCHIVO OBJETIVO ──
+      final target = _pickFileIndex(files, fileIndex);
+      final targetFile = (target >= 0 && target < files.length) ? files[target] : null;
+      if (targetFile == null) {
+        engine.disposeTorrent(torrentId);
+        throw Exception('No se pudo localizar el archivo de vídeo.');
+      }
+      print('TORRENT_DBG: downloadAndPlay ▶ TARGET=$target '
+          '${targetFile.name} size=${targetFile.size}B '
+          '(${(targetFile.size / (1024 * 1024)).toStringAsFixed(2)}MB)');
+
+      // ── 3. PRIORIDADES: SOLO archivo objetivo = 7, resto = 0 ──
+      // addMagnet(streamOnly=false) ya inició descarga; setFilePriorities
+      // re-prioritiza piezas al instante (nativo lo aplica en caliente).
+      final priorities = List<int>.filled(files.length, 0);
+      priorities[target] = 7;
+      engine.setFilePriorities(torrentId, priorities);
+      engine.resumeTorrent(torrentId); // asegura que no esté pausado
+      print('TORRENT_DBG: setFilePriorities target=$target=7 (resto=0) + resume');
+
+      // ── 4. RUTA LOCAL Y TAMAÑO OBJETIVO ──
+      final relPath = targetFile.path
+          .replaceAll('\\', '/')
+          .split('/')
+          .where((s) => s.isNotEmpty && s != '.' && s != '..')
+          .join('/');
+      final localPath = p.join(saveDir, relPath);
+      final fileUrl = 'file://$localPath';
+      final targetSizeBytes = targetFile.size > 0 ? targetFile.size : null;
+
+      // ── 5. TRACKING PROGRESO REAL VIA TORRENT STATS ──
+      // Usamos totalWanted/totalDone del torrent (si funciona).
+      // Completado = isFinished/seeding + archivo existe.
+      // IMPORTANTE: totalDone SÍ funciona (vimos en logs: done=290680977/1788212038B)
+      // aunque totalWanted sea 0. Usamos targetSizeBytes como total real.
+
+      _startKeepAlive(engine, torrentId);
+
+// ── 6. LOOP DE DESCARGA CON PROGRESO REAL ──
+      final deadline = DateTime.now().add(maxWait);
+      double lastDoneMB = 0;
+      DateTime? lastSampleTime;
+      int noProgressTicks = 0;
+      DateTime lastProgressTime = DateTime.now();
+      int consecutiveDownloadingTicks = 0;
+
+      // El status del bridge (prebuilt) es basura (totalDone/totalWanted=0,
+      // state pegado en checkingFiles, numPieces=-1). La señal fiables son los
+      // alerts NATIVOS "piece: N finished downloading", que sí llegan. Los
+      // contamos para saber cuántas piezas distintas del torrent han caído.
+      final downloadedPieces = <int>{};
+      // El prebuilt congela el status (isFinished nunca se vuelve true, el
+      // estado queda pegado en checkingFiles). El NAtivo libtorrent SÍ dispara
+      // alerts "state changed to: finished" / "torrent finished downloading"
+      // cuando todas las piezas wanted del archivo objetivo están en disco.
+      // Esa es la señal REAL de completado → la capturamos aparte del status.
+      var alertFinished = false;
+      DateTime? lastNewPieceTime;
+      StreamSubscription<(int, String)>? alertSub;
+      try {
+        alertSub = LibtorrentFlutter.alertStream.listen((e) {
+          if (e.$1 != torrentId) return;
+          final m = RegExp(r'piece:\s*(-?\d+)\s+finished').firstMatch(e.$2);
+          if (m != null) {
+            final p = int.parse(m.group(1)!);
+            if (p >= 0 && !downloadedPieces.contains(p)) {
+              downloadedPieces.add(p);
+              lastNewPieceTime = DateTime.now();
+            }
+          }
+          if (e.$2.contains('state changed to: finished') ||
+              e.$2.contains('torrent finished downloading') ||
+              e.$2.contains('state changed to: seeding')) {
+            if (!alertFinished) {
+              alertFinished = true;
+              print('TORRENT_DBG: ⏭ alert NATIVO de completado: ${e.$2.trim()}');
+            }
+          }
+        });
+      } catch (_) {}
+
+      // Momento de arranque del loop: base del "quietFor" antes de la primera
+      // pieza, para abortar por stall con un mensaje claro.
+      final loopStart = DateTime.now();
+
+      try {
+      while (DateTime.now().isBefore(deadline)) {
+        final t = engine.torrents[torrentId];
+        if (t == null) {
+          print('TORRENT_DBG: torrent desapareció');
+          break;
+        }
+
+        final totalDone = t.totalDone;
+        final totalWanted = t.totalWanted;
+        // El prebuilt devuelve numPeers/numSeeds = -1 por defecto (cabecera
+        // deprecada); Torrentio ya conoce seeders reales (>0). Priorizamos el
+        // valor del bridge solo si es >= 0 y parece vivo (numPeers>0).
+        int peers = t.numPeers >= 0 ? t.numPeers : (knownPeers ?? 0);
+        int seeds = t.numSeeds >= 0 ? t.numSeeds : (knownSeeders ?? 0);
+        final stateStr = t.state.toString().split('.').last;
+        final isFinished = t.isFinished || t.state == TorrentState.seeding || t.state == TorrentState.finished;
+
+        // ════════════════════════════════════════════════════════════════════
+        // PROGRESO REAL:
+        //  - `t.progress` (float) es el campo DEPRECADO de libtorrent y el
+        //    prebuilt lo deja en 0 durante `downloading` (solo se rellena en
+        //    checking_files). NO es fiable.
+        //  - `t.totalDone` / `t.totalWanted` SÍ son contadores reales, pero el
+        //    prebuilt a veces los congela (vimos done=131072 fijo mientras el
+        //    nativo descargaba piezas 396, 379, 482...).
+        //  - `piecesDone`/`numPieces` se calculan NATIVAMENTE desde `st.pieces`
+        //    (query_pieces, ver torrent_bridge.cpp fill_status) y SÍ avanzan en
+        //    tiempo real → es la señal de progreso PRIMARIA.
+        //  - `downloadRate` del bridge reporta 0 con activeDL=true → la
+        //    velocidad se calcula en Dart a partir del delta de piezas/bytes.
+        // ════════════════════════════════════════════════════════════════════
+        double pct = -1.0;
+        final totalWantedBytes = totalWanted > 0 ? totalWanted : (knownSizeBytes ?? 0);
+        // doneMB fiables: usamos el mayor entre el contador totalDone (real cuando
+        // avanza) y la estimación por piezas. Si totalWanted cuenta todo el
+        // torrent y numPieces también, la estimación puede subestimar (leo el
+        // máximo para no quedarme corto); si el bridge congela totalDone, la
+        // estimación por piezas sigue el ritmo real.
+        double doneMB = totalDone / 1048576.0;
+        if (t.numPieces > 0 && t.piecesDone > 0 && totalWantedBytes > 0) {
+          final estMB = totalWantedBytes / 1048576.0 * (t.piecesDone / t.numPieces);
+          if (estMB > doneMB) doneMB = estMB;
+        }
+        // Fallback: la única señal NATIVA 100% fiable son los alerts
+        // "piece: N finished" que vamos contando en [downloadedPieces].
+        // Estimamos las piezas totales del archivo objetivo como
+        // knownSizeBytes / bytesPorPieza (~4MB estándar de libtorrent).
+        if (doneMB <= 0 && knownSizeBytes != null && knownSizeBytes > 0) {
+          const bytesPerPiece = 4 * 1024 * 1024;
+          final totalPiecesTarget = (knownSizeBytes / bytesPerPiece).ceil();
+          if (totalPiecesTarget > 0) {
+            doneMB = downloadedPieces.length.clamp(0, totalPiecesTarget) /
+                totalPiecesTarget * (knownSizeBytes / 1048576.0);
+          }
+        }
+        double totalMB = 0.0;
+        double speedMBps = 0.0;
+
+        // Velocidad real calculada en Dart (delta de bytes descargados).
+        // Usamos el delta de doneMB (que ya mezcla piezas + totalDone) para
+        // no quedarnos a 0 cuando el bridge congela totalDone.
+        final nowSample = DateTime.now();
+        if (lastSampleTime != null) {
+          final elapsedSec = nowSample.difference(lastSampleTime)
+              .inMicroseconds / 1000000.0;
+          if (elapsedSec > 0.01) {
+            final deltaMB = (doneMB - lastDoneMB).clamp(-999.0, 999.0);
+            speedMBps = deltaMB > 0 ? deltaMB / elapsedSec : 0.0;
+          }
+        }
+
+        // Total y %: prioridad totalWanted (torrent completo real), luego
+        // targetSizeBytes si se conoce, luego tamaño Torrentio (real),
+        // luego t.progress si > 0. El % usa piezas si están disponibles.
+        if (targetSizeBytes != null && targetSizeBytes > 0) {
+          totalMB = targetSizeBytes / 1048576.0;
+        } else if (totalWanted > 0) {
+          totalMB = totalWanted / 1048576.0;
+        } else if (knownSizeBytes != null && knownSizeBytes > 0) {
+          // El bridge (prebuilt) devuelve size=0B para todos los archivos;
+          // Torrentio ya nos dio el tamaño real del stream en el listado.
+          totalMB = knownSizeBytes / 1048576.0;
+        } else if (t.progress > 0.0005) {
+          totalMB = t.progress > 0 ? doneMB / t.progress : 0.0;
+        }
+        if (totalMB > 0) {
+          pct = (100.0 * doneMB / totalMB).clamp(0.0, 100.0);
+        } else if (t.piecesDone > 0 && t.numPieces > 0) {
+          pct = (100.0 * t.piecesDone / t.numPieces).clamp(0.0, 100.0);
+        }
+        if (isFinished) pct = 100.0;
+
+        // ── SEÑALES DE COMPLETADO / STALL (por piezas NATIVAS) ──
+        // [quietFor] = segundos SIN recibir una pieza nueva (o desde el arranque).
+        // [fullRange] = las piezas vistas cubren CONTIGUAS 0..max. Como el archivo
+        // objetivo tiene prioridad 7 (el resto 0), "0..max completo" = el archivo
+        // está al 100% real (no es una estimación por tamaño).
+        // [progressRatio] = % de bytes (solo diagnóstico).
+        final quietFor = lastNewPieceTime == null
+            ? DateTime.now().difference(loopStart).inSeconds
+            : DateTime.now().difference(lastNewPieceTime!).inSeconds;
+        final maxPiece = downloadedPieces.isEmpty
+            ? -1
+            : downloadedPieces.reduce((a, b) => a > b ? a : b);
+        final fullRange = maxPiece >= 0 && downloadedPieces.length == maxPiece + 1;
+        final progressRatio = totalMB > 0 ? (doneMB / totalMB).clamp(0.0, 1.0) : 0.0;
+
+        // ── DETECCIÓN DE DESCARGA ACTIVA / STALL ──
+        // Señal primaria = piezas NUEVAS (native) o totalDone avanza — ambos
+        // NATIVOS. `state=checkingFiles` + `isPaused=true` con el archivo en
+        // disco NO es "descarga activa": es el torrent re-chequeando/pausado
+        // tras terminar, así que NO debe mantener el loop vivo para siempre.
+        final newPieceRecent = lastNewPieceTime != null &&
+            nowSample.difference(lastNewPieceTime!).inSeconds < 3;
+        bool progressed = doneMB > lastDoneMB || newPieceRecent;
+        bool isActuallyDownloading =
+            (stateStr == 'downloading' || stateStr == 'allocating' ||
+             stateStr == 'downloadingMetadata' || stateStr == 'checkingResume' ||
+             stateStr == 'checkingFiles') &&
+            !t.isPaused;
+        bool hasActiveDownload = progressed || speedMBps > 0.01 ||
+            isActuallyDownloading || consecutiveDownloadingTicks > 0;
+
+        if (progressed) {
+          lastProgressTime = nowSample;
+          noProgressTicks = 0;
+          consecutiveDownloadingTicks++;
+        } else if (isActuallyDownloading) {
+          consecutiveDownloadingTicks++;
+          noProgressTicks = 0;
+        } else {
+          consecutiveDownloadingTicks = 0;
+          noProgressTicks++;
+        }
+        lastDoneMB = doneMB;
+        lastSampleTime = nowSample;
+
+        // Emitir progreso a UI
+        if (onProgress != null) {
+          onProgress(TorrentDownloadProgress(
+            percent: pct,
+            downloadedMB: doneMB,
+            totalMB: totalMB,
+            speedMBps: speedMBps,
+            peers: peers,
+            seeds: seeds,
+            state: stateStr,
+            finished: isFinished,
+          ));
+        }
+
+        // Log cada cambio de rate o cada 10s
+        if (speedMBps != 0 || DateTime.now().difference(lastProgressTime).inSeconds > 10) {
+          print('TORRENT_DBG: dl state=$stateStr '
+              '${pct >= 0 ? '${pct.toStringAsFixed(1)}%' : '?%'} '
+              'done=${doneMB.toStringAsFixed(1)}/${totalMB.toStringAsFixed(1)}MB '
+              'rate=${speedMBps.toStringAsFixed(2)}MB/s peers=$peers seeds=$seeds '
+              'piecesAlert=${downloadedPieces.length} totalDone=${totalDone}B '
+              'states=$stateStr activeDL=$hasActiveDownload consecDL=$consecutiveDownloadingTicks');
+        }
+
+        // ── COMPLETADO ──
+        // El status del bridge es basura (isFinished casi nunca se vuelve true y
+        // queda pegado en checkingFiles). Completamos SOLO si:
+        //   1) el status lo dice (isFinished),
+        //   2) el alert NATIVO "torrent finished downloading" / "state changed
+        //      to: finished" — el nativo libtorrent lo dispara cuando TODAS las
+        //      piezas wanted del archivo objetivo están en disco (señal REAL),
+        //   3) FALLBACK ULTRA-CONSERVADOR: el archivo existe Y las piezas vistas
+        //      (alerts nativos) cubren CONTIGUAS 0..max (target=7, resto=0, así
+        //      que 0..max equivale al archivo completo) Y llevamos >=45s quietos
+        //      (re-check/pausa después de terminar).
+        //    → SIN gate "terminalState": el bridge reporta checkingFiles durante
+        //      TODA la descarga (nunca textualizaba el fin real).
+        //    → SIN umbral de % por bytesPorPieza: las piezas reales son ~1-2MB y
+        //      una estimación puede aprobarse antes del 100% real.
+        final exists = await File(localPath).exists();
+        final fileLenBytes = exists ? await File(localPath).length() : 0;
+        final fileCompleteHigh = exists &&
+            downloadedPieces.isNotEmpty &&
+            fullRange &&
+            quietFor >= 45;
+        if (isFinished || alertFinished || fileCompleteHigh) {
+          print('TORRENT_DBG: downloadAndPlay ⏭ COMPLETO (state=$stateStr '
+              'alertFinished=$alertFinished fileSafe=$fileCompleteHigh '
+              'pieces=${downloadedPieces.length} maxPiece=$maxPiece '
+              'size=${(fileLenBytes / 1048576).toStringAsFixed(1)}MB) '
+              'archivoExiste=$exists localPath=$localPath');
+          if (onProgress != null) {
+            onProgress(TorrentDownloadProgress(
+              percent: 100.0,
+              downloadedMB: fileLenBytes / 1048576.0,
+              totalMB: totalMB > 0 ? totalMB : (fileLenBytes / 1048576.0),
+              speedMBps: 0,
+              peers: peers,
+              seeds: seeds,
+              state: 'finished',
+              finished: true,
+            ));
+          }
+          if (exists) {
+            return TorrentPlaybackSession(
+              torrentId: torrentId,
+              streamId: 0,
+              localPath: fileUrl,
+              name: fileUrl,
+            );
+          }
+        }
+
+        // ── STALL REAL: 60s sin ninguna pieza nueva y sin llegar a rango
+        // completo = descarga estancada. Abortamos (nunca reproducir un archivo
+        // incompleto/truncado).
+        if (!alertFinished && downloadedPieces.isNotEmpty &&
+            quietFor >= 60 && !fullRange) {
+          print('TORRENT_DBG: ⚠ stall REAL ${quietFor}s sin piezas nuevas, '
+              'abortando (state=$stateStr pieces=${downloadedPieces.length} '
+              'maxPiece=$maxPiece fullRange=$fullRange done=${doneMB.toStringAsFixed(1)}MB '
+              'ratio=${progressRatio.toStringAsFixed(2)})');
+          break;
+        }
+
+        // ── STALL DETECTION (status bridge): aborta torrents muertos sin seeds ──
+        final bool trulyStalled = !hasActiveDownload && !isActuallyDownloading &&
+            consecutiveDownloadingTicks == 0 && noProgressTicks >= 60;
+        if (trulyStalled) {
+          print('TORRENT_DBG: ⚠ sin progreso REAL 60s, abortando (state=$stateStr done=${doneMB.toStringAsFixed(1)}MB consecDL=$consecutiveDownloadingTicks)');
+          break;
+        }
+
+        await Future.delayed(const Duration(seconds: 1));
+      }
+      } finally {
+        await alertSub?.cancel();
+      }
+
+      // ── TIMEOUT / STALL: NUNCA reproducir un archivo incompleto ──
+      print('TORRENT_DBG: ✖ timeout/stall sin llegar al 100% — abortando '
+          '(pieces=${downloadedPieces.length} alertFinished=$alertFinished)');
+      throw Exception(
+          'No se pudo completar la descarga (tiempo agotado o estancada). '
+          'Reintenta o elige otro servidor.');
+
+    } catch (e, st) {
+      print('TORRENT_DBG: downloadAndPlay ERROR: $e\n$st');
+      _stopTorrentKeepAlive();
+      engine.disposeTorrent(torrentId);
+      rethrow;
+    }
+  }
+
   Timer? _keepAliveTimer;
   StreamSubscription<Map<int, TorrentInfo>>? _torrentUpdatesSub;
 
-  /// Espera a que el torrent haya descargado [desired] bytes a disco.
+  /// Buffer inicial tipo Stremio: espera a que el servidor HTTP interno nativo
+  /// tenga pre-descargado [preloadBytes] contiguos DESDE EL INICIO (por defecto
+  /// 50MB). Hace peticiones HTTP con rango `bytes=0-N` crecientes: cada petición
+  /// alimenta `serve_range`, que descarga de forma SECUENCIAL en orden (pieza
+  /// actual + pipeline por delante). Cuando el servidor ya devuelve ≥ [preloadBytes]
+  /// bytes, la descarga va "por delante" y devolvemos la URL para que media_kit
+  /// reproduzca con margen (el seek dentro de lo descargado no salta).
   ///
-  /// El archivo objetivo tiene prioridad máxima, así que `totalDone` crece
-  /// principalmente con esas piezas. Comprobamos también que el fichero en disco
-  /// realmente haya crecido y tenga bytes al inicio (evita devolver un archivo
-  /// vacío por sparse/checksum). Devolvemos el tiempo utilizado.
-  Future<Duration> _waitForPreload(
+  /// Cada sonda usa un HttpClient nuevo y un timeout estricto de lectura (vía
+  /// Timer) para no colgar la UI si una pieza tarda. Se registra la velocidad.
+  Future<void> _waitForStreamStart(
     LibtorrentFlutter engine,
     int torrentId,
-    int desired, {
-    Duration timeout = const Duration(seconds: 180),
-    String? localPath,
+    int streamId, {
+    required String url,
+    int preloadBytes = 50 * 1024 * 1024,
+    int? fileSize,
+    Duration timeout = const Duration(seconds: 120),
   }) async {
-    print('TORRENT_DBG: _waitForPreload desired=$desired bytes localPath=$localPath');
+    print('TORRENT_DBG: _waitForStreamStart url=$url preloadBytes=$preloadBytes '
+        'fileSize=$fileSize timeout=${timeout.inSeconds}s');
     final start = DateTime.now();
-    final deadline = start.add(timeout);
-    int lastDone = 0;
-    int lastContiguous = -1;
-    final stopwatch = Stopwatch()..start();
+    var target = preloadBytes > 0 ? preloadBytes : 50 * 1024 * 1024;
+    var ready = false;
+    var lastServed = 0;
+    var stallCount = 0;
+    Map<int, double> servedAt = {};
 
-    while (DateTime.now().isBefore(deadline)) {
+    while (DateTime.now().difference(start) < timeout) {
       final ti = engine.torrents[torrentId];
-      final done = ti?.totalDone ?? 0;
-
-      // Descarga normal (rarest-first): forzamos resume periódicamente para
-      // mantener el torrent activo/announceando si libtorrent se pausa o
-      // queda en un estado "stalleado". `resumeTorrent` es idempotente y barato.
-      if (ti != null) {
-        final stalled = ti.isPaused ||
-            ti.state == TorrentState.finished ||
-            ti.state == TorrentState.seeding;
-        if (stalled && done < ti.totalWanted) {
-          engine.resumeTorrent(torrentId);
-        }
+      if (ti != null && ti.isPaused) {
+        engine.resumeTorrent(torrentId);
       }
 
-      final elapsed = stopwatch.elapsed;
-      // Log cada ~5s
-      if ((elapsed.inSeconds % 5 == 0) ||
-          (done - lastDone) >= (desired ~/ 4).clamp(1024 * 1024, 50 * 1024 * 1024)) {
-        final conn = ti?.numPeers ?? -1;
-        // Velocidad derivada de totalDone (la descarga real a disco, no la del
-        // servidor HTTP que reportaba 0).
-        final rate = elapsed.inSeconds > 0
-            ? (done / elapsed.inSeconds).round()
-            : 0;
-        final totalWanted = ti?.totalWanted ?? 0;
-        print('TORRENT_DBG: [preload] done=${done}B / ${desired}B '
-            '(${(done / desired * 100).toStringAsFixed(1)}%) '
-            'dl=${(rate / 1024).round()}KB/s peers=$conn '
-            'state=${ti?.state} pct=${ti != null ? (ti.progress * 100).toStringAsFixed(1) : '?'}% '
-            'wanted=${totalWanted}B isPaused=${ti?.isPaused}');
-        lastDone = done;
-      }
-
-      // Con descarga normal (rarest-first) `totalDone` mezcla piezas de todo el
-      // fichero, así que no garantiza que EL INICIO tenga datos. La señal
-      // correcta para reproducir es cuántos bytes CONTIGUOS desde el offset 0
-      // hay ya escritos en disco (libtorrent deja 0x00 en los huecos sparse).
-      // Determinamos la longitud del tramo cabecera contiguo y devolvemos al
-      // alcanzar [desired] bytes (o al agotar el timeout).
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+      int served = 0;
       try {
-        if (localPath != null && localPath.startsWith('file://')) {
-          final f = File(localPath.substring('file://'.length));
-          final contiguous = _contiguousHeadBytes(f, desired);
-          if (contiguous != lastContiguous) {
-            print('TORRENT_DBG: [preload] headContiguous=${contiguous}B / ${desired}B');
-            lastContiguous = contiguous;
+        final req = await client.getUrl(Uri.parse(url))
+            .timeout(const Duration(seconds: 2));
+        req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${target - 1}');
+        req.headers.set(HttpHeaders.acceptHeader, '*/*');
+        final res = await req.close().timeout(const Duration(seconds: 2));
+        if (res.statusCode == 200 || res.statusCode == 206) {
+          // Leer con timeout: si una pieza media tarda en llegar, salimos del
+          // read (guardamos lo servido hasta ahora) y reintentamos en la
+          // siguiente iteración. Así no colgamos sin control; el socket se
+          // cierra con force en el finally del cliente de esta iteración.
+          var read = served;
+          Future<int> counting() async {
+            var n = 0;
+            await for (final chunk in res) {
+              n += chunk.length;
+            }
+            return n;
           }
-          if (contiguous >= desired) {
-            print('TORRENT_DBG: _waitForPreload satisfecho: ${contiguous}B contiguos al inicio');
-            return stopwatch.elapsed;
+          read = await counting().timeout(const Duration(seconds: 10),
+              onTimeout: () {
+            print('TORRENT_DBG: [preload] read timeout (pieza media lenta)');
+            return served;
+          });
+          served = read;
+          servedAt[served] = DateTime.now().difference(start).inMilliseconds / 1000.0;
+          if (served != lastServed) {
+            print('TORRENT_DBG: [preload] served=${served}B '
+                '(${(served / (1024 * 1024)).toStringAsFixed(1)}MB) / '
+                '${(target / (1024 * 1024)).toStringAsFixed(1)}MB');
+            lastServed = served;
+          }
+          if (served >= target) {
+            ready = true;
+            break;
+          }
+          // Archivo completo servido: si el fichero es más pequeño que el
+          // umbral deseado, reproduce con lo que hay (se descargó entero).
+          if (fileSize != null && served >= fileSize) {
+            print('TORRENT_DBG: [preload] archivo completo servido '
+                '(served=$served == fileSize=$fileSize), listo para reproducir');
+            ready = true;
+            break;
           }
         } else {
-          return stopwatch.elapsed;
+          print('TORRENT_DBG: [preload] status inesperado=${res.statusCode}');
+          await res.drain<void>();
         }
       } catch (e) {
-        print('TORRENT_DBG: _waitForPreload error verificando archivo: $e');
+        print('TORRENT_DBG: [preload] probe error: $e');
+      } finally {
+        client.close(force: true);
       }
 
-      await Future.delayed(const Duration(milliseconds: 500));
-    }
-    print('TORRENT_DBG: _waitForPreload TIMEOUT tras ${timeout.inSeconds}s, continúo con lo descargado');
-    return stopwatch.elapsed;
-  }
-
-  /// Cuenta cuántos bytes CONTIGUOS desde el offset 0 de [f] están ya escritos
-  /// en disco (máx. [limit]). libtorrent usa ficheros sparse: las regiones no
-  /// descargadas son 0x00, así que recorremos el inicio hasta encontrar un hueco
-  /// genuino (una racha de ceros ≥ 64KB, mucho mayor que cualquier racha de CERO
-  /// legítima en los primeros bytes de un contenedor de vídeo). Leemos en
-  /// bloques para no cargar todo el fichero en memoria.
-  int _contiguousHeadBytes(File f, int limit) {
-    if (!f.existsSync()) return 0;
-    const chunk = 256 * 1024;
-    final raf = f.openSync(mode: FileMode.read);
-    try {
-      int contiguous = 0;
-      int zeroRun = 0;
-      final buffer = Uint8List(chunk);
-      while (contiguous < limit) {
-        final toRead = (limit - contiguous) < chunk ? (limit - contiguous) : chunk;
-        final n = raf.readIntoSync(buffer, 0, toRead);
-        if (n <= 0) break;
-        for (int i = 0; i < n; i++) {
-          if (buffer[i] == 0) {
-            zeroRun++;
-            if (zeroRun >= 64 * 1024) {
-              // hueco sparse: fin del tramo contiguo descargado
-              return contiguous;
-            }
-          } else {
-            zeroRun = 0;
-            contiguous++;
-          }
-        }
-        // Fin prematuro de archivo
-        if (n < toRead) break;
+      // Detección de estancamiento: si no crece lo servido (p.ej. archivo menor
+      // que el target, o descarga frenada), no esperamos el timeout completo.
+      if (served <= 0 && lastServed <= 0) {
+        stallCount++;
+      } else if (served == lastServed) {
+        stallCount++;
+      } else {
+        stallCount = 0;
       }
-      return contiguous;
-    } finally {
-      raf.closeSync();
+      // Si llevamos unas cuantas iteraciones sin avanzar y ya servimos algo,
+      // el archivo es más pequeño que el target: reproducimos con lo que hay.
+      if (stallCount >= 3 && lastServed > 0) {
+        print('TORRENT_DBG: [preload] sin avance (archivo menor al target?), '
+            'arranco con ${lastServed}B');
+        break;
+      }
+      await Future.delayed(const Duration(milliseconds: 200));
     }
+
+    if (servedAt.length >= 2) {
+      final keys = servedAt.keys.toList()..sort();
+      final last = keys.last;
+      final t = servedAt[last]!;
+      if (t > 0) {
+        print('TORRENT_DBG: [preload] velocidad media ≈ '
+            '${(last / t / (1024 * 1024)).toStringAsFixed(1)}MB/s a '
+            '${(last / (1024 * 1024)).toStringAsFixed(1)}MB en ${t.toStringAsFixed(1)}s');
+      }
+    }
+    print('TORRENT_DBG: _waitForStreamStart $ready en '
+        '${DateTime.now().difference(start).inSeconds}s (served=${lastServed}B)');
   }
 
-  /// Mantiene el torrent vivo (reanudando si se pausa o queda en finished/
-  /// seeding con datos incompletos) mientras se reproduce el archivo local, y
-  /// registra el progreso de descarga a disco.
   void _startKeepAlive(LibtorrentFlutter engine, int torrentId) {
     _keepAliveTimer?.cancel();
     _torrentUpdatesSub?.cancel();
     _torrentUpdatesSub = engine.torrentUpdates.listen((torrents) {
       final t = torrents[torrentId];
       if (t == null) return;
-      // Reanuda si está pausado O "finished"/"seeding" pero el fichero no está
-      // completo aún (rarest-first puede marcar finished puntualmente).
-      final incomplete = t.totalDone < t.totalWanted;
-      if (t.isPaused || ((t.state == TorrentState.finished ||
-              t.state == TorrentState.seeding) &&
-          incomplete)) {
+      // SOLO reanudar si está en fase activa de descarga (no en checkingFiles/
+      // downloadingMetadata). En esas fases el pause es normal y forzar resume
+      // interrumpe la verificación de piezas.
+      final activeStates = {
+        TorrentState.downloading,
+        TorrentState.seeding,
+      };
+      if (t.isPaused && activeStates.contains(t.state)) {
         engine.resumeTorrent(torrentId);
-        print('TORRENT_DBG: [keepalive] resume torrentId=$torrentId done=${t.totalDone}/${t.totalWanted}');
       }
     });
     _keepAliveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -370,10 +830,11 @@ class TorrentStreamingService {
         _torrentUpdatesSub?.cancel();
         return;
       }
-      final incomplete = ti.totalDone < ti.totalWanted;
-      if (ti.isPaused || ((ti.state == TorrentState.finished ||
-              ti.state == TorrentState.seeding) &&
-          incomplete)) {
+      final activeStates = {
+        TorrentState.downloading,
+        TorrentState.seeding,
+      };
+      if (ti.isPaused && activeStates.contains(ti.state)) {
         engine.resumeTorrent(torrentId);
       }
       print('TORRENT_DBG: [keepalive] state=${ti.state} progress=${(ti.progress * 100).toStringAsFixed(1)}% '
@@ -546,7 +1007,9 @@ class TorrentStreamingService {
     if (!_initDone) return;
     try {
       final engine = LibtorrentFlutter.instance;
-      engine.stopStream(session.streamId);
+      if (session.streamId > 0) {
+        engine.stopStream(session.streamId);
+      }
       engine.disposeTorrent(session.torrentId);
       print('TORRENT_DBG: stop() completado');
     } catch (_) {}

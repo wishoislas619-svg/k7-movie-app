@@ -170,16 +170,26 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       }
       // Sin debrid: reproducimos el torrent directamente con libtorrent.
       if (!mounted) return;
+
+      // Notifier para progreso de descarga en tiempo real.
+      final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
+
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (_) => const _TorrentLoadingDialog(),
+        builder: (_) => _TorrentLoadingDialog(progress: progressNotifier),
       );
+
       try {
-        print('TORRENT_DBG: llamando start() infohash=${stream.infoHash} fileIdx=${stream.fileIdx}');
-        final session = await TorrentStreamingService.instance.start(
+        print('TORRENT_DBG: llamando downloadAndPlay() infohash=${stream.infoHash} fileIdx=${stream.fileIdx} '
+            'seeders=${stream.seeders} peers=${stream.peers} size=${stream.sizeBytes}');
+        final session = await TorrentStreamingService.instance.downloadAndPlay(
           infoHash: stream.infoHash!,
           fileIndex: stream.fileIdx,
+          knownSeeders: stream.seeders,
+          knownPeers: stream.peers,
+          knownSizeBytes: stream.sizeBytes,
+          onProgress: (p) => progressNotifier.value = p,
         );
         torrentSession = session;
         directUrl = session.localPath;
@@ -666,17 +676,25 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                     child: Row(
                       children: [
                         if (stream.flags.isNotEmpty) ...[
-                          Text(
-                            stream.flags.join(' '),
-                            style: const TextStyle(fontSize: 14),
+                          Flexible(
+                            child: Text(
+                              stream.flags.join(' '),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 14),
+                            ),
                           ),
                           const SizedBox(width: 6),
                         ],
                         if (stream.language != null)
-                          Text(
-                            stream.language!,
-                            style: const TextStyle(
-                                color: Colors.white70, fontSize: 12),
+                          Flexible(
+                            child: Text(
+                              stream.language!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Colors.white70, fontSize: 12),
+                            ),
                           ),
                       ],
                     ),
@@ -743,28 +761,121 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   }
 }
 
-class _TorrentLoadingDialog extends StatelessWidget {
-  const _TorrentLoadingDialog();
+class _TorrentLoadingDialog extends StatefulWidget {
+  final ValueNotifier<TorrentDownloadProgress?> progress;
+
+  const _TorrentLoadingDialog({required this.progress});
 
   @override
+  State<_TorrentLoadingDialog> createState() => _TorrentLoadingDialogState();
+}
+
+class _TorrentLoadingDialogState extends State<_TorrentLoadingDialog> {
+  @override
   Widget build(BuildContext context) {
-    return const Dialog(
-      backgroundColor: Colors.transparent,
-      child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: 28, vertical: 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(color: Color(0xFF00A3FF)),
-            SizedBox(height: 18),
-            Text(
-              'Conectando con peers del torrent...\nEsto puede tardar unos segundos.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white70),
+    return ValueListenableBuilder<TorrentDownloadProgress?>(
+      valueListenable: widget.progress,
+      builder: (context, progress, _) {
+        final hasProgress = progress != null;
+        final percent = hasProgress ? progress.percent : 0.0;
+        final downloadedMB = hasProgress ? progress.downloadedMB : 0.0;
+        final totalMB = hasProgress ? progress.totalMB : 0.0;
+        final speedMBps = hasProgress ? progress.speedMBps : 0.0;
+        final peers = hasProgress ? progress.peers : 0;
+        final seeds = hasProgress ? progress.seeds : 0;
+        final state = hasProgress ? progress.state : 'connecting';
+        final finished = hasProgress ? progress.finished : false;
+        final isDownloading = hasProgress && !finished && (progress.state == 'downloading' || progress.state == 'checkingFiles');
+
+        String statusText;
+        if (!hasProgress) {
+          statusText = 'Conectando con peers del torrent...\nEsto puede tardar unos segundos.';
+        } else if (finished) {
+          statusText = 'Descarga completada\nPreparando reproducción...';
+        } else {
+          final speedStr = speedMBps > 0 ? '${speedMBps.toStringAsFixed(1)} MB/s' : 'esperando peers...';
+          final sizeStr = totalMB > 0
+              ? '${downloadedMB.toStringAsFixed(1)} / ${totalMB.toStringAsFixed(1)} MB'
+              : '${downloadedMB.toStringAsFixed(1)} MB descargados';
+          final etaStr = speedMBps > 0 && (totalMB > downloadedMB || percent > 0)
+              ? (totalMB > downloadedMB
+                  ? ' · ETA ${_formatDuration((totalMB - downloadedMB) / speedMBps * 60)}'
+                  : ' · ETA ${_formatDuration(((100 - percent) / percent) * (downloadedMB / speedMBps) * 60)}')
+              : '';
+          final pctStr = percent >= 0 ? ' (${percent.toStringAsFixed(1)}%)' : '';
+          statusText = 'Descargando $sizeStr$pctStr\n'
+              '$speedStr · $peers peers · $seeds seeds · $state$etaStr';
+        }
+
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox(
+                      width: 70,
+                      height: 70,
+                      child: CircularProgressIndicator(
+                        color: const Color(0xFF00A3FF),
+                        strokeWidth: 5,
+                        value: hasProgress && percent >= 0 ? percent / 100 : null,
+                      ),
+                    ),
+                    if (hasProgress)
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            percent >= 0 ? '${percent.toStringAsFixed(1)}%' : '...',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                            ),
+                          ),
+                          if (isDownloading)
+                            const Text(
+                              '⬇',
+                              style: TextStyle(color: Color(0xFF00A3FF), fontSize: 14),
+                            ),
+                        ],
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  statusText,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.4),
+                ),
+                if (isDownloading) ...[
+                  const SizedBox(height: 12),
+                  LinearProgressIndicator(
+                    value: percent >= 0 ? percent / 100 : null,
+                    backgroundColor: Colors.white24,
+                    valueColor: const AlwaysStoppedAnimation(Color(0xFF00A3FF)),
+                    minHeight: 4,
+                  ),
+                ],
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
+  }
+
+  String _formatDuration(double seconds) {
+    if (seconds < 60) return '${seconds.toInt()}s';
+    final mins = (seconds / 60).floor();
+    final secs = (seconds % 60).floor();
+    if (mins < 60) return '${mins}m ${secs}s';
+    final hrs = (mins / 60).floor();
+    return '${hrs}h ${mins % 60}m';
   }
 }
