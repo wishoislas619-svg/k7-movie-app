@@ -354,14 +354,16 @@ class TorrentStreamingService {
           '${targetFile.name} size=${targetFile.size}B '
           '(${(targetFile.size / (1024 * 1024)).toStringAsFixed(2)}MB)');
 
-      // ── 3. PRIORIDADES: SOLO archivo objetivo = 7, resto = 0 ──
-      // addMagnet(streamOnly=false) ya inició descarga; setFilePriorities
-      // re-prioritiza piezas al instante (nativo lo aplica en caliente).
-      final priorities = List<int>.filled(files.length, 0);
-      priorities[target] = 7;
+      // ── 3. PRIORIDADES: descargar TODO el torrent ──
+      // El usuario quiere que el % se mida contra el torrent COMPLETO (todos
+      // sus archivos, p.ej. 1.78GB) y que se descargue por completo, no solo la
+      // pieza que se va a reproducir. Ponemos prioridad 7 a todos los archivos
+      // para que libtorrent descargue todo el torrent y dispare "finished"
+      // cuando el torrent entero esté en disco.
+      final priorities = List<int>.filled(files.length, 7);
       engine.setFilePriorities(torrentId, priorities);
       engine.resumeTorrent(torrentId); // asegura que no esté pausado
-      print('TORRENT_DBG: setFilePriorities target=$target=7 (resto=0) + resume');
+      print('TORRENT_DBG: setFilePriorities TODOS=7 (descarga de todo el torrent) + resume');
 
       // ── 4. RUTA LOCAL Y TAMAÑO OBJETIVO ──
       final relPath = targetFile.path
@@ -401,6 +403,17 @@ class TorrentStreamingService {
       // Esa es la señal REAL de completado → la capturamos aparte del status.
       var alertFinished = false;
       DateTime? lastNewPieceTime;
+      // Mayor índice de pieza visto en los alerts nativos. Como se descarga
+      // TODO el torrent (todos los archivos a prioridad 7), el conjunto de
+      // piezas abarca el torrent completo: numPiezasTotales = maxPieceSeen + 1.
+      // Es LA señal NATIVA fiable para el total (el bridge devuelve
+      // numPieces=-1, totalWanted=0 o el tamaño de un solo archivo).
+      int maxPieceSeen = -1;
+      // Cache del mayor totalWanted visto. El prebuilt a veces lo reporta 0
+      // en el loop aunque en otro tick dio el total REAL del torrent completo
+      // (p.ej. 1788384744B = todos los archivos). Guardamos el mayor para NUNCA
+      // caer al tamaño de un solo archivo (Torrentio) si ya vimos el nativo.
+      int bestTotalWanted = 0;
       StreamSubscription<(int, String)>? alertSub;
       try {
         alertSub = LibtorrentFlutter.alertStream.listen((e) {
@@ -410,6 +423,7 @@ class TorrentStreamingService {
             final p = int.parse(m.group(1)!);
             if (p >= 0 && !downloadedPieces.contains(p)) {
               downloadedPieces.add(p);
+              if (p > maxPieceSeen) maxPieceSeen = p;
               lastNewPieceTime = DateTime.now();
             }
           }
@@ -461,35 +475,56 @@ class TorrentStreamingService {
         //    velocidad se calcula en Dart a partir del delta de piezas/bytes.
         // ════════════════════════════════════════════════════════════════════
         double pct = -1.0;
-        final totalWantedBytes = totalWanted > 0 ? totalWanted : (knownSizeBytes ?? 0);
-        // doneMB fiables: usamos el mayor entre el contador totalDone (real cuando
-        // avanza) y la estimación por piezas. Si totalWanted cuenta todo el
-        // torrent y numPieces también, la estimación puede subestimar (leo el
-        // máximo para no quedarme corto); si el bridge congela totalDone, la
-        // estimación por piezas sigue el ritmo real.
-        double doneMB = totalDone / 1048576.0;
-        if (t.numPieces > 0 && t.piecesDone > 0 && totalWantedBytes > 0) {
-          final estMB = totalWantedBytes / 1048576.0 * (t.piecesDone / t.numPieces);
-          if (estMB > doneMB) doneMB = estMB;
-        }
-        // Fallback: la única señal NATIVA 100% fiable son los alerts
-        // "piece: N finished" que vamos contando en [downloadedPieces].
-        // Estimamos las piezas totales del archivo objetivo como
-        // knownSizeBytes / bytesPorPieza (~4MB estándar de libtorrent).
-        if (doneMB <= 0 && knownSizeBytes != null && knownSizeBytes > 0) {
-          const bytesPerPiece = 4 * 1024 * 1024;
-          final totalPiecesTarget = (knownSizeBytes / bytesPerPiece).ceil();
-          if (totalPiecesTarget > 0) {
-            doneMB = downloadedPieces.length.clamp(0, totalPiecesTarget) /
-                totalPiecesTarget * (knownSizeBytes / 1048576.0);
-          }
-        }
+        if (totalWanted > bestTotalWanted) bestTotalWanted = totalWanted;
+
+        // ── Piezas NATIVAS del TORRENT COMPLETO ──
+        // Como todos los archivos están a prioridad 7, los alerts "piece: N
+        // finished" cubren el torrent entero. [maxPieceSeen+1] = nº total de
+        // piezas del torrent; [downloadedPieces.length] = piezas ya bajadas.
+        // El bridge del prebuilt NO rellena numPieces/piecesDone (-1/0), así
+        // que la fuente primaria correcta son los alerts nativos.
+        final nativeTotalPieces = maxPieceSeen >= 0 ? (maxPieceSeen + 1) : 0;
+        final nativeDonePieces = downloadedPieces.length;
+
+        // ── TOTAL EN MB: TODO el torrent (todos los archivos), NO Torrentio ──
+        // Prioridad:
+        //  1) bestTotalWanted (totalWanted cacheado = torrent completo nativo)
+        //  2) targetSizeBytes (getFiles)
+        //  3) knownSizeBytes (Torrentio) — último recurso de magnitud
+        // NO usamos knownSizeBytes como fuente preferida, porque suele reportar
+        // SOLO el tamaño del archivo objetivo y no el de todo el torrent (p.ej.
+        // 1011MB en vez de 1.78GB). Pero si es lo único disponible, al menos lo
+        // usamos para escalar doneMB de forma consistente con el %.
         double totalMB = 0.0;
+        if (bestTotalWanted > 0) {
+          totalMB = bestTotalWanted / 1048576.0;
+        } else if (targetSizeBytes != null && targetSizeBytes > 0) {
+          totalMB = targetSizeBytes / 1048576.0;
+        } else if (knownSizeBytes != null && knownSizeBytes > 0) {
+          totalMB = knownSizeBytes / 1048576.0;
+        } else if (t.progress > 0.0005) {
+          totalMB = t.progress > 0 ? (totalDone / 1048576.0) / t.progress : 0.0;
+        }
+
+        // doneMB: lo derivamos del progreso NATIVO por piezas del torrent
+        // completo, escalado al TOTAL (totalMB). Así los MB mostrados avanzan en
+        // consonancia con el % aunque el bridge no dé bytes reales (totalDone=0).
+        // Si aún no sabemos el nº de piezas, caemos a totalDone (contador nativo).
+        double doneMB = 0.0;
+        if (nativeTotalPieces > 0 && totalMB > 0) {
+          doneMB = (nativeDonePieces / nativeTotalPieces) * totalMB;
+        } else {
+          doneMB = totalDone / 1048576.0;
+        }
+
+        // bytes por pieza estimado (solo diagnóstico / consistencia).
+        final double bytesPerPiece = (nativeTotalPieces > 0 && totalMB > 0)
+            ? (totalMB * 1048576.0) / nativeTotalPieces
+            : 0.0;
+
         double speedMBps = 0.0;
 
         // Velocidad real calculada en Dart (delta de bytes descargados).
-        // Usamos el delta de doneMB (que ya mezcla piezas + totalDone) para
-        // no quedarnos a 0 cuando el bridge congela totalDone.
         final nowSample = DateTime.now();
         if (lastSampleTime != null) {
           final elapsedSec = nowSample.difference(lastSampleTime)
@@ -500,24 +535,15 @@ class TorrentStreamingService {
           }
         }
 
-        // Total y %: prioridad totalWanted (torrent completo real), luego
-        // targetSizeBytes si se conoce, luego tamaño Torrentio (real),
-        // luego t.progress si > 0. El % usa piezas si están disponibles.
-        if (targetSizeBytes != null && targetSizeBytes > 0) {
-          totalMB = targetSizeBytes / 1048576.0;
-        } else if (totalWanted > 0) {
-          totalMB = totalWanted / 1048576.0;
-        } else if (knownSizeBytes != null && knownSizeBytes > 0) {
-          // El bridge (prebuilt) devuelve size=0B para todos los archivos;
-          // Torrentio ya nos dio el tamaño real del stream en el listado.
-          totalMB = knownSizeBytes / 1048576.0;
-        } else if (t.progress > 0.0005) {
-          totalMB = t.progress > 0 ? doneMB / t.progress : 0.0;
-        }
-        if (totalMB > 0) {
+        // El % se calcula PRIMERO con las piezas NATIVAS del torrent completo
+        // (downloadedPieces.length / nativeTotalPieces) — la señal REAL e
+        // independiente de cualquier tamaño de metadatos. Así llega a 100% solo
+        // cuando TODO el torrent está en disco, y NO al terminar el archivo
+        // objetivo (que era el bug: se medía contra 1011MB de Torrentio).
+        if (nativeTotalPieces > 0) {
+          pct = (100.0 * nativeDonePieces / nativeTotalPieces).clamp(0.0, 100.0);
+        } else if (totalMB > 0) {
           pct = (100.0 * doneMB / totalMB).clamp(0.0, 100.0);
-        } else if (t.piecesDone > 0 && t.numPieces > 0) {
-          pct = (100.0 * t.piecesDone / t.numPieces).clamp(0.0, 100.0);
         }
         if (isFinished) pct = 100.0;
 
@@ -587,7 +613,10 @@ class TorrentStreamingService {
               'done=${doneMB.toStringAsFixed(1)}/${totalMB.toStringAsFixed(1)}MB '
               'rate=${speedMBps.toStringAsFixed(2)}MB/s peers=$peers seeds=$seeds '
               'piecesAlert=${downloadedPieces.length} totalDone=${totalDone}B '
-              'states=$stateStr activeDL=$hasActiveDownload consecDL=$consecutiveDownloadingTicks');
+              'states=$stateStr activeDL=$hasActiveDownload consecDL=$consecutiveDownloadingTicks '
+              '[TOTAL bestTW=${bestTotalWanted}B maxPiece=$maxPieceSeen '
+              'nativePieces=$nativeTotalPieces donePieces=$nativeDonePieces '
+              'bytesPiece=${bytesPerPiece.round()}B knownSize=$knownSizeBytes]');
         }
 
         // ── COMPLETADO ──
@@ -596,17 +625,19 @@ class TorrentStreamingService {
         //   1) el status lo dice (isFinished),
         //   2) el alert NATIVO "torrent finished downloading" / "state changed
         //      to: finished" — el nativo libtorrent lo dispara cuando TODAS las
-        //      piezas wanted del archivo objetivo están en disco (señal REAL),
-        //   3) FALLBACK ULTRA-CONSERVADOR: el archivo existe Y las piezas vistas
-        //      (alerts nativos) cubren CONTIGUAS 0..max (target=7, resto=0, así
-        //      que 0..max equivale al archivo completo) Y llevamos >=45s quietos
-        //      (re-check/pausa después de terminar).
+        //      piezas wanted están en disco (con todos los archivos priorizados
+        //      = el torrent completo real, señal REAL),
+        //   3) FALLBACK ULTRA-CONSERVADOR: el archivo objetivo existe Y las piezas
+        //      vistas (alerts nativos) cubren CONTIGUAS 0..max (cubiertos) Y
+        //      llevamos >=45s quietos (re-check/pausa después de terminar).
         //    → SIN gate "terminalState": el bridge reporta checkingFiles durante
         //      TODA la descarga (nunca textualizaba el fin real).
         //    → SIN umbral de % por bytesPorPieza: las piezas reales son ~1-2MB y
         //      una estimación puede aprobarse antes del 100% real.
         final exists = await File(localPath).exists();
         final fileLenBytes = exists ? await File(localPath).length() : 0;
+        // Con TODOS los archivos liberados, downloadedPieces abarca el torrent
+        // completo; fullRange (0..maxPiece contiguas) solo se alcanza al 100%.
         final fileCompleteHigh = exists &&
             downloadedPieces.isNotEmpty &&
             fullRange &&
