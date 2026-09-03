@@ -352,9 +352,20 @@ class TorrentStreamingService {
       print('TORRENT_DBG: ▶ TARGET FILE: fileIndex=$target '
           '${targetFile != null ? '| name=${targetFile.name} size=${targetFile.size}B' : '(out of range)'}');
 
-      // Descargar SIEMPRE el torrent completo (todos los archivos a prioridad 7).
-      engine.setFilePriorities(torrentId, List<int>.filled(files.length, 7));
-      print('TORRENT_DBG: setFilePriorities all files = 7 (torrent completo)');
+      // ⚠️ IMPORTANTE: priorizar SOLO el archivo objetivo (resto a 0) mientras
+      // arranca el stream. Si habilitamos TODOS los archivos a la vez, libtorrent
+      // usa rarest-first sobre todo el torrent y baja piezas dispersas (p.ej. la
+      // 2020 antes que la 0); entonces `startStream` intenta servir un buffer
+      // contiguo desde piezas que NO están en disco → memcpy fuera de rango y
+      // SIGSEGV (crash nativo). Con el objetivo primero, serve_range descarga la
+      // cabeza SECUENCIALMENTE y contigua, sin sparse reads → no crashea. El resto
+      // de archivos se habilitan en 2º plano una vez la reproducción ya arrancó.
+      final List<int> priorities = List<int>.filled(files.length, 0);
+      if (target >= 0 && target < files.length) {
+        priorities[target] = 7;
+      }
+      engine.setFilePriorities(torrentId, priorities);
+      print('TORRENT_DBG: setFilePriorities target=$target=7, resto=0 (secuencial, evita crash)');
 
       final relPath = (targetFile?.path ?? '')
           .replaceAll('\\', '/')
@@ -477,7 +488,13 @@ class TorrentStreamingService {
 
       // Pre-carga del buffer del stream para que la reproducción arranque fluida.
       if (url.isNotEmpty) {
-        final realSize = (targetFile?.size ?? 0) > 0 ? targetFile!.size : preloadBytes;
+        // El bridge (prebuilt) reporta size=0 por archivo; usamos knownSizeBytes
+        // (Torrentio) como tamaño real de referencia para no pedir rangos absurdos
+        // (pedir más allá del EOF haría que el preload nunca llegue).
+        final targetKnownSize = (targetFile?.size ?? 0) > 0
+            ? targetFile!.size
+            : (knownSizeBytes ?? 0);
+        final realSize = targetKnownSize > 0 ? targetKnownSize : preloadBytes;
         final effectivePreload = (preloadBytes > 0 && realSize > 0)
             ? (preloadBytes < realSize ? preloadBytes : realSize)
             : preloadBytes;
@@ -503,6 +520,13 @@ class TorrentStreamingService {
       // ── Descarga en SEGUNDO PLANO hasta el 100% ──
       // IIFE: corre en un async task independiente; notifica progress y completa done.
       final _ = (() async {
+        // Ya empezamos a reproducir la cabeza. Ahora SÍ habilitamos los demás
+        // archivos (torrent completo) para que el resto baje en paralelo.
+        try {
+          final List<int> all = List<int>.filled(files.length, 7);
+          engine.setFilePriorities(torrentId, all);
+          print('TORRENT_DBG: [2º plano] habilitados todos los archivos (prioridad 7)');
+        } catch (_) {}
         int localMaxPiece = maxPieceSeen;
         int localBest = bestTotalWanted;
         final localPieces = Set<int>.from(downloadedPieces);
