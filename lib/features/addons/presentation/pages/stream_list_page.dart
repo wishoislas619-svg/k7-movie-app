@@ -159,6 +159,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   Future<void> _play(TorrentStream stream) async {
     String? directUrl = stream.url;
     TorrentPlaybackSession? torrentSession;
+    TorrentStreamingHandle? torrentHandle;
 
     if (directUrl == null || directUrl.isEmpty) {
       if (stream.infoHash == null || stream.infoHash!.isEmpty) {
@@ -181,19 +182,18 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       );
 
       try {
-        print('TORRENT_DBG: llamando downloadAndPlay() infohash=${stream.infoHash} fileIdx=${stream.fileIdx} '
+        print('TORRENT_DBG: llamando startStreaming() infohash=${stream.infoHash} fileIdx=${stream.fileIdx} '
             'seeders=${stream.seeders} peers=${stream.peers} size=${stream.sizeBytes}');
-        final session = await TorrentStreamingService.instance.downloadAndPlay(
+        final handle = await TorrentStreamingService.instance.startStreaming(
           infoHash: stream.infoHash!,
           fileIndex: stream.fileIdx,
-          knownSeeders: stream.seeders,
-          knownPeers: stream.peers,
           knownSizeBytes: stream.sizeBytes,
-          onProgress: (p) => progressNotifier.value = p,
         );
-        torrentSession = session;
-        directUrl = session.localPath;
-        print('TORRENT_DBG: start() OK streamId=${session.streamId} localPath=${session.localPath}');
+        torrentSession = handle.session;
+        torrentHandle = handle;
+        directUrl = handle.session.localPath;
+        print('TORRENT_DBG: startStreaming() OK streamId=${handle.session.streamId} '
+            'localPath=${handle.session.localPath} (descarga continúa en 2º plano)');
       } catch (e, st) {
         print('TORRENT_DBG: start() FALLÓ: $e\n$st');
         if (mounted) {
@@ -230,6 +230,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           mediaType: widget.isSeries ? 'series' : 'movie',
           imagePath: widget.poster,
           extractionAlgorithm: 4,
+          torrentDownloadProgress: torrentHandle,
           externalSubtitles: [
             for (final s in stream.subtitles)
               SubtitleInfo(language: s.language, url: s.url)

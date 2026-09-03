@@ -43,6 +43,7 @@ import 'package:movie_app/features/cast/services/cast_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:movie_app/features/cast/services/media_proxy_service.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
+import '../../../addons/data/datasources/torrent_streaming_service.dart';
 
 class SubtitleInfo {
   final String language;
@@ -114,6 +115,10 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
   /// Subtítulos externos (p. ej. los que devuelve Torrentio por stream).
   final List<SubtitleInfo>? externalSubtitles;
 
+  /// Si se provee (streaming de torrent), el player muestra el % de descarga y
+  /// mantiene el seek bloqueado (barra gris) hasta que la descarga completa.
+  final TorrentStreamingHandle? torrentDownloadProgress;
+
   const VideoPlayerPage({
     super.key,
     required this.movieName,
@@ -132,6 +137,7 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.creditsStartTime,
     this.extractionAlgorithm = 1,
     this.externalSubtitles,
+    this.torrentDownloadProgress,
     this.initialVolume,
     this.initialBrightness,
     this.headers,
@@ -192,6 +198,12 @@ List<SubtitleInfo> _internalSubtitles = [];
   SubtitleInfo? _currentSubtitle;
   bool _embeddedSubsDisabled = false;
   bool _hasIncrementedView = false;
+
+  // Descarga de torrents en 2º plano: % y estado (para bloquear seek hasta el 100%).
+  double _torrentDownloadPct = 0;
+  bool _torrentDownloadDone = false;
+  ValueNotifier<TorrentDownloadProgress?>? _torrentProgressSub;
+  String? _torrentProgressListener;
 
   InAppWebViewController? _webViewController;
   final GlobalKey _webViewKey = GlobalKey();
@@ -276,6 +288,8 @@ List<SubtitleInfo> _internalSubtitles = [];
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
+    _setupTorrentProgress();
+
     _initialVolume = widget.initialVolume;
     _initialBrightness = widget.initialBrightness;
     if (widget.videoOptions.isNotEmpty) {
@@ -2660,8 +2674,40 @@ List<SubtitleInfo> _internalSubtitles = [];
     }
 
     _keyboardFocusNode.dispose();
+    _torrentProgressSub?.removeListener(_onTorrentProgressChanged);
+    _torrentProgressSub = null;
     super.dispose();
   }
+
+  void _setupTorrentProgress() {
+    final handle = widget.torrentDownloadProgress;
+    if (handle == null) return;
+    _torrentProgressSub = handle.progress
+        as ValueNotifier<TorrentDownloadProgress?>;
+    _torrentProgressSub!.addListener(_onTorrentProgressChanged);
+    // Marca "done" en cuanto la descarga completa (bloqueo de seek liberado).
+    handle.done.whenComplete(() {
+      if (mounted) {
+        setState(() => _torrentDownloadDone = true);
+      }
+    });
+    _onTorrentProgressChanged();
+  }
+
+  void _onTorrentProgressChanged() {
+    if (!mounted) return;
+    final p = _torrentProgressSub?.value;
+    final pct = p?.percent ?? _torrentDownloadPct;
+    setState(() {
+      _torrentDownloadPct = pct;
+      if (p?.finished == true) _torrentDownloadDone = true;
+    });
+  }
+
+  /// Mientras el torrent aún se descarga en 2º plano, el seek queda bloqueado
+  /// (barra gris) y se muestra el % de descarga en los controles.
+  bool get _isTorrentSeekLocked =>
+      widget.torrentDownloadProgress != null && !_torrentDownloadDone;
 
   void _startPipHideTimer() {
     _pipHideTimer?.cancel();
@@ -4548,6 +4594,47 @@ List<SubtitleInfo> _internalSubtitles = [];
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (_isTorrentSeekLocked)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00A3FF).withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: const Color(0xFF00A3FF).withOpacity(0.5),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.downloading,
+                        color: Color(0xFF00A3FF),
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          'Descargando ${_torrentDownloadPct.toStringAsFixed(0)}% — '
+                          'buscar (seek) disponible al 100%',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             if (!_isLocked &&
                 (_controller != null || CastService().isConnected))
               AnimatedBuilder(
@@ -4617,18 +4704,20 @@ List<SubtitleInfo> _internalSubtitles = [];
                                   max: duration.inMilliseconds.toDouble() > 0
                                       ? duration.inMilliseconds.toDouble()
                                       : 1.0,
-                                  onChanged: (val) {
-                                    CastService().seekTo(
-                                      Duration(milliseconds: val.toInt()),
-                                    );
-                                    _startHideTimer();
-                                  },
+                                  onChanged: _isTorrentSeekLocked
+                                      ? null
+                                      : (val) {
+                                          CastService().seekTo(
+                                            Duration(milliseconds: val.toInt()),
+                                          );
+                                          _startHideTimer();
+                                        },
                                 ),
                               )
                             else if (_controller != null)
                               VideoProgressIndicator(
                                 _controller!,
-                                allowScrubbing: true,
+                                allowScrubbing: !_isTorrentSeekLocked,
                                 padding: const EdgeInsets.symmetric(
                                   vertical: 12,
                                 ),
