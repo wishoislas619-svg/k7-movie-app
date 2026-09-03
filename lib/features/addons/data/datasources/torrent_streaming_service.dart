@@ -280,23 +280,17 @@ class TorrentStreamingService {
   }
 
   /// ══════════════════════════════════════════════════════════════════════
-  /// STREAMING CON DESCARGA EN SEGUNDO PLANO (REPRODUCCIÓN AL 10%)
+  /// STREAMING CON DESCARGA COMPLETA ANTES DE REPRODUCIR
   ///
-  /// Combina lo mejor de ambos mundos:
-  ///  1. Añade el torrent y lo descarga completo a disco (TODOS los archivos con
-  ///     prioridad 7, "todo el torrent a la vez").
-  ///  2. Arranca `startStream` sobre el archivo objetivo → obtiene una URL HTTP
-  ///     que el reproductor puede servir por RANGES de forma SECUENCIAL (head-first),
-  ///     de modo que la reproducción puede empezar una vez la cabeza del archivo
-  ///     está disponible (aproximadamente desde el ~10% del torrent).
-  ///  3. Espera a que el torrent nativo alcance ~10% (umbral configurable), emitiendo
-  ///     progreso continuo vía [progress], y entonces devuelve el handle.
-  ///  4. La descarga continúa en SEGUNDO PLANO hasta el 100%: [progress] sigue
-  ///     emitiendo y [done] se completa al terminar para que el player pueda
-  ///     desbloquear el seek (ver Phase 2).
+  /// Añade el torrent y lo descarga COMPLETO a disco (TODOS los archivos con
+  /// prioridad 7, "todo el torrent a la vez") hasta el 100%, emitiendo progreso
+  /// continuo (% + velocidad + peers/seeds) vía [progress] al diálogo, y SOLO
+  /// entonces devuelve el handle para reproducir el `file://` íntegro.
   ///
-  /// El seek se bloquea en el player (barra en gris mostrando el % de descarga)
-  /// hasta que [done] se complete, porque el archivo aún se está rellenando.
+  /// Motivo: media_kit/mpv NO abre un archivo parcial (aunque la cabeza ya tenga
+  /// datos reales, initialize() colgaba 25s). Esperando al 100% el archivo en
+  /// disco queda completo y el reproductor lo abre sin colgarse, y el seek queda
+  /// habilitado de inmediato (ya no hace falta bloquearlo).
   /// ══════════════════════════════════════════════════════════════════════
   Future<TorrentStreamingHandle> startStreaming({
     required String infoHash,
@@ -417,8 +411,14 @@ class TorrentStreamingService {
       double lastEmittedPct = -1;
       double pct = 0;
       int nativeTotalPieces = 0;
+      double lastDoneMB = 0;
+      DateTime? lastSampleTime;
 
-      // ── Espera inicial: alcanzar ~startPercent% del torrent nativo ──
+      // ── Espera inicial: descarga de TODO el torrent hasta el 100% ──
+      // El usuario decidió esperar a que la descarga COMPLETA termine (100%)
+      // antes de devolver la sesión, porque media_kit/mpv NO abre un archivo
+      // `file://` parcial (aunque la cabeza ya tenga datos reales, colgaba 25s).
+      // Mientras se descarga emitimos % + velocidad + peers/seeds al diálogo.
       while (DateTime.now().difference(started) < minDownloadWait) {
         // Convergencia del denominador nativo.
         final ti = engine.torrents[torrentId];
@@ -439,13 +439,29 @@ class TorrentStreamingService {
         }
 
         final doneMB = totalMB > 0 ? pct / 100.0 * totalMB : nativeDonePieces.toDouble();
+
+        // Velocidad real calculada en Dart (delta de MB descargados entre
+        // muestras), porque downloadRate del bridge suele reportar 0.
+        final nowSample = DateTime.now();
+        double speedMBps = (ti?.downloadRate ?? 0) / 1048576.0;
+        if (lastSampleTime != null) {
+          final elapsedSec = nowSample.difference(lastSampleTime)
+              .inMicroseconds / 1000000.0;
+          if (elapsedSec > 0.1) {
+            final deltaMB = (doneMB - lastDoneMB).clamp(-999.0, 999.0);
+            speedMBps = deltaMB > 0.001 ? deltaMB / elapsedSec : speedMBps;
+          }
+        }
+        lastDoneMB = doneMB;
+        lastSampleTime = nowSample;
+
         if (pct - lastEmittedPct >= 0.5 || (alertFinished && pct >= 100)) {
           lastEmittedPct = pct;
           final report = TorrentDownloadProgress(
             percent: pct.clamp(0, 100),
             downloadedMB: doneMB,
             totalMB: totalMB.toDouble(),
-            speedMBps: (ti?.downloadRate ?? 0) / 1048576.0,
+            speedMBps: speedMBps,
             peers: ti?.numPeers ?? 0,
             seeds: ti?.numSeeds ?? 0,
             state: 'downloading',
@@ -455,6 +471,16 @@ class TorrentStreamingService {
           progressToReport?.value = report;
         }
 
+        print('TORRENT_DBG: [espera 100%] ${pct.toStringAsFixed(1)}% '
+            '${doneMB.toStringAsFixed(1)}/${totalMB.toStringAsFixed(1)}MB '
+            'rate=${speedMBps.toStringAsFixed(2)}MB/s '
+            'peers=${ti?.numPeers ?? 0} seeds=${ti?.numSeeds ?? 0} '
+            'pieces=${nativeDonePieces}/$nativeTotalPieces '
+            'alertFinished=$alertFinished');
+
+        // ⏭ COMPLETADO: cuando todo el torrent está en disco (100%) salimos y
+        // devolvemos la sesión; el archivo está COMPLETO, así que media_kit/mpv
+        // podrá abrir el `file://` sin colgarse.
         if (alertFinished || (nativeTotalPieces > 0 && nativeDonePieces >= nativeTotalPieces)) {
           final finished = TorrentDownloadProgress(
             percent: 100,
@@ -469,64 +495,20 @@ class TorrentStreamingService {
           progress.value = finished;
           progressToReport?.value = finished;
           if (!done.isCompleted) done.complete();
+          print('TORRENT_DBG: ▶ descarga COMPLETA al 100% → devolviendo sesión '
+              'file:// (${totalMB.toStringAsFixed(1)}MB en disco)');
           break;
-        }
-
-        // ← PUNTO CLAVE: cuando el torrent nativo alcanza el umbral, devolvemos
-        // la sesión para EMPEZAR a reproducir; la descarga sigue en 2º plano.
-        // Leemos el archivo LOCAL en disco (`file://`), así que además del % solo
-        // devolvemos si la CABEZA del archivo objetivo (los primeros bytes reales
-        // en disco) ya está — evita devolver (y que mpv cuelgue) si solo hay
-        // piezas dispersas y la cabeza aún no ha caído.
-        if (pct >= startPercent && await _isHeadReady(localPath, preloadBytes)) {
-          final exists = await File(localPath).exists();
-          final len = exists ? await File(localPath).length() : 0;
-          if (exists && len > 0) {
-            print('TORRENT_DBG: ▶ alcanzado ${pct.toStringAsFixed(1)}% >= $startPercent% '
-                'y CABEZA del objetivo lista en disco (${(len / 1048576).toStringAsFixed(1)}MB) '
-                '→ devolviendo sesión file:// para reproducir (continúa descargando en 2º plano)');
-            break;
-          } else {
-            print('TORRENT_DBG: ${pct.toStringAsFixed(1)}% pero archivo aún no listo en disco '
-                '(exists=$exists len=$len) — sigo esperando que caiga la cabeza del fichero');
-          }
-        } else if (pct >= startPercent) {
-          print('TORRENT_DBG: ${pct.toStringAsFixed(1)}% >= $startPercent% pero CABEZA aún no '
-              'en disco (pieces=${downloadedPieces.length}) — sigo esperando la cabeza');
         }
 
         await Future.delayed(const Duration(seconds: 1));
       }
       alertSub.cancel();
 
-      // Si salimos del loop por timeout SIN llegar al umbral y sin archivo en
-      // disco, no devolvemos una sesión irreal (vacía). El flujo de 2º plano
-      // nunca se lanza aquí; esperamos el startPercent o abortamos.
-      if (!(pct >= startPercent)) {
-        final existsNow = await File(localPath).exists();
-        final lenNow = existsNow ? await File(localPath).length() : 0;
-        if (!(existsNow && lenNow > 0)) {
-          print('TORRENT_DBG: ✖ timeout en startStreaming sin alcanzar '
-              '$startPercent% (pct=${pct.toStringAsFixed(1)}%) y sin archivo en disco — '
-              'devolviendo la descarga a 2º plano para que siga hasta el 100%');
-          // Aun así lanzamos el 2º plano para conservar el % correcto, pero con
-          // un session que el player tratará como "preparando".
-          final _ = _backgroundDownload(engine, torrentId, downloadedPieces,
-              maxPieceSeen, bestTotalWanted, alertFinished, done, progress, totalMB);
-          final pendingSession = TorrentPlaybackSession(
-            torrentId: torrentId,
-            streamId: streamId,
-            localPath: fileUrl,
-            name: fileUrl,
-          );
-          return TorrentStreamingHandle(
-            session: pendingSession,
-            progress: progress,
-            done: done.future,
-          );
-        }
-      }
-
+      // Si salimos del loop por timeout SIN llegar al 100%, tiramos del estado
+      // capturado del 2º plano para conservar el progreso, pero devolvemos una
+      // sesión cuyo archivo puede estar incompleto. Para que media_kit pueda
+      // abrirlo, seguimos esperando en 2º plano hasta el 100% antes de que el
+      // player lance el initialize() sobre `file://`.
       final playbackUrl = fileUrl;
       final session = TorrentPlaybackSession(
         torrentId: torrentId,
@@ -534,12 +516,31 @@ class TorrentStreamingService {
         localPath: playbackUrl,
         name: playbackUrl,
       );
-      print('TORRENT_DBG: startStreaming devolviendo sesión url=$playbackUrl '
-          'pct=${pct.toStringAsFixed(1)}% (0..100)');
 
-      // ── Descarga en SEGUNDO PLANO hasta el 100% ──
-      final _ = _backgroundDownload(engine, torrentId, downloadedPieces,
-          maxPieceSeen, bestTotalWanted, alertFinished, done, progress, totalMB);
+      if (pct < 100) {
+        print('TORRENT_DBG: ⏳ timeout antes del 100% (${pct.toStringAsFixed(1)}%) '
+            '— la descarga sigue en 2º plano; esperamos al 100% antes de arrancar el player');
+        final _ = _backgroundDownload(engine, torrentId, downloadedPieces,
+            maxPieceSeen, bestTotalWanted, alertFinished, done, progress, totalMB);
+        // El usuario quiere esperar a la descarga COMPLETA para que el archivo
+        // `file://` se pueda abrir. Mantenemos el diálogo (con % + velocidad)
+        // hasta que `done` se complete (100%), y solo entonces devolvemos la
+        // sesión para iniciar la reproducción sobre un archivo íntegro.
+        await done.future;
+        progress.value = TorrentDownloadProgress(
+          percent: 100,
+          downloadedMB: totalMB.toDouble(),
+          totalMB: totalMB.toDouble(),
+          speedMBps: 0,
+          peers: 0,
+          seeds: 0,
+          state: 'finished',
+          finished: true,
+        );
+        progressToReport?.value = progress.value;
+      }
+      print('TORRENT_DBG: startStreaming devolviendo sesión url=$playbackUrl '
+          'pct=100% (archivo completo en disco)');
 
       return TorrentStreamingHandle(
         session: session,
@@ -1264,42 +1265,6 @@ class TorrentStreamingService {
       if (best == null || f.size > best.size) best = f;
     }
     return best?.index ?? -1;
-  }
-
-  /// ¿La CABEZA del archivo objetivo ya está en disco y es legible?
-  ///
-  /// Leemos `file://` directamente, así que mpv/media_kit necesita poder abrir el
-  /// archivo leyendo sus primeros bytes (moov/faststart del contenedor). Con
-  /// rarest-first (todos=7) las piezas caen dispersas, así que NO podemos
-  /// devolver la sesión solo con `pct >= startPercent` si la cabeza aún no está
-  /// en disco (mpv colgaría los 25s de initialize).
-  ///
-  /// En lugar de adivinar el índice de pieza de inicio del archivo objetivo
-  /// (que el bridge no expone y es distinto para torrents de varios archivos,
-  /// donde el vídeo puede empezar en una pieza > 0), comprobamos los BYTES reales
-  /// del archivo en disco: leemos los primeros `headBytes` y verificamos que
-  /// contengan datos reales (no todos ceros de la pre-asignación esparcida).
-  /// Esto es agnóstico del offset de pieza y vale para mono y multi-archivo.
-  Future<bool> _isHeadReady(String localPath, int preloadBytes) async {
-    final file = File(localPath);
-    final exists = await file.exists();
-    if (!exists) return false;
-    final raf = await file.open();
-    try {
-      final headBytes = preloadBytes.clamp(256 * 1024, 4 * 1024 * 1024);
-      final buffer = await raf.read(headBytes);
-      if (buffer.isEmpty) return false;
-      // El archivo libtorrent se pre-aloca con ceros; la cabeza "llegó" cuando
-      // hay datos reales (cualquier byte distinto de 0 en el prefijo leído).
-      for (final b in buffer) {
-        if (b != 0) return true;
-      }
-      return false;
-    } catch (_) {
-      return false;
-    } finally {
-      await raf.close();
-    }
   }
 
   Future<List<FileInfo>> _waitForMetadata(
