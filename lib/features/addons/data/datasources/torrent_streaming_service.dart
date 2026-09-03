@@ -1372,6 +1372,189 @@ class TorrentStreamingService {
     } catch (_) {}
   }
 
+  /// Descarga el torrent COMPLETO (todos los archivos) a la carpeta pública
+  /// `Descargas/K7-MOVIE/<movieName>/` del almacenamiento externo. A diferencia
+  /// de `startStreaming`/`downloadAndPlay`, no reproduce: solo descarga y copia
+  /// todos los archivos del torrent a una carpeta con nombre legible, y luego
+  /// libera el torrent. Emite progreso vía [onProgress] hasta el 100% y devuelve
+  /// la ruta de la carpeta destino.
+  Future<String> downloadComplete({
+    required String infoHash,
+    required String movieName,
+    Duration metadataTimeout = const Duration(seconds: 120),
+    Duration maxWait = const Duration(minutes: 60),
+    int? knownSizeBytes,
+    void Function(TorrentDownloadProgress)? onProgress,
+  }) async {
+    print('TORRENT_DBG: downloadComplete() infohash=$infoHash movieName=$movieName');
+    await _ensureInit();
+    final engine = LibtorrentFlutter.instance;
+    final saveDir = _saveDir!;
+
+    // Limpia torrents anteriores de streaming para no saturar almacenamiento.
+    try {
+      final dir = Directory(saveDir);
+      if (dir.existsSync()) {
+        dir.deleteSync(recursive: true);
+        dir.createSync(recursive: true);
+        print('TORRENT_DBG: downloadComplete limpieza directorio torrents OK');
+      }
+    } catch (_) {}
+
+    final magnet = _magnet(infoHash);
+    final torrentId = engine.addMagnet(magnet, saveDir, false);
+    print('TORRENT_DBG: downloadComplete addMagnet(id=$torrentId) OK');
+
+    // Carpeta destino: Descargas/K7-MOVIE/<movieName>/
+    final downloadsRoot = await _downloadsRootDir();
+    final safeName = movieName
+        .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
+        .trim();
+    final destDir = Directory(p.join(downloadsRoot, 'K7-MOVIE', safeName));
+    destDir.createSync(recursive: true);
+    print('TORRENT_DBG: downloadComplete carpeta destino=$destDir.path');
+
+    final deadline = DateTime.now().add(maxWait);
+    late StreamSubscription<(int, String)> alertSub;
+    int maxPieceSeen = -1;
+    int bestTotalWanted = 0;
+    final Set<int> downloadedPieces = {};
+    bool alertFinished = false;
+    double lastEmittedPct = -1;
+
+    try {
+      final files = await _waitForMetadata(engine, torrentId, timeout: metadataTimeout);
+      if (files.isEmpty) {
+        engine.disposeTorrent(torrentId);
+        throw Exception('Torrent sin archivos.');
+      }
+      _logFileList(files);
+
+      // Descargar TODOS los archivos (torrent completo).
+      engine.setFilePriorities(torrentId, List<int>.filled(files.length, 7));
+
+      _startKeepAlive(engine, torrentId);
+      alertSub = LibtorrentFlutter.alertStream.listen((e) {
+        if (e.$1 != torrentId) return;
+        final piece = _parsePieceFinished(e.$2);
+        if (piece != null) {
+          downloadedPieces.add(piece);
+          if (piece > maxPieceSeen) maxPieceSeen = piece;
+        } else if (e.$2.contains('torrent finished downloading') ||
+            e.$2.contains('state changed to: finished') ||
+            e.$2.contains('state changed to: seeding')) {
+          if (!alertFinished) {
+            alertFinished = true;
+            print('TORRENT_DBG: downloadComplete alert NATIVO completado');
+          }
+        }
+      }, onError: (_) {});
+
+      int totalMB = 0;
+      int nativeTotalPieces = 0;
+      while (DateTime.now().isBefore(deadline)) {
+        final ti = engine.torrents[torrentId];
+        if (ti != null && ti.totalWanted is int && (ti.totalWanted as int) > bestTotalWanted) {
+          bestTotalWanted = ti.totalWanted as int;
+        }
+        if (bestTotalWanted > 0 && totalMB == 0) totalMB = bestTotalWanted ~/ 1048576;
+        if (maxPieceSeen >= 0) nativeTotalPieces = maxPieceSeen + 1;
+
+        final nativeDone = downloadedPieces.length;
+        final pct = nativeTotalPieces > 0
+            ? (100.0 * nativeDone / nativeTotalPieces)
+            : (bestTotalWanted > 0 ? (100.0 * (ti?.totalDone ?? 0) / bestTotalWanted) : 0.0);
+        final doneMB = totalMB > 0 ? pct / 100.0 * totalMB : nativeDone.toDouble();
+
+        if (onProgress != null &&
+            (pct - lastEmittedPct >= 0.5 || (alertFinished && pct >= 100))) {
+          lastEmittedPct = pct;
+          onProgress(TorrentDownloadProgress(
+            percent: pct.clamp(0.0, 100.0).toDouble(),
+            downloadedMB: doneMB,
+            totalMB: totalMB.toDouble(),
+            speedMBps: (ti?.downloadRate ?? 0) / 1048576.0,
+            peers: ti?.numPeers ?? 0,
+            seeds: ti?.numSeeds ?? 0,
+            state: 'downloading',
+            finished: false,
+          ));
+        }
+
+        if (alertFinished ||
+            (nativeTotalPieces > 0 && nativeDone >= nativeTotalPieces)) {
+          if (onProgress != null) {
+            onProgress(TorrentDownloadProgress(
+              percent: 100,
+              downloadedMB: totalMB.toDouble(),
+              totalMB: totalMB.toDouble(),
+              speedMBps: 0,
+              peers: ti?.numPeers ?? 0,
+              seeds: ti?.numSeeds ?? 0,
+              state: 'finished',
+              finished: true,
+            ));
+          }
+          break;
+        }
+        await Future.delayed(const Duration(seconds: 1));
+      }
+      await alertSub.cancel();
+
+      if (!alertFinished && downloadedPieces.isNotEmpty) {
+        // Render parcial: si no llegó a 100% en el tiempo límite, aborta.
+        throw Exception('La descarga no completó a tiempo.');
+      }
+
+      // ── Copiar TODOS los archivos a la carpeta destino ──
+      _copyTorrentTo(saveDir, destDir.path);
+
+      engine.disposeTorrent(torrentId);
+      print('TORRENT_DBG: downloadComplete listo en ${destDir.path}');
+      return destDir.path;
+    } catch (e) {
+      print('TORRENT_DBG: downloadComplete error: $e');
+      try { await alertSub.cancel(); } catch (_) {}
+      engine.disposeTorrent(torrentId);
+      rethrow;
+    }
+  }
+
+  Future<String> _downloadsRootDir() async {
+    // Almacenamiento externo raíz: /storage/emulated/0 (Android).
+    try {
+      if (Platform.isAndroid) {
+        final ext = await getExternalStorageDirectory();
+        if (ext != null) return ext.path;
+      }
+    } catch (_) {}
+    final docs = await getApplicationDocumentsDirectory();
+    return docs.path;
+  }
+
+  void _copyTorrentTo(String srcDir, String destDir) {
+    // Recorre recursivamente saveDir y copia cada archivo real a destDir,
+    // respetando la estructura de subcarpetas internas del torrent.
+    final src = Directory(srcDir);
+    if (!src.existsSync()) return;
+    for (final entity in src.listSync(recursive: false)) {
+      final rel = p.relative(entity.path, from: srcDir);
+      if (entity is File) {
+        final target = p.join(destDir, rel);
+        final parent = p.dirname(target);
+        Directory(parent).createSync(recursive: true);
+        try {
+          entity.copySync(target);
+          print('TORRENT_DBG: copiado ${entity.path} → $target');
+        } catch (e) {
+          print('TORRENT_DBG: error copiando ${entity.path}: $e');
+        }
+      } else if (entity is Directory) {
+        _copyTorrentTo(entity.path, p.join(destDir, rel));
+      }
+    }
+  }
+
   /// Detiene todos los torrents activos (p.ej. al salir de la app).
   Future<void> disposeAll() async {
     _stopTorrentKeepAlive();

@@ -760,6 +760,19 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                     onPressed: () => _launchWvcCast(stream),
                   ),
                 ),
+              if (stream.infoHash != null && stream.infoHash!.isNotEmpty)
+                Tooltip(
+                  message: 'Descargar a Descargas/K7-MOVIE',
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    icon: const Icon(
+                      Icons.download,
+                      color: Color(0xFF00FF87),
+                    ),
+                    onPressed: () => _downloadFull(stream),
+                  ),
+                ),
               const SizedBox(width: 12),
               _canPlay(stream)
                   ? const Icon(Icons.play_circle_fill,
@@ -878,6 +891,52 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       context,
       MaterialPageRoute(builder: (_) => const AddonsManagerPage()),
     );
+  }
+
+  /// Descarga el torrent COMPLETO a `Descargas/K7-MOVIE/<película>/`.
+  Future<void> _downloadFull(TorrentStream stream) async {
+    if (stream.infoHash == null || stream.infoHash!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Este enlace no tiene infohash para descargar.'),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+    final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
+    // Dialog de progreso no cancelable (descarga completa hasta el 100%).
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _TorrentLoadingDialog(progress: progressNotifier),
+    );
+    print('TORRENT_DBG: _downloadFull infohash=${stream.infoHash} movie=${widget.movieName}');
+    try {
+      final dest = await TorrentStreamingService.instance.downloadComplete(
+        infoHash: stream.infoHash!,
+        movieName: widget.movieName,
+        knownSizeBytes: stream.sizeBytes,
+        onProgress: (p) => progressNotifier.value = p,
+      );
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Descargado en: $dest'),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } catch (e) {
+      print('TORRENT_DBG: _downloadFull FALLÓ: $e');
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo descargar el torrent: $e')),
+        );
+      }
+    }
   }
 }
 
