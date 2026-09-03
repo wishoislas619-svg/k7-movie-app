@@ -352,20 +352,27 @@ class TorrentStreamingService {
       print('TORRENT_DBG: ▶ TARGET FILE: fileIndex=$target '
           '${targetFile != null ? '| name=${targetFile.name} size=${targetFile.size}B' : '(out of range)'}');
 
-      // ⚠️ IMPORTANTE: priorizar SOLO el archivo objetivo (resto a 0) mientras
-      // arranca el stream. Si habilitamos TODOS los archivos a la vez, libtorrent
-      // usa rarest-first sobre todo el torrent y baja piezas dispersas (p.ej. la
-      // 2020 antes que la 0); entonces `startStream` intenta servir un buffer
-      // contiguo desde piezas que NO están en disco → memcpy fuera de rango y
-      // SIGSEGV (crash nativo). Con el objetivo primero, serve_range descarga la
-      // cabeza SECUENCIALMENTE y contigua, sin sparse reads → no crashea. El resto
-      // de archivos se habilitan en 2º plano una vez la reproducción ya arrancó.
-      final List<int> priorities = List<int>.filled(files.length, 0);
-      if (target >= 0 && target < files.length) {
-        priorities[target] = 7;
-      }
+      // Descargamos TODO el torrent a disco con prioridad 7 (denominador del %
+      // correcto contra el torrent completo, p.ej. 1.78GB) Y además arrancamos
+      // `startStream` sobre el archivo objetivo para forzar la descarga
+      // SECUENCIAL head-first del mismo a disco. Reproducimos `file://` (lo que
+      // ya hay en disco) — NO usamos la URL HTTP del stream para servir bytes,
+      // porque serve_range con piezas dispersas era el origen del SIGSEGV nativo.
+      // Así la cabeza del mp4 cae contigua y mpv la abre sin colgarse, mostrando
+      // el % descargado mientras la descarga sigue a 100% en 2º plano.
+      final priorities = List<int>.filled(files.length, 7);
       engine.setFilePriorities(torrentId, priorities);
-      print('TORRENT_DBG: setFilePriorities target=$target=7, resto=0 (secuencial, evita crash)');
+      int streamId = 0;
+      if (target >= 0 && target < files.length) {
+        final stream = engine.startStream(torrentId, fileIndex: target);
+        streamId = stream.id;
+        print('TORRENT_DBG: startStream(secuencial head-first) id=$streamId '
+            'targetFile=$target (rellena la cabeza del objetivo a disco; reproduce file://)');
+      } else {
+        engine.resumeTorrent(torrentId);
+        print('TORRENT_DBG: resumeTorrent fallback (sin startStream)');
+      }
+      print('TORRENT_DBG: setFilePriorities TODOS=7 + startStream secuencial (descarga de todo el torrent a disco, cabeza primero)');
 
       final relPath = (targetFile?.path ?? '')
           .replaceAll('\\', '/')
@@ -373,17 +380,8 @@ class TorrentStreamingService {
           .where((s) => s.isNotEmpty && s != '.' && s != '..')
           .join('/');
       final localPath = p.join(saveDir, relPath);
-
-      // startStream: servidor HTTP interno (serve_range) → descarga SECUENCIAL
-      // del archivo objetivo (head-first) y nos da la URL para el reproductor.
-      int streamId = 0;
-      String url = '';
-      if (target >= 0 && target < files.length) {
-        final stream = engine.startStream(torrentId, fileIndex: target);
-        streamId = stream.id;
-        url = stream.url;
-        print('TORRENT_DBG: startStream(secuencial) id=$streamId targetFile=$target url=$url');
-      }
+      final fileUrl = 'file://$localPath';
+      // La reproducción lee el archivo LOCAL en disco, sin servidor HTTP.
 
       _startKeepAlive(engine, torrentId);
 
@@ -429,8 +427,8 @@ class TorrentStreamingService {
         // Convergencia del denominador nativo.
         final ti = engine.torrents[torrentId];
         if (ti != null) {
-          if (ti.totalWanted is int && ti.totalWanted > bestTotalWanted) {
-            bestTotalWanted = ti.totalWanted as int;
+          if (ti.totalWanted > bestTotalWanted) {
+            bestTotalWanted = ti.totalWanted;
           }
           if (bestTotalWanted > 0 && totalMB == 0) totalMB = bestTotalWanted ~/ 1048576;
         }
@@ -476,38 +474,56 @@ class TorrentStreamingService {
 
         // ← PUNTO CLAVE: cuando el torrent nativo alcanza el umbral, devolvemos
         // la sesión para EMPEZAR a reproducir; la descarga sigue en 2º plano.
+        // Leemos el archivo LOCAL en disco (`file://`), así que además del % solo
+        // devolvemos si el archivo objetivo YA existe con bytes en disco (evita
+        // reproducir un archivo vacío/sparse si la cabeza aún no ha caído).
         if (pct >= startPercent) {
-          print('TORRENT_DBG: ▶ alcanzado ${pct.toStringAsFixed(1)}% >= ${startPercent}% '
-              '→ devolviendo sesión para reproducir (continúa descargando en 2º plano)');
-          break;
+          final exists = await File(localPath).exists();
+          final len = exists ? await File(localPath).length() : 0;
+          if (exists && len > 0) {
+            print('TORRENT_DBG: ▶ alcanzado ${pct.toStringAsFixed(1)}% >= $startPercent% '
+                'y archivo en disco ${(len / 1048576).toStringAsFixed(1)}MB '
+                '→ devolviendo sesión file:// para reproducir (continúa descargando en 2º plano)');
+            break;
+          } else {
+            print('TORRENT_DBG: ${pct.toStringAsFixed(1)}% pero archivo aún no listo en disco '
+                '(exists=$exists len=$len) — sigo esperando que caiga la cabeza del fichero');
+          }
         }
 
         await Future.delayed(const Duration(seconds: 1));
       }
       alertSub.cancel();
 
-      // Pre-carga del buffer del stream para que la reproducción arranque fluida.
-      if (url.isNotEmpty) {
-        // El bridge (prebuilt) reporta size=0 por archivo; usamos knownSizeBytes
-        // (Torrentio) como tamaño real de referencia para no pedir rangos absurdos
-        // (pedir más allá del EOF haría que el preload nunca llegue).
-        final targetKnownSize = (targetFile?.size ?? 0) > 0
-            ? targetFile!.size
-            : (knownSizeBytes ?? 0);
-        final realSize = targetKnownSize > 0 ? targetKnownSize : preloadBytes;
-        final effectivePreload = (preloadBytes > 0 && realSize > 0)
-            ? (preloadBytes < realSize ? preloadBytes : realSize)
-            : preloadBytes;
-        try {
-          await _waitForStreamStart(engine, torrentId, streamId,
-              url: url,
-              preloadBytes: effectivePreload,
-              fileSize: realSize,
-              timeout: const Duration(seconds: 120));
-        } catch (_) {}
+      // Si salimos del loop por timeout SIN llegar al umbral y sin archivo en
+      // disco, no devolvemos una sesión irreal (vacía). El flujo de 2º plano
+      // nunca se lanza aquí; esperamos el startPercent o abortamos.
+      if (!(pct >= startPercent)) {
+        final existsNow = await File(localPath).exists();
+        final lenNow = existsNow ? await File(localPath).length() : 0;
+        if (!(existsNow && lenNow > 0)) {
+          print('TORRENT_DBG: ✖ timeout en startStreaming sin alcanzar '
+              '$startPercent% (pct=${pct.toStringAsFixed(1)}%) y sin archivo en disco — '
+              'devolviendo la descarga a 2º plano para que siga hasta el 100%');
+          // Aun así lanzamos el 2º plano para conservar el % correcto, pero con
+          // un session que el player tratará como "preparando".
+          final _ = _backgroundDownload(engine, torrentId, downloadedPieces,
+              maxPieceSeen, bestTotalWanted, alertFinished, done, progress, totalMB);
+          final pendingSession = TorrentPlaybackSession(
+            torrentId: torrentId,
+            streamId: streamId,
+            localPath: fileUrl,
+            name: fileUrl,
+          );
+          return TorrentStreamingHandle(
+            session: pendingSession,
+            progress: progress,
+            done: done.future,
+          );
+        }
       }
 
-      final playbackUrl = url.isNotEmpty ? url : 'file://$localPath';
+      final playbackUrl = fileUrl;
       final session = TorrentPlaybackSession(
         torrentId: torrentId,
         streamId: streamId,
@@ -518,73 +534,8 @@ class TorrentStreamingService {
           'pct=${pct.toStringAsFixed(1)}% (0..100)');
 
       // ── Descarga en SEGUNDO PLANO hasta el 100% ──
-      // IIFE: corre en un async task independiente; notifica progress y completa done.
-      final _ = (() async {
-        // Ya empezamos a reproducir la cabeza. Ahora SÍ habilitamos los demás
-        // archivos (torrent completo) para que el resto baje en paralelo.
-        try {
-          final List<int> all = List<int>.filled(files.length, 7);
-          engine.setFilePriorities(torrentId, all);
-          print('TORRENT_DBG: [2º plano] habilitados todos los archivos (prioridad 7)');
-        } catch (_) {}
-        int localMaxPiece = maxPieceSeen;
-        int localBest = bestTotalWanted;
-        final localPieces = Set<int>.from(downloadedPieces);
-        bool finishedTracking = alertFinished;
-        final StreamSubscription<(int, String)> bgAlerts =
-            LibtorrentFlutter.alertStream.listen((e) {
-          if (e.$1 != torrentId) return;
-          final piece = _parsePieceFinished(e.$2);
-          if (piece != null) {
-            localPieces.add(piece);
-            if (piece > localMaxPiece) localMaxPiece = piece;
-          } else if (e.$2.contains('torrent finished downloading') ||
-              e.$2.contains('state changed to: finished') ||
-              e.$2.contains('state changed to: seeding')) {
-            finishedTracking = true;
-          }
-        }, onError: (_) {});
-        try {
-          while (!finishedTracking) {
-            final ti = engine.torrents[torrentId];
-            if (ti != null && ti.totalWanted is int && (ti.totalWanted as int) > localBest) {
-              localBest = ti.totalWanted as int;
-            }
-            final totalN = localMaxPiece >= 0 ? localMaxPiece + 1 : 0;
-            final p = totalN > 0
-                ? (100.0 * localPieces.length / totalN).clamp(0.0, 100.0).toDouble()
-                : 0.0;
-            final mb = totalMB > 0 ? p / 100.0 * totalMB : localPieces.length.toDouble();
-            progress.value = TorrentDownloadProgress(
-              percent: p,
-              downloadedMB: mb,
-              totalMB: totalMB.toDouble(),
-              speedMBps: (ti?.downloadRate ?? 0) / 1048576.0,
-              peers: ti?.numPeers ?? 0,
-              seeds: ti?.numSeeds ?? 0,
-              state: 'downloading',
-              finished: false,
-            );
-            if (finishedTracking || (totalN > 0 && localPieces.length >= totalN)) {
-              progress.value = TorrentDownloadProgress(
-                percent: 100,
-                downloadedMB: totalMB.toDouble(),
-                totalMB: totalMB.toDouble(),
-                speedMBps: 0,
-                peers: ti?.numPeers ?? 0,
-                seeds: ti?.numSeeds ?? 0,
-                state: 'finished',
-                finished: true,
-              );
-              if (!done.isCompleted) done.complete();
-              break;
-            }
-            await Future.delayed(const Duration(seconds: 1));
-          }
-        } finally {
-          await bgAlerts.cancel();
-        }
-      })();
+      final _ = _backgroundDownload(engine, torrentId, downloadedPieces,
+          maxPieceSeen, bestTotalWanted, alertFinished, done, progress, totalMB);
 
       return TorrentStreamingHandle(
         session: session,
@@ -598,6 +549,81 @@ class TorrentStreamingService {
       try { done.completeError(e); } catch (_) {}
       engine.disposeTorrent(torrentId);
       rethrow;
+    }
+  }
+
+  /// Descarga en 2º plano del torrent hasta el 100% tras haber devuelto la
+  /// sesión para reproducir desde disco. Recibe el estado nativo capturado en
+  /// `startStreaming` para no perder piezas entre el corte del loop principal
+  /// y este. Notifica progreso por `progress` y completa `done` al terminar.
+  Future<void> _backgroundDownload(
+    LibtorrentFlutter engine,
+    int torrentId,
+    Set<int> downloadedPieces,
+    int maxPieceSeen,
+    int bestTotalWanted,
+    bool alertFinished,
+    Completer<void> done,
+    ValueNotifier<TorrentDownloadProgress> progress,
+    int totalMB,
+  ) async {
+    int localMaxPiece = maxPieceSeen;
+    int localBest = bestTotalWanted;
+    final localPieces = Set<int>.from(downloadedPieces);
+    bool finishedTracking = alertFinished;
+    final StreamSubscription<(int, String)> bgAlerts =
+        LibtorrentFlutter.alertStream.listen((e) {
+      if (e.$1 != torrentId) return;
+      final piece = _parsePieceFinished(e.$2);
+      if (piece != null) {
+        localPieces.add(piece);
+        if (piece > localMaxPiece) localMaxPiece = piece;
+      } else if (e.$2.contains('torrent finished downloading') ||
+          e.$2.contains('state changed to: finished') ||
+          e.$2.contains('state changed to: seeding')) {
+        finishedTracking = true;
+      }
+    }, onError: (_) {});
+    try {
+      while (!finishedTracking) {
+        final ti = engine.torrents[torrentId];
+        if (ti != null) {
+          if (ti.totalWanted > localBest) localBest = ti.totalWanted;
+        }
+        final totalN = localMaxPiece >= 0 ? localMaxPiece + 1 : 0;
+        final p = totalN > 0
+            ? (100.0 * localPieces.length / totalN).clamp(0.0, 100.0).toDouble()
+            : 0.0;
+        final mb = totalMB > 0 ? p / 100.0 * totalMB : localPieces.length.toDouble();
+        progress.value = TorrentDownloadProgress(
+          percent: p,
+          downloadedMB: mb,
+          totalMB: totalMB.toDouble(),
+          speedMBps: (ti?.downloadRate ?? 0) / 1048576.0,
+          peers: ti?.numPeers ?? 0,
+          seeds: ti?.numSeeds ?? 0,
+          state: 'downloading',
+          finished: false,
+        );
+        if (finishedTracking || (totalN > 0 && localPieces.length >= totalN)) {
+          progress.value = TorrentDownloadProgress(
+            percent: 100,
+            downloadedMB: totalMB.toDouble(),
+            totalMB: totalMB.toDouble(),
+            speedMBps: 0,
+            peers: ti?.numPeers ?? 0,
+            seeds: ti?.numSeeds ?? 0,
+            state: 'finished',
+            finished: true,
+          );
+          if (!done.isCompleted) done.complete();
+          break;
+        }
+        await Future.delayed(const Duration(seconds: 1));
+      }
+    } finally {
+      await bgAlerts.cancel();
+      if (!done.isCompleted) done.complete();
     }
   }
 

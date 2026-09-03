@@ -195,6 +195,10 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         torrentSession = handle.session;
         torrentHandle = handle;
         directUrl = handle.session.localPath;
+        // Conecta el progreso real del torrent al círculo giratorio del diálogo,
+        // igual que hace _launchWvcCast. Así el % (medido contra el torrent
+        // completo vía piezas nativas) se ve mientras se pone en marcha.
+        handle.progress.addListener(() => progressNotifier.value = handle.progress.value);
         print('TORRENT_DBG: startStreaming() OK streamId=${handle.session.streamId} '
             'localPath=${handle.session.localPath} (descarga continúa en 2º plano)');
       } catch (e, st) {
