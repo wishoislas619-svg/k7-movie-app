@@ -352,27 +352,21 @@ class TorrentStreamingService {
       print('TORRENT_DBG: ▶ TARGET FILE: fileIndex=$target '
           '${targetFile != null ? '| name=${targetFile.name} size=${targetFile.size}B' : '(out of range)'}');
 
-      // Descargamos TODO el torrent a disco con prioridad 7 (denominador del %
-      // correcto contra el torrent completo, p.ej. 1.78GB) Y además arrancamos
-      // `startStream` sobre el archivo objetivo para forzar la descarga
-      // SECUENCIAL head-first del mismo a disco. Reproducimos `file://` (lo que
-      // ya hay en disco) — NO usamos la URL HTTP del stream para servir bytes,
-      // porque serve_range con piezas dispersas era el origen del SIGSEGV nativo.
-      // Así la cabeza del mp4 cae contigua y mpv la abre sin colgarse, mostrando
-      // el % descargado mientras la descarga sigue a 100% en 2º plano.
+      // ⚠️ IMPORTANTE: descargamos TODO el torrent a disco con prioridad 7 en
+      // TODOS los archivos, igual que el commit 6c3512e. Así los alerts nativos
+      // "piece: N finished" cubren el torrent COMPLETO y el % se mide contra el
+      // torrent entero (downloadedPieces.length / (maxPieceSeen+1)), no contra
+      // una sola pieza ni el tamaño de Torrentio. NO usamos `startStream` porque
+      // re-prioritiza/secuencia solo el archivo objetivo: dispara
+      // "torrent finished" de forma prematura (rompe el % y el bloqueo de seek)
+      // y sirve piezas dispersas (origen del SIGSEGV). Reproducimos `file://`
+      // (lo que ya hay en disco) cuando la descarga llega a startPercent% y el
+      // archivo objetivo ya tiene bytes en disco, y seguimos bajando a 100% en
+      // 2º plano (el player bloquea el seek y muestra el % hasta que `done`).
       final priorities = List<int>.filled(files.length, 7);
       engine.setFilePriorities(torrentId, priorities);
-      int streamId = 0;
-      if (target >= 0 && target < files.length) {
-        final stream = engine.startStream(torrentId, fileIndex: target);
-        streamId = stream.id;
-        print('TORRENT_DBG: startStream(secuencial head-first) id=$streamId '
-            'targetFile=$target (rellena la cabeza del objetivo a disco; reproduce file://)');
-      } else {
-        engine.resumeTorrent(torrentId);
-        print('TORRENT_DBG: resumeTorrent fallback (sin startStream)');
-      }
-      print('TORRENT_DBG: setFilePriorities TODOS=7 + startStream secuencial (descarga de todo el torrent a disco, cabeza primero)');
+      engine.resumeTorrent(torrentId);
+      print('TORRENT_DBG: setFilePriorities TODOS=7 + resume (descarga de todo el torrent, % contra el torrent completo)');
 
       final relPath = (targetFile?.path ?? '')
           .replaceAll('\\', '/')
@@ -382,6 +376,7 @@ class TorrentStreamingService {
       final localPath = p.join(saveDir, relPath);
       final fileUrl = 'file://$localPath';
       // La reproducción lee el archivo LOCAL en disco, sin servidor HTTP.
+      const int streamId = 0;
 
       _startKeepAlive(engine, torrentId);
 
@@ -475,20 +470,24 @@ class TorrentStreamingService {
         // ← PUNTO CLAVE: cuando el torrent nativo alcanza el umbral, devolvemos
         // la sesión para EMPEZAR a reproducir; la descarga sigue en 2º plano.
         // Leemos el archivo LOCAL en disco (`file://`), así que además del % solo
-        // devolvemos si el archivo objetivo YA existe con bytes en disco (evita
-        // reproducir un archivo vacío/sparse si la cabeza aún no ha caído).
-        if (pct >= startPercent) {
+        // devolvemos si la CABEZA del archivo objetivo ya está contigua en disco
+        // (las primeras piezas 0..h) — evita devolver (y que mpv cuelgue) si solo
+        // hay piezas dispersas y la cabeza aún no ha caído.
+        if (pct >= startPercent && _isHeadReady(downloadedPieces, target, files.length, preloadBytes)) {
           final exists = await File(localPath).exists();
           final len = exists ? await File(localPath).length() : 0;
           if (exists && len > 0) {
             print('TORRENT_DBG: ▶ alcanzado ${pct.toStringAsFixed(1)}% >= $startPercent% '
-                'y archivo en disco ${(len / 1048576).toStringAsFixed(1)}MB '
+                'y CABEZA del objetivo lista en disco (${(len / 1048576).toStringAsFixed(1)}MB) '
                 '→ devolviendo sesión file:// para reproducir (continúa descargando en 2º plano)');
             break;
           } else {
             print('TORRENT_DBG: ${pct.toStringAsFixed(1)}% pero archivo aún no listo en disco '
                 '(exists=$exists len=$len) — sigo esperando que caiga la cabeza del fichero');
           }
+        } else if (pct >= startPercent) {
+          print('TORRENT_DBG: ${pct.toStringAsFixed(1)}% >= $startPercent% pero CABEZA aún no '
+              'contigua (pieces=${downloadedPieces.length}) — sigo esperando la cabeza');
         }
 
         await Future.delayed(const Duration(seconds: 1));
@@ -1260,6 +1259,33 @@ class TorrentStreamingService {
       if (best == null || f.size > best.size) best = f;
     }
     return best?.index ?? -1;
+  }
+
+  /// ¿La CABEZA del archivo objetivo ya está contigua en disco?
+  ///
+  /// Leemos `file://` directamente, así que mpv necesita poder abrir el archivo
+  /// leyendo sus primeros bytes (moov/faststart). Con rarest-first (todos=7) las
+  /// piezas caen dispersas, así que NO podemos devolver la sesión solo con
+  /// `pct >= startPercent` si las piezas iniciales aún no están en disco (mpv
+  /// colgaría 25s). Esperamos a que las primeras `headPieces` estén contiguas.
+  ///
+  /// Como el bridge no expone el índice de pieza de inicio de cada archivo,
+  /// asumimos que en un torrent de UN archivo (el caso más común de película)
+  /// el vídeo empieza en la pieza 0 y cubrimos `preloadBytes` desde el inicio.
+  /// Para torrents de varios archivos no sabemos el offset exacto → no forzamos
+  /// nada (fallback al check anterior de "archivo con bytes"), para no bloquear
+  /// el arranque de forma estéril.
+  bool _isHeadReady(Set<int> pieces, int target, int numFiles, int preloadBytes) {
+    if (numFiles != 1 || target != 0) return true;
+    if (pieces.isEmpty) return false;
+    const bytesPerPiece = 4 * 1024 * 1024;
+    final headPieces = (preloadBytes / bytesPerPiece).ceil();
+    final maxPieces = pieces.length; // no sobre-exigir más piezas de las vistas
+    final need = headPieces < maxPieces ? headPieces : maxPieces;
+    for (int i = 0; i < need; i++) {
+      if (!pieces.contains(i)) return false;
+    }
+    return true;
   }
 
   Future<List<FileInfo>> _waitForMetadata(
