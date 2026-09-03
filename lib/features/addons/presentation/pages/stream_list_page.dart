@@ -191,6 +191,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           infoHash: stream.infoHash!,
           fileIndex: stream.fileIdx,
           knownSizeBytes: stream.sizeBytes,
+          progressToReport: progressNotifier,
         );
         torrentSession = handle.session;
         torrentHandle = handle;
@@ -824,6 +825,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           infoHash: stream.infoHash!,
           fileIndex: stream.fileIdx,
           knownSizeBytes: stream.sizeBytes,
+          progressToReport: progressNotifier,
         );
         final TorrentStreamingHandle h = handle;
         url = h.session.localPath;

@@ -306,6 +306,7 @@ class TorrentStreamingService {
     int startPercent = 10,
     int preloadBytes = 50 * 1024 * 1024,
     int? knownSizeBytes,
+    ValueNotifier<TorrentDownloadProgress?>? progressToReport,
   }) async {
     print('TORRENT_DBG: startStreaming() infohash=$infoHash fileIdx=$fileIndex '
         'startPercent=$startPercent%');
@@ -440,7 +441,7 @@ class TorrentStreamingService {
         final doneMB = totalMB > 0 ? pct / 100.0 * totalMB : nativeDonePieces.toDouble();
         if (pct - lastEmittedPct >= 0.5 || (alertFinished && pct >= 100)) {
           lastEmittedPct = pct;
-          progress.value = TorrentDownloadProgress(
+          final report = TorrentDownloadProgress(
             percent: pct.clamp(0, 100),
             downloadedMB: doneMB,
             totalMB: totalMB.toDouble(),
@@ -450,10 +451,12 @@ class TorrentStreamingService {
             state: 'downloading',
             finished: false,
           );
+          progress.value = report;
+          progressToReport?.value = report;
         }
 
         if (alertFinished || (nativeTotalPieces > 0 && nativeDonePieces >= nativeTotalPieces)) {
-          progress.value = TorrentDownloadProgress(
+          final finished = TorrentDownloadProgress(
             percent: 100,
             downloadedMB: totalMB.toDouble(),
             totalMB: totalMB.toDouble(),
@@ -463,6 +466,8 @@ class TorrentStreamingService {
             state: 'finished',
             finished: true,
           );
+          progress.value = finished;
+          progressToReport?.value = finished;
           if (!done.isCompleted) done.complete();
           break;
         }
@@ -470,10 +475,10 @@ class TorrentStreamingService {
         // ← PUNTO CLAVE: cuando el torrent nativo alcanza el umbral, devolvemos
         // la sesión para EMPEZAR a reproducir; la descarga sigue en 2º plano.
         // Leemos el archivo LOCAL en disco (`file://`), así que además del % solo
-        // devolvemos si la CABEZA del archivo objetivo ya está contigua en disco
-        // (las primeras piezas 0..h) — evita devolver (y que mpv cuelgue) si solo
-        // hay piezas dispersas y la cabeza aún no ha caído.
-        if (pct >= startPercent && _isHeadReady(downloadedPieces, target, files.length, preloadBytes)) {
+        // devolvemos si la CABEZA del archivo objetivo (los primeros bytes reales
+        // en disco) ya está — evita devolver (y que mpv cuelgue) si solo hay
+        // piezas dispersas y la cabeza aún no ha caído.
+        if (pct >= startPercent && await _isHeadReady(localPath, preloadBytes)) {
           final exists = await File(localPath).exists();
           final len = exists ? await File(localPath).length() : 0;
           if (exists && len > 0) {
@@ -487,7 +492,7 @@ class TorrentStreamingService {
           }
         } else if (pct >= startPercent) {
           print('TORRENT_DBG: ${pct.toStringAsFixed(1)}% >= $startPercent% pero CABEZA aún no '
-              'contigua (pieces=${downloadedPieces.length}) — sigo esperando la cabeza');
+              'en disco (pieces=${downloadedPieces.length}) — sigo esperando la cabeza');
         }
 
         await Future.delayed(const Duration(seconds: 1));
@@ -1261,31 +1266,40 @@ class TorrentStreamingService {
     return best?.index ?? -1;
   }
 
-  /// ¿La CABEZA del archivo objetivo ya está contigua en disco?
+  /// ¿La CABEZA del archivo objetivo ya está en disco y es legible?
   ///
-  /// Leemos `file://` directamente, así que mpv necesita poder abrir el archivo
-  /// leyendo sus primeros bytes (moov/faststart). Con rarest-first (todos=7) las
-  /// piezas caen dispersas, así que NO podemos devolver la sesión solo con
-  /// `pct >= startPercent` si las piezas iniciales aún no están en disco (mpv
-  /// colgaría 25s). Esperamos a que las primeras `headPieces` estén contiguas.
+  /// Leemos `file://` directamente, así que mpv/media_kit necesita poder abrir el
+  /// archivo leyendo sus primeros bytes (moov/faststart del contenedor). Con
+  /// rarest-first (todos=7) las piezas caen dispersas, así que NO podemos
+  /// devolver la sesión solo con `pct >= startPercent` si la cabeza aún no está
+  /// en disco (mpv colgaría los 25s de initialize).
   ///
-  /// Como el bridge no expone el índice de pieza de inicio de cada archivo,
-  /// asumimos que en un torrent de UN archivo (el caso más común de película)
-  /// el vídeo empieza en la pieza 0 y cubrimos `preloadBytes` desde el inicio.
-  /// Para torrents de varios archivos no sabemos el offset exacto → no forzamos
-  /// nada (fallback al check anterior de "archivo con bytes"), para no bloquear
-  /// el arranque de forma estéril.
-  bool _isHeadReady(Set<int> pieces, int target, int numFiles, int preloadBytes) {
-    if (numFiles != 1 || target != 0) return true;
-    if (pieces.isEmpty) return false;
-    const bytesPerPiece = 4 * 1024 * 1024;
-    final headPieces = (preloadBytes / bytesPerPiece).ceil();
-    final maxPieces = pieces.length; // no sobre-exigir más piezas de las vistas
-    final need = headPieces < maxPieces ? headPieces : maxPieces;
-    for (int i = 0; i < need; i++) {
-      if (!pieces.contains(i)) return false;
+  /// En lugar de adivinar el índice de pieza de inicio del archivo objetivo
+  /// (que el bridge no expone y es distinto para torrents de varios archivos,
+  /// donde el vídeo puede empezar en una pieza > 0), comprobamos los BYTES reales
+  /// del archivo en disco: leemos los primeros `headBytes` y verificamos que
+  /// contengan datos reales (no todos ceros de la pre-asignación esparcida).
+  /// Esto es agnóstico del offset de pieza y vale para mono y multi-archivo.
+  Future<bool> _isHeadReady(String localPath, int preloadBytes) async {
+    final file = File(localPath);
+    final exists = await file.exists();
+    if (!exists) return false;
+    final raf = await file.open();
+    try {
+      final headBytes = preloadBytes.clamp(256 * 1024, 4 * 1024 * 1024);
+      final buffer = await raf.read(headBytes);
+      if (buffer.isEmpty) return false;
+      // El archivo libtorrent se pre-aloca con ceros; la cabeza "llegó" cuando
+      // hay datos reales (cualquier byte distinto de 0 en el prefijo leído).
+      for (final b in buffer) {
+        if (b != 0) return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    } finally {
+      await raf.close();
     }
-    return true;
   }
 
   Future<List<FileInfo>> _waitForMetadata(
