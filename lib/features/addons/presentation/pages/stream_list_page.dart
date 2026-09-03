@@ -2,7 +2,10 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:android_intent_plus/android_intent.dart';
 
+import '../../../../core/services/foreground_service.dart';
 import '../../../../core/services/tmdb_service.dart';
 import '../../../../features/movies/domain/entities/movie.dart';
 import '../../../../features/player/presentation/pages/video_player_page.dart';
@@ -741,9 +744,29 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
               ],
             ),
           ),
-          trailing: _canPlay(stream)
-              ? const Icon(Icons.play_circle_fill, color: Color(0xFF00A3FF))
-              : const Icon(Icons.downloading, color: Colors.white24),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_canPlay(stream))
+                Tooltip(
+                  message: 'Transmitir por Web Video Caster',
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    icon: const Icon(
+                      Icons.cast,
+                      color: Color(0xFFFFFFFF),
+                    ),
+                    onPressed: () => _launchWvcCast(stream),
+                  ),
+                ),
+              const SizedBox(width: 12),
+              _canPlay(stream)
+                  ? const Icon(Icons.play_circle_fill,
+                      color: Color(0xFF00A3FF))
+                  : const Icon(Icons.downloading, color: Colors.white24),
+            ],
+          ),
           onTap: () => _play(stream),
         ),
       ),
@@ -753,6 +776,102 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   bool _canPlay(TorrentStream stream) =>
       (stream.url != null && stream.url!.isNotEmpty) ||
       (stream.infoHash != null && stream.infoHash!.isNotEmpty);
+
+  TorrentStreamingHandle? _activeWvcHandle;
+
+  /// "Transmitir por Web Video Caster": descarga el torrent hasta ~10%, obtiene
+  /// la URL del stream HTTP y la abre en Web Video Caster, siguiendo la
+  /// descarga en 2º plano mientras tanto.
+  Future<void> _launchWvcCast(TorrentStream stream) async {
+    String? url = stream.url;
+    TorrentStreamingHandle? handle;
+
+    if (url == null || url.isEmpty) {
+      if (stream.infoHash == null || stream.infoHash!.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Este enlace no se puede transmitir (falta infohash).'),
+          ),
+        );
+        return;
+      }
+      if (!mounted) return;
+      final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _TorrentLoadingDialog(progress: progressNotifier),
+      );
+      try {
+        handle = await TorrentStreamingService.instance.startStreaming(
+          infoHash: stream.infoHash!,
+          fileIndex: stream.fileIdx,
+          knownSizeBytes: stream.sizeBytes,
+        );
+        final TorrentStreamingHandle h = handle;
+        url = h.session.localPath;
+        _activeWvcHandle = h;
+        h.progress.addListener(() {
+          progressNotifier.value = h.progress.value;
+        });
+        if (mounted) Navigator.of(context, rootNavigator: true).pop();
+        // Mantener el stream vivo mientras WVC reproduce.
+        await ForegroundService.start(
+          title: 'Transmitiendo a Web Video Caster',
+          text: 'Manteniendo la descarga del torrent',
+        );
+      } catch (e) {
+        print('TORRENT_DBG: _launchWvcCast startStreaming FALLÓ: $e');
+        if (mounted) {
+          Navigator.of(context, rootNavigator: true).pop();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('No se pudo transmitir el torrent: $e')),
+          );
+        }
+        return;
+      }
+    }
+
+    final videoUrl = url;
+    if (videoUrl == null || videoUrl.isEmpty) return;
+    await _openInWebVideoCaster(videoUrl, stream.title);
+  }
+
+  Future<void> _openInWebVideoCaster(String videoUrl, String title) async {
+    // Esquema de URL oficial de Web Video Caster (instantbits).
+    try {
+      final encodedUrl = Uri.encodeComponent(videoUrl);
+      final encodedTitle = Uri.encodeComponent(title);
+      final Uri wvcSchemeUri = Uri.parse(
+        'wvc-x-callback://open?url=$encodedUrl&title=$encodedTitle',
+      );
+      final bool launchedScheme = await launchUrl(
+        wvcSchemeUri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (launchedScheme) return;
+    } catch (_) {}
+
+    try {
+      final intent = AndroidIntent(
+        action: 'android.intent.action.VIEW',
+        data: videoUrl,
+        package: 'com.instantbits.cast.webvideo',
+        arguments: {'title': title, 'secure_uri': true},
+      );
+      await intent.launch();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No se pudo abrir Web Video Caster. Instálala desde la Play Store.',
+            ),
+          ),
+        );
+      }
+    }
+  }
 
   void _openAddons() {
     Navigator.push(
