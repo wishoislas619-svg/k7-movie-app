@@ -20,6 +20,8 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       videoOptionId: row['video_option_id'] as String?,
       lastCastWasCast: row['last_cast_was_cast'] as bool? ?? false,
       castDeviceName: row['cast_device_name'] as String?,
+      torrentInfoHash: row['torrent_info_hash'] as String?,
+      torrentFileIdx: row['torrent_file_idx'] as int?,
     );
   }
 
@@ -105,6 +107,8 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       'video_option_id': history.videoOptionId,
       'last_cast_was_cast': history.lastCastWasCast,
       'cast_device_name': history.castDeviceName,
+      'torrent_info_hash': history.torrentInfoHash,
+      'torrent_file_idx': history.torrentFileIdx,
     };
 
     try {

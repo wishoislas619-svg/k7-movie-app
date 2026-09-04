@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:async';
 import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -33,6 +34,11 @@ import 'package:movie_app/shared/widgets/vip_promo_widgets.dart';
 import 'package:movie_app/core/services/vip_promo_service.dart';
 import 'package:movie_app/features/addons/presentation/pages/addons_manager_page.dart';
 import 'package:movie_app/features/addons/presentation/pages/smart_search_page.dart';
+import 'package:movie_app/features/addons/presentation/pages/stream_list_page.dart';
+import 'package:movie_app/features/addons/data/datasources/torrent_streaming_service.dart';
+import 'package:movie_app/features/addons/domain/entities/torrent_stream.dart';
+import 'package:movie_app/features/addons/presentation/providers/addons_provider.dart';
+import 'package:movie_app/shared/widgets/torrent_loading_dialog.dart';
 
 class MovieGridPage extends ConsumerStatefulWidget {
   const MovieGridPage({super.key});
@@ -50,8 +56,14 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   bool _isSearching = false;
   String _searchQuery = "";
   final TextEditingController _searchController = TextEditingController();
+  Timer? _searchDebounce;
   static bool _batteryDialogShown = false;
   static bool _vipPromoShown = false;
+  // Torrents cuyo startStreaming ya está en curso (por mediaId) para evitar
+  // que un segundo tap re-resuelva el MISMO torrent, aborte el primero
+  // mostrando un diálogo zumbante y lance "Unhandled Exception: Torrent
+  // desaparecido" en el _waitForMetadata de la primera espera.
+  final Set<String> _pendingTorrentInit = {};
 
   @override
   void initState() {
@@ -61,6 +73,8 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
     _carouselController.dispose();
     _pageController.dispose();
     super.dispose();
@@ -153,6 +167,9 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                             child: TextField(
                               controller: _searchController,
                               autofocus: true,
+                              autocorrect: false,
+                              enableSuggestions: false,
+                              textInputAction: TextInputAction.search,
                               style: const TextStyle(color: Colors.white),
                               decoration: InputDecoration(
                                 hintText: 'Buscar películas...',
@@ -183,8 +200,21 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                   borderSide: BorderSide.none,
                                 ),
                               ),
-                              onChanged: (val) =>
-                                  setState(() => _searchQuery = val),
+                              onChanged: (val) {
+                                // Búsqueda LOCAL en la lista ya cargada. La
+                                // setState va con debounce para no re-filtrar ni
+                                // reconstruir todo el grid en cada tecla (eso
+                                // causa el "se traba"). Se aplica una sola vez
+                                // al dejar de escribir.
+                                _searchDebounce?.cancel();
+                                _searchDebounce = Timer(
+                                  const Duration(milliseconds: 250),
+                                  () {
+                                    if (!mounted) return;
+                                    setState(() => _searchQuery = val.trim());
+                                  },
+                                );
+                              },
                             ),
                           ),
                         ),
@@ -194,79 +224,86 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                         SliverToBoxAdapter(
                           child: _buildCarousel(popularMovies, context),
                         ),
-                      SliverPadding(
-                        padding: const EdgeInsets.only(top: 0, bottom: 100),
-                        sliver: SliverList(
-                          delegate: SliverChildListDelegate([
-                            if (filteredMovies.isNotEmpty &&
-                                !_isSearching &&
-                                _selectedCategoryFilter == null) ...[
-                              ref
-                                  .watch(historyProvider)
-                                  .when(
-                                    data: (history) {
-                                      if (history.isEmpty)
-                                        return const SizedBox.shrink();
+                      if (_isSearching || _selectedCategoryFilter != null)
+                        // Grid perezoso (SliverGrid): solo construye los
+                        // pósters visibles. El anterior GridView con
+                        // shrinkWrap dentro del SliverList obligaba a construir
+                        // y medir TODOS los resultados (cientos de Image.network)
+                        // → con el teclado activo y cientos de resultados todo
+                        // se realentizaba. SliverGrid construye de forma perezosa.
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 100),
+                          sliver: SliverGrid(
+                            gridDelegate:
+                                SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount:
+                                      ResponsiveLayout.getGridCrossAxisCount(
+                                        context,
+                                      ),
+                                  crossAxisSpacing: 12,
+                                  mainAxisSpacing: 20,
+                                  mainAxisExtent:
+                                      ResponsiveLayout.getPosterHeight(
+                                        context,
+                                      ) +
+                                      60,
+                                ),
+                            delegate: SliverChildBuilderDelegate(
+                              (context, index) =>
+                                  _buildMovieCard(
+                                    context,
+                                    filteredMovies[index],
+                                  ),
+                              childCount: filteredMovies.length,
+                            ),
+                          ),
+                        )
+                      else
+                        SliverPadding(
+                          padding: const EdgeInsets.only(top: 0, bottom: 100),
+                          sliver: SliverList(
+                            delegate: SliverChildListDelegate([
+                              if (filteredMovies.isNotEmpty) ...[
+                                ref
+                                    .watch(historyProvider)
+                                    .when(
+                                      data: (history) {
+                                        if (history.isEmpty)
+                                          return const SizedBox.shrink();
 
-                                      final Map<String, WatchHistory>
-                                      uniqueHistory = {};
-                                      for (var item in history) {
-                                        if (!uniqueHistory.containsKey(
-                                          item.mediaId,
-                                        )) {
-                                          uniqueHistory[item.mediaId] = item;
+                                        final Map<String, WatchHistory>
+                                        uniqueHistory = {};
+                                        for (var item in history) {
+                                          if (!uniqueHistory.containsKey(
+                                            item.mediaId,
+                                          )) {
+                                            uniqueHistory[item.mediaId] = item;
+                                          }
                                         }
-                                      }
 
-                                      return _buildHistorySection(
-                                        context,
-                                        uniqueHistory.values.take(20).toList(),
-                                      );
-                                    },
-                                    loading: () => const SizedBox.shrink(),
-                                    error: (_, __) => const SizedBox.shrink(),
-                                  ),
-                              _buildMovieSection(
-                                context,
-                                'RECIÉN AGREGADAS',
-                                filteredMovies.where((m) => true).toList()
-                                  ..sort(
-                                    (a, b) =>
-                                        b.createdAt.compareTo(a.createdAt),
-                                  ),
-                              ),
-                            ],
-                            if (_isSearching || _selectedCategoryFilter != null)
-                              Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
+                                        return _buildHistorySection(
+                                          context,
+                                          uniqueHistory.values
+                                              .take(20)
+                                              .toList(),
+                                        );
+                                      },
+                                      loading: () => const SizedBox.shrink(),
+                                      error: (_, __) =>
+                                          const SizedBox.shrink(),
+                                    ),
+                                _buildMovieSection(
+                                  context,
+                                  'RECIÉN AGREGADAS',
+                                  filteredMovies
+                                      .where((m) => true)
+                                      .toList()
+                                    ..sort(
+                                      (a, b) =>
+                                          b.createdAt.compareTo(a.createdAt),
+                                    ),
                                 ),
-                                child: GridView.builder(
-                                  shrinkWrap: true,
-                                  physics: const NeverScrollableScrollPhysics(),
-                                  gridDelegate:
-                                      SliverGridDelegateWithFixedCrossAxisCount(
-                                        crossAxisCount:
-                                            ResponsiveLayout.getGridCrossAxisCount(
-                                              context,
-                                            ),
-                                        crossAxisSpacing: 12,
-                                        mainAxisSpacing: 20,
-                                        mainAxisExtent:
-                                            ResponsiveLayout.getPosterHeight(
-                                              context,
-                                            ) +
-                                            60,
-                                      ),
-                                  itemCount: filteredMovies.length,
-                                  itemBuilder: (context, index) =>
-                                      _buildMovieCard(
-                                        context,
-                                        filteredMovies[index],
-                                      ),
-                                ),
-                              )
-                            else
+                              ],
                               ...categories.map((cat) {
                                 final catMovies = filteredMovies
                                     .where((m) => m.categoryId == cat.id)
@@ -280,9 +317,9 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                   category: cat,
                                 );
                               }),
-                          ]),
+                            ]),
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ),
@@ -1154,6 +1191,18 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                     },
                   ),
                   _buildHistoryOptionCard(
+                    icon: Icons.details,
+                    iconColor: const Color(0xFFFFD54F),
+                    title: 'Ver Detalle',
+                    subtitle: _isTorrentHistoryItem(item)
+                        ? 'Abrir pantalla de enlaces del torrent'
+                        : 'Abrir pantalla de detalles',
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _goToDetails(context, item);
+                    },
+                  ),
+                  _buildHistoryOptionCard(
                     icon: Icons.info_outline,
                     iconColor: Colors.white70,
                     title: 'Selecionar Enlace',
@@ -1359,6 +1408,21 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   }
 
   void _goToDetails(BuildContext context, WatchHistory item) {
+    if (_isTorrentHistoryItem(item)) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => StreamListPage(
+            movieName: item.title,
+            poster: item.imagePath,
+            tmdbId: item.mediaId,
+            isSeries: item.mediaType == 'series',
+          ),
+        ),
+      );
+      return;
+    }
+
     if (item.mediaType == 'movie') {
       final movie = (ref.read(moviesProvider).value ?? []).firstWhere(
         (m) => m.id == item.mediaId,
@@ -1395,7 +1459,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       );
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
+        MaterialPageRoute(
+          builder: (_) => SeriesDetailsPage(
+            series: series,
+            centerOnEpisodeId: item.episodeId,
+          ),
+        ),
       );
     }
   }
@@ -1406,6 +1475,18 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     WatchHistory item, {
     required bool resume,
   }) async {
+    if (_isTorrentHistoryItem(item)) {
+      if (item.mediaType == 'movie') {
+        await _playTorrentMovieFromHistory(context, item, resume: resume);
+      } else {
+        // Serie por torrent: sin datos de episodio en el historial, llevamos
+        // al usuario a la pantalla de enlaces para que elija capítulo/link.
+        if (!context.mounted) return;
+        _goToDetails(context, item);
+      }
+      return;
+    }
+
     final startPos = resume
         ? Duration(milliseconds: item.lastPosition)
         : Duration.zero;
@@ -1495,12 +1576,261 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     }
   }
 
+  /// Detecta si un item de "Continuar Viendo" proviene de un torrent (los
+  /// torrents se registran en el historial con `videoOptionId` = imdb id).
+  bool _isTorrentHistoryItem(WatchHistory item) =>
+      (item.videoOptionId?.startsWith('tt') ?? false) &&
+      item.mediaId.isNotEmpty;
+
+  /// Devuelve el stream desde el torrent EXACTO que se reproduce/aprueba en el
+  /// historial (infoHash + fileIdx guardados al jugar), saltándose la
+  /// re-resolución por addons. `_resolveBestMovieStream` puede devolver un
+  /// infohash distinto entre sesiones (p.ej. uno sin seeders que jamás obtiene
+  /// metadata), por eso reanudar debe usar SIEMPRE el torrent persistido.
+  TorrentStream? _historyTorrentStream(WatchHistory item) {
+    final infoHash = item.torrentInfoHash;
+    if (infoHash == null || infoHash.isEmpty) return null;
+    return TorrentStream(
+      name: item.title,
+      title: item.title,
+      infoHash: infoHash,
+      fileIdx: item.torrentFileIdx,
+      quality: 'Auto',
+    );
+  }
+
+  /// Re-resuelve el mejor stream de torrent (mayor seeders) para el imdbId.
+  Future<TorrentStream?> _resolveBestMovieStream(String imdbId) async {
+    final controller = ref.read(addonsProvider.notifier);
+    await controller.load();
+    final addons = ref.read(addonsProvider).valueOrNull ?? [];
+    TorrentStream? best;
+    for (final addon in addons) {
+      try {
+        final streams = await ref
+            .read(addonRepositoryProvider)
+            .getStreams(addon: addon, imdbId: imdbId, type: 'movie');
+        for (final s in streams) {
+          if (s.infoHash == null || s.infoHash!.isEmpty) continue;
+          if (best == null || (s.seeders ?? 0) > (best.seeders ?? 0)) best = s;
+        }
+      } catch (_) {}
+    }
+    return best;
+  }
+
+  /// Descarga el torrent de la película con el diálogo de % visible y
+  /// posteriormente arranca el reproductor (reanudar o desde el principio).
+  Future<void> _playTorrentMovieFromHistory(
+    BuildContext context,
+    WatchHistory item, {
+    required bool resume,
+  }) async {
+    final imdbId = item.videoOptionId;
+    if (imdbId == null) {
+      _goToDetails(context, item);
+      return;
+    }
+    // Guard anti doble-arranque: si ya hay un startStreaming en curso para este
+    // mediaId (p.ej. el usuario tocó 2 veces "Reanudar" mientras el 1º seguía
+    // resolviendo metadata), ignoramos el 2º tap. Re-arrancar el mismo torrent
+    // aborta el 1º (dispose) y provoca "Unhandled Exception: Torrent
+    // desaparecido" en su _waitForMetadata.
+    final launchKey = item.mediaId;
+    if (_pendingTorrentInit.contains(launchKey)) {
+      print('TORRENT_DBG: ignoro tap repetido de torrent para mediaId=$launchKey');
+      return;
+    }
+    _pendingTorrentInit.add(launchKey);
+
+    final stream = _historyTorrentStream(item) ??
+        await _resolveBestMovieStream(imdbId);
+    if (!context.mounted) return;
+    if (stream == null || stream.infoHash == null) {
+      _pendingTorrentInit.remove(launchKey);
+      _goToDetails(context, item);
+      return;
+    }
+
+    final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => TorrentLoadingDialog(progress: progressNotifier),
+    );
+
+    TorrentStreamingHandle? handle;
+    try {
+      final h = await TorrentStreamingService.instance.startStreaming(
+        infoHash: stream.infoHash!,
+        fileIndex: stream.fileIdx,
+        knownSizeBytes: stream.sizeBytes,
+        progressToReport: progressNotifier,
+      );
+      handle = h;
+      h.progress.addListener(
+        () => progressNotifier.value = h.progress.value,
+      );
+    } catch (e) {
+      _pendingTorrentInit.remove(launchKey);
+      if (!context.mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo reproducir el torrent: $e')),
+      );
+      return;
+    }
+    _pendingTorrentInit.remove(launchKey);
+    if (!context.mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+
+    final startPos = resume
+        ? Duration(milliseconds: item.lastPosition)
+        : Duration.zero;
+    final option = VideoOption(
+      id: imdbId,
+      movieId: item.mediaId,
+      serverImagePath: item.imagePath,
+      resolution: stream.quality ?? 'Auto',
+      videoUrl: handle.session.localPath,
+      language: stream.language,
+      extractionAlgorithm: 4,
+    );
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerPage(
+          movieName: item.title,
+          videoOptions: [option],
+          mediaId: item.mediaId,
+          mediaType: 'movie',
+          imagePath: item.imagePath,
+          extractionAlgorithm: 4,
+          startPosition: startPos,
+          torrentDownloadProgress: handle,
+          externalSubtitles: [
+            for (final s in stream.subtitles)
+              SubtitleInfo(language: s.language, url: s.url),
+          ],
+        ),
+      ),
+    ).then((_) {
+      // Libera el torrent y detiene la descarga en 2º plano al cerrar el player.
+      if (handle != null) {
+        TorrentStreamingService.instance.stop(handle!.session);
+      }
+    });
+  }
+
+  /// Descarga el torrent de la película con % visible y después transmite por
+  /// el modo indicado (cast local o Web Video Caster), usando el archivo local.
+  Future<void> _castTorrentMovieFromHistory(
+    BuildContext context,
+    WatchHistory item, {
+    required String mode,
+    required bool resume,
+  }) async {
+    final imdbId = item.videoOptionId;
+    if (imdbId == null) {
+      _goToDetails(context, item);
+      return;
+    }
+    final launchKey = item.mediaId;
+    if (_pendingTorrentInit.contains(launchKey)) {
+      print('TORRENT_DBG: ignoro tap repetido de cast para mediaId=$launchKey');
+      return;
+    }
+    _pendingTorrentInit.add(launchKey);
+
+    final stream = _historyTorrentStream(item) ??
+        await _resolveBestMovieStream(imdbId);
+    if (!context.mounted) return;
+    if (stream == null || stream.infoHash == null) {
+      _pendingTorrentInit.remove(launchKey);
+      _goToDetails(context, item);
+      return;
+    }
+
+    final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => TorrentLoadingDialog(progress: progressNotifier),
+    );
+
+    TorrentStreamingHandle? handle;
+    try {
+      final h = await TorrentStreamingService.instance.startStreaming(
+        infoHash: stream.infoHash!,
+        fileIndex: stream.fileIdx,
+        knownSizeBytes: stream.sizeBytes,
+        progressToReport: progressNotifier,
+      );
+      handle = h;
+      h.progress.addListener(
+        () => progressNotifier.value = h.progress.value,
+      );
+    } catch (e) {
+      _pendingTorrentInit.remove(launchKey);
+      if (!context.mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo transmitir el torrent: $e')),
+      );
+      return;
+    }
+    _pendingTorrentInit.remove(launchKey);
+    if (!context.mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+
+    final startPos = resume
+        ? Duration(milliseconds: item.lastPosition)
+        : Duration.zero;
+final totalDuration = item.totalDuration > 0
+        ? Duration(milliseconds: item.totalDuration)
+        : null;
+
+    final localPath = handle.session.localPath;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF141414),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => CastButton(
+        videoUrl: localPath,
+        localFilePath: localPath,
+        title: item.title,
+        imageUrl: item.imagePath,
+        currentPosition: startPos,
+        duration: totalDuration,
+        mediaId: item.mediaId,
+        mediaType: item.mediaType,
+        subtitleLabel: item.subtitle,
+        videoOptionId: item.videoOptionId,
+        showImmediately: true,
+        preferredLaunchMode: mode,
+      ),
+    );
+  }
+
   Future<void> _launchHistoryCast(
     BuildContext context,
     WatchHistory item, {
     required String mode,
     required bool resume,
   }) async {
+    if (_isTorrentHistoryItem(item)) {
+      if (item.mediaType == 'movie') {
+        await _castTorrentMovieFromHistory(context, item, mode: mode, resume: resume);
+      } else {
+        if (!context.mounted) return;
+        _goToDetails(context, item);
+      }
+      return;
+    }
+
     final castData = await _resolveHistoryCastData(item, resume: resume);
     if (!context.mounted || castData == null) {
       if (context.mounted) {

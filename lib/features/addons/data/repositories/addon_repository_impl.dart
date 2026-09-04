@@ -36,13 +36,24 @@ class AddonRepositoryImpl implements AddonRepository {
     final exists = current.any((a) => a.id == id);
     if (exists) return;
 
+    // Solo UNA configuración por addon: antes de añadir la nueva, eliminamos
+    // cualquier entrada del MISMO addon (mismo host, p.ej. Torrentio). Al
+    // reconfigurar Torrentio, Torrentio emite un hash distinto en el manifest
+    // (torrentio.strem.fun/<hash>/manifest.json) que cambiaría el id y el
+    // dedup por id no la detectaría → se acumulaba una config nueva junto a la
+    // antigua. Aquí el "same family" es el HOST del manifest.
+    final newHost = _addonHost(manifestUrl);
+    final withoutSameAddon = newHost != null && newHost.isNotEmpty
+        ? current.where((a) => _addonHost(a.manifestUrl) != newHost).toList()
+        : current;
+
     final addon = InstalledAddon(
       id: id,
       name: name,
       manifestUrl: manifestUrl,
       installedAt: DateTime.now(),
     );
-    final updated = [...current, addon];
+    final updated = [...withoutSameAddon, addon];
     await prefs.setString(_key, jsonEncode(updated.map((e) => e.toJson()).toList()));
   }
 
@@ -71,5 +82,14 @@ class AddonRepositoryImpl implements AddonRepository {
     final uri = Uri.tryParse(manifestUrl);
     if (uri == null) return manifestUrl;
     return uri.host + uri.path;
+  }
+
+  /// Host del manifest (p.ej. `torrentio.strem.fun`) — identifica el addon
+  /// independientemente del hash de configuración de la ruta, de modo que al
+  /// reconfigurar se reemplace (no se acumule) la entrada anterior.
+  String? _addonHost(String manifestUrl) {
+    final uri = Uri.tryParse(manifestUrl);
+    if (uri == null || uri.host.isEmpty) return null;
+    return uri.host;
   }
 }

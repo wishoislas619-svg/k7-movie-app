@@ -12,6 +12,12 @@ class WatchHistory {
   final String? videoOptionId; // Enlace/servidor que el usuario eligió
   final bool lastCastWasCast;
   final String? castDeviceName;
+  // Torrent exacto usado para reproducir: se guarda para que "Continuar
+  // viendo" reanude SIEMPRE ese mismo enlace (infoHash + fileIdx), en lugar
+  // de re-resolver por addons cada sesión (que puede devolver otro infohash
+  // sin seeders y jamás obtener metadata).
+  final String? torrentInfoHash;
+  final int? torrentFileIdx;
 
   WatchHistory({
     required this.id,
@@ -27,6 +33,8 @@ class WatchHistory {
     this.videoOptionId,
     this.lastCastWasCast = false,
     this.castDeviceName,
+    this.torrentInfoHash,
+    this.torrentFileIdx,
   });
 
   WatchHistory copyWith({
@@ -36,6 +44,8 @@ class WatchHistory {
     String? videoOptionId,
     bool? lastCastWasCast,
     String? castDeviceName,
+    String? torrentInfoHash,
+    int? torrentFileIdx,
   }) {
     return WatchHistory(
       id: id,
@@ -51,6 +61,8 @@ class WatchHistory {
       videoOptionId: videoOptionId ?? this.videoOptionId,
       lastCastWasCast: lastCastWasCast ?? this.lastCastWasCast,
       castDeviceName: castDeviceName ?? this.castDeviceName,
+      torrentInfoHash: torrentInfoHash ?? this.torrentInfoHash,
+      torrentFileIdx: torrentFileIdx ?? this.torrentFileIdx,
     );
   }
 
@@ -76,6 +88,8 @@ class WatchHistory {
           ? castValue == 1
           : false,
       castDeviceName: map['castDeviceName']?.toString(),
+      torrentInfoHash: map['torrentInfoHash']?.toString(),
+      torrentFileIdx: map['torrentFileIdx'] as int?,
     );
   }
 
@@ -94,6 +108,8 @@ class WatchHistory {
       'videoOptionId': videoOptionId,
       'lastCastWasCast': lastCastWasCast ? 1 : 0,
       'castDeviceName': castDeviceName,
+      'torrentInfoHash': torrentInfoHash,
+      'torrentFileIdx': torrentFileIdx,
     };
   }
 }

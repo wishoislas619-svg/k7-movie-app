@@ -763,6 +763,8 @@ List<SubtitleInfo> _internalSubtitles = [];
             subtitle: widget.subtitleLabel,
             imagePath: widget.imagePath,
             videoOptionId: _currentOption.id,
+            torrentInfoHash: widget.torrentDownloadProgress?.infoHash,
+            torrentFileIdx: widget.torrentDownloadProgress?.fileIdx,
           );
     } catch (e) {
       print("⚠️ [SAVE_PROGRESS] Error saving progress: $e");
@@ -1885,6 +1887,13 @@ List<SubtitleInfo> _internalSubtitles = [];
     VolumeController.instance.addListener((vol) {
       if (mounted && !_isDraggingVolume) {
         setState(() => _volume = vol);
+        // K7 FIX (botón físico): el botón de volumen del dispositivo solo cambia
+        // el volumen del SISTEMA. El reproductor (mpv) tiene su volumen SW propio
+        // que se queda fijo → el audio no cambia al pulsar el botón físico hasta
+        // que se mueve el slider (que sí resincroniza). Aquí re-aplicamos el
+        // volumen SW del reproductor para que el botón físico surta efecto al
+        // instante, sin tocar el volumen del sistema (evita feedback loop).
+        _setPlayerSoftwareVolume(vol);
       }
     });
   }
@@ -2090,6 +2099,11 @@ List<SubtitleInfo> _internalSubtitles = [];
             // siempre, lanzamos error a los 25s.
             const initTimeout = Duration(seconds: 25);
             await _controller!.initialize().timeout(initTimeout);
+            // K7 FIX: tras crear el reproductor (mpv), re-aplicamos el volumen
+            // software guardado. _initSettings corrió ANTES de existir _controller,
+            // así que mpv arrancaría con su volumen por defecto hasta que se
+            // moviera el slider → "no se escucha hasta que subo con el slider".
+            _setPlayerSoftwareVolume(_volume);
             print('TORRENT_DBG: initialize() OK');
             break;
           } catch (e) {
@@ -2546,18 +2560,30 @@ List<SubtitleInfo> _internalSubtitles = [];
     });
   }
 
-  Future<void> _applyVolumeBoost(double targetVolume) async {
+  /// Aplica SOLO el volumen software del reproductor (mpv) + booster nativo,
+  /// sin tocar el volumen del sistema Android. Lo usan tanto el slider (vía
+  /// [_applyVolumeBoost]) como el botón físico del dispositivo (para que el
+  /// cambio de volumen del sistema se refleje en el reproductor al instante).
+  void _setPlayerSoftwareVolume(double targetVolume) {
     final clamped = targetVolume.clamp(0.0, 3.0);
     final baseVolume = clamped <= 1.0 ? clamped : 1.0;
 
     _controller?.setVolume(baseVolume);
-    await VolumeController.instance.setVolume(baseVolume);
 
     if (Platform.isAndroid) {
       try {
-        await _audioBoostChannel.invokeMethod('setBoost', {'boost': clamped});
+        _audioBoostChannel.invokeMethod('setBoost', {'boost': clamped});
       } catch (_) {}
     }
+  }
+
+  Future<void> _applyVolumeBoost(double targetVolume) async {
+    final clamped = targetVolume.clamp(0.0, 3.0);
+    final baseVolume = clamped <= 1.0 ? clamped : 1.0;
+
+    _setPlayerSoftwareVolume(targetVolume);
+    await VolumeController.instance.setVolume(baseVolume);
+
     print('🔊 [VOL] target=$targetVolume base=$baseVolume (mpv+stream) aplicado');
   }
 

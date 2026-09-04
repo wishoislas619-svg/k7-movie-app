@@ -33,12 +33,17 @@ class SeriesDetailsPage extends ConsumerStatefulWidget {
   final String? autoPlayVideoOptionId;
   final Duration? autoPlayStartPosition;
 
+  /// Cuando se proporciona (desde "Continuar Viendo"), la página carga la
+  /// temporada del episodio y hace scroll hasta él para centrarlo.
+  final String? centerOnEpisodeId;
+
   const SeriesDetailsPage({
     super.key,
     required this.series,
     this.autoPlayEpisodeId,
     this.autoPlayVideoOptionId,
     this.autoPlayStartPosition,
+    this.centerOnEpisodeId,
   });
 
   @override
@@ -53,6 +58,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
   bool _isLoading = true;
   bool _isDescriptionExpanded = false;
   final ScrollController _scrollController = ScrollController();
+  final Map<String, GlobalKey> _episodeKeys = {};
   bool _isRefreshing = false;
   bool _isAdLoading = false;
   String? _adErrorMessage;
@@ -106,9 +112,37 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
         _episodesMap = epMap;
         _videoOptions = opts;
         if (_seasons.isNotEmpty) _selectedSeason = _seasons.first;
+
+        // Centrar al usuario en el episodio/temporada de "Continuar Viendo".
+        final centerId = widget.centerOnEpisodeId;
+        if (centerId != null) {
+          for (final season in seasons) {
+            if ((epMap[season.id] ?? []).any((e) => e.id == centerId)) {
+              _selectedSeason = season;
+              break;
+            }
+          }
+        }
         _isLoading = false;
       });
+
+      if (widget.centerOnEpisodeId != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToEpisode());
+      }
     }
+  }
+
+  void _scrollToEpisode() {
+    final centerId = widget.centerOnEpisodeId;
+    if (centerId == null) return;
+    final ctx = _episodeKeys[centerId]?.currentContext;
+    if (ctx == null) return;
+    Scrollable.ensureVisible(
+      ctx,
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeInOut,
+      alignment: 0.5,
+    );
   }
 
   /// Lanzamiento directo de episodio desde "Continuar Viendo"
@@ -127,6 +161,11 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
       if (found != null) {
         targetEp = found;
         targetSeason = season;
+        // Seleccionar la temporada del episodio que se va a reproducir para
+        // que al volver el usuario vea ese capítulo centrado en su temporada.
+        if (_selectedSeason != season) {
+          setState(() => _selectedSeason = season);
+        }
         break;
       }
     }
@@ -1058,7 +1097,13 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                           const SizedBox(height: 16),
                           if (_selectedSeason != null)
                             ...(_episodesMap[_selectedSeason!.id] ?? []).map(
-                              (ep) => _buildEpisodeItem(ep),
+                              (ep) => _buildEpisodeItem(
+                                ep,
+                                key: _episodeKeys.putIfAbsent(
+                                  ep.id,
+                                  () => GlobalKey(),
+                                ),
+                              ),
                             ),
                         ],
                         const SizedBox(height: 50),
@@ -1132,8 +1177,9 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
     );
   }
 
-  Widget _buildEpisodeItem(Episode episode) {
+  Widget _buildEpisodeItem(Episode episode, {GlobalKey? key}) {
     return Container(
+      key: key,
       margin: const EdgeInsets.only(bottom: 12),
       child: EnergyFlowBorder(
         borderRadius: 16,

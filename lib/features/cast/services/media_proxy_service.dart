@@ -792,7 +792,15 @@ class MediaProxyService {
 
     final size = await file.length();
     final rangeHeader = request.headers.value(HttpHeaders.rangeHeader);
-    final contentType = 'video/mp4';
+    final ext = path.toLowerCase().split('.').last;
+    final contentType = switch (ext) {
+      'mkv' => 'video/x-matroska',
+      'ts' => 'video/mp2t',
+      'm3u8' => 'application/x-mpegURL',
+      'webm' => 'video/webm',
+      'avi' => 'video/x-msvideo',
+      _ => 'video/mp4',
+    };
 
     // Desacoplamos el socket para escribir HTTP/1.0 manualmente
     final socket = await request.response.detachSocket(writeHeaders: false);

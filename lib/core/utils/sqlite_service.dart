@@ -18,7 +18,7 @@ class SqliteService {
     try {
       return await openDatabase(
         path,
-        version: 22,
+version: 23,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
         onOpen: (db) {
@@ -31,7 +31,7 @@ class SqliteService {
         '--- [SQLITE] Intentando borrar base de datos corrupta para resetear ---',
       );
       await deleteDatabase(path);
-      return await openDatabase(path, version: 22, onCreate: _onCreate);
+      return await openDatabase(path, version: 23, onCreate: _onCreate);
     }
   }
 
@@ -230,6 +230,18 @@ class SqliteService {
         );
       } catch (_) {}
     }
+    if (oldVersion < 23) {
+      try {
+        await db.execute(
+          'ALTER TABLE watch_history ADD COLUMN torrentInfoHash TEXT',
+        );
+      } catch (_) {}
+      try {
+        await db.execute(
+          'ALTER TABLE watch_history ADD COLUMN torrentFileIdx INTEGER',
+        );
+      } catch (_) {}
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -379,7 +391,9 @@ class SqliteService {
         imagePath TEXT,
         videoOptionId TEXT,
         lastCastWasCast INTEGER DEFAULT 0,
-        castDeviceName TEXT
+        castDeviceName TEXT,
+        torrentInfoHash TEXT,
+        torrentFileIdx INTEGER
       )
     ''');
   }

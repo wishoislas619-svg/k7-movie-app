@@ -31,11 +31,17 @@ class TorrentStreamingHandle {
   final ValueNotifier<TorrentDownloadProgress> progress;
   /// Se completa cuando el torrent termina de descargarse (100%).
   final Future<void> done;
+  /// InfoHash + fileIdx reales del torrent reproducido (se persisten en el
+  /// historial para que "Continuar viendo" reanude el MISMO torrent).
+  final String? infoHash;
+  final int? fileIdx;
 
   const TorrentStreamingHandle({
     required this.session,
     required this.progress,
     required this.done,
+    this.infoHash,
+    this.fileIdx,
   });
 }
 
@@ -81,9 +87,23 @@ class TorrentStreamingService {
   Completer<void>? _initCompleter;
   String? _saveDir;
 
+  // Torrents vivos registrados en el servicio (para el keepalive multi-torrent).
+  final Set<int> _managedTorrentIds = {};
+  final Map<String, int> _infohashToTorrentId = {};
+
   Future<String> _defaultSaveDir() async {
     final base = await getTemporaryDirectory();
     final dir = Directory(p.join(base.path, 'torrents'));
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    return dir.path;
+  }
+
+  /// Subdirectorio POR INFOHASH dentro de `torrents/`, para que las descargas
+  /// simultáneas (p.ej. historial + cast) no se borren los archivos entre sí.
+  /// Eliminar el `saveDir` global rompía el torrent que seguía activo en el
+  /// engine (errores `file_open ... No such file or directory` + torrent pausado).
+  String _saveDirFor(String infoHash) {
+    final dir = Directory(p.join(_saveDir!, infoHash.toLowerCase()));
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return dir.path;
   }
@@ -177,7 +197,7 @@ class TorrentStreamingService {
     print('TORRENT_DBG: start() infohash=$infoHash fileIdx=$fileIndex preloadBytes=$preloadBytes');
     await _ensureInit();
     final engine = LibtorrentFlutter.instance;
-    final saveDir = _saveDir!;
+    final saveDir = _saveDirFor(infoHash);
     print('TORRENT_DBG: saveDir=$saveDir');
 
     final magnet = _magnet(infoHash);
@@ -306,20 +326,36 @@ class TorrentStreamingService {
         'startPercent=$startPercent%');
     await _ensureInit();
     final engine = LibtorrentFlutter.instance;
-    final saveDir = _saveDir!;
+    final saveDir = _saveDirFor(infoHash);
 
-    // Limpia torrents anteriores para no saturar almacenamiento.
+    // Limpia SOLO el subdirectorio de ESTE infohash (nunca el global): un
+    // `startStreaming` no debe romper los archivos de otro torrent en curso.
     try {
       final dir = Directory(saveDir);
       if (dir.existsSync()) {
         dir.deleteSync(recursive: true);
         dir.createSync(recursive: true);
-        print('TORRENT_DBG: startStreaming limpieza directorio torrents OK');
+        print('TORRENT_DBG: startStreaming limpieza subdir infohash='
+            '${infoHash.toLowerCase()} OK');
       }
     } catch (_) {}
 
+    // Si el mismo infohash ya está gestionado (sesión previa que no se cerró),
+    // lo liberamos primero para no dejar dos torrents del mismo magnet en el
+    // engine (origen de descargas clavadas al 0% con isPaused=true).
+    final existing = _infohashToTorrentId[infoHash.toLowerCase()];
+    if (existing != null) {
+      print('TORRENT_DBG: startStreaming detecta torrent previo '
+          'del MISMO infohash (id=$existing), liberándolo');
+      try { engine.disposeTorrent(existing); } catch (_) {}
+      _managedTorrentIds.remove(existing);
+      _infohashToTorrentId.remove(infoHash.toLowerCase());
+      _stopKeepAliveFor(existing);
+    }
+
     final magnet = _magnet(infoHash);
     final torrentId = engine.addMagnet(magnet, saveDir, false);
+    _infohashToTorrentId[infoHash.toLowerCase()] = torrentId;
     print('TORRENT_DBG: startStreaming addMagnet(id=$torrentId) OK');
 
     final progress = ValueNotifier(TorrentDownloadProgress(
@@ -546,10 +582,14 @@ class TorrentStreamingService {
         session: session,
         progress: progress,
         done: done.future,
+        infoHash: infoHash,
+        fileIdx: target,
       );
     } catch (e) {
       print('TORRENT_DBG: startStreaming threw, disposing torrentId=$torrentId err=$e');
-      _stopTorrentKeepAlive();
+      _stopKeepAliveFor(torrentId);
+      _managedTorrentIds.remove(torrentId);
+      _infohashToTorrentId.remove(infoHash.toLowerCase());
       try { alertSub.cancel(); } catch (_) {}
       try { done.completeError(e); } catch (_) {}
       engine.disposeTorrent(torrentId);
@@ -677,20 +717,31 @@ class TorrentStreamingService {
     print('TORRENT_DBG: downloadAndPlay() infohash=$infoHash fileIdx=$fileIndex');
     await _ensureInit();
     final engine = LibtorrentFlutter.instance;
-    final saveDir = _saveDir!;
+    final saveDir = _saveDirFor(infoHash);
 
-    // Limpia torrents anteriores para no saturar almacenamiento.
+    // Limpia SOLO el subdirectorio de ESTE infohash (nunca el global).
     try {
       final dir = Directory(saveDir);
       if (dir.existsSync()) {
         dir.deleteSync(recursive: true);
         dir.createSync(recursive: true);
-        print('TORRENT_DBG: downloadAndPlay limpieza directorio torrents OK');
+        print('TORRENT_DBG: downloadAndPlay limpieza subdir infohash OK');
       }
     } catch (_) {}
 
+    // Libera un torrent previo del mismo infohash que siga vivo en el engine.
+    final existing = _infohashToTorrentId[infoHash.toLowerCase()];
+    if (existing != null) {
+      print('TORRENT_DBG: downloadAndPlay libera torrent previo (id=$existing)');
+      try { engine.disposeTorrent(existing); } catch (_) {}
+      _managedTorrentIds.remove(existing);
+      _infohashToTorrentId.remove(infoHash.toLowerCase());
+      _stopKeepAliveFor(existing);
+    }
+
     final magnet = _magnet(infoHash);
     final torrentId = engine.addMagnet(magnet, saveDir, false);
+    _infohashToTorrentId[infoHash.toLowerCase()] = torrentId;
     print('TORRENT_DBG: downloadAndPlay addMagnet(id=$torrentId, streamOnly=false) OK');
 
     try {
@@ -1077,7 +1128,9 @@ class TorrentStreamingService {
 
     } catch (e, st) {
       print('TORRENT_DBG: downloadAndPlay ERROR: $e\n$st');
-      _stopTorrentKeepAlive();
+      _stopKeepAliveFor(torrentId);
+      _managedTorrentIds.remove(torrentId);
+      _infohashToTorrentId.remove(infoHash.toLowerCase());
       engine.disposeTorrent(torrentId);
       rethrow;
     }
@@ -1209,41 +1262,55 @@ class TorrentStreamingService {
         '${DateTime.now().difference(start).inSeconds}s (served=${lastServed}B)');
   }
 
+  /// Registra el torrentId en el keepalive multi-torrent. El keepalive vigila
+  /// TODOS los torrents activos del servicio (no solo el último), y reanuda
+  /// cualquier torrent pausado que aún no esté finished/seeding. Un torrent
+  /// que queda `isPaused=true` (p.ej. tras errores I/O o en `checkingFiles`)
+  /// sin keepalive se queda clavado para siempre al % actual.
   void _startKeepAlive(LibtorrentFlutter engine, int torrentId) {
-    _keepAliveTimer?.cancel();
-    _torrentUpdatesSub?.cancel();
-    _torrentUpdatesSub = engine.torrentUpdates.listen((torrents) {
-      final t = torrents[torrentId];
-      if (t == null) return;
-      // SOLO reanudar si está en fase activa de descarga (no en checkingFiles/
-      // downloadingMetadata). En esas fases el pause es normal y forzar resume
-      // interrumpe la verificación de piezas.
-      final activeStates = {
-        TorrentState.downloading,
-        TorrentState.seeding,
-      };
-      if (t.isPaused && activeStates.contains(t.state)) {
-        engine.resumeTorrent(torrentId);
+    _managedTorrentIds.add(torrentId);
+    _torrentUpdatesSub ??= engine.torrentUpdates.listen((torrents) {
+      for (final id in List.of(_managedTorrentIds)) {
+        final t = torrents[id];
+        if (t == null) continue;
+        _resumeIfStalled(engine, id, t);
       }
     });
-    _keepAliveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      final ti = engine.torrents[torrentId];
-      if (ti == null) {
-        _keepAliveTimer?.cancel();
-        _torrentUpdatesSub?.cancel();
-        return;
+    _keepAliveTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
+      for (final id in List.of(_managedTorrentIds)) {
+        final ti = engine.torrents[id];
+        if (ti == null) {
+          _managedTorrentIds.remove(id);
+          continue;
+        }
+        _resumeIfStalled(engine, id, ti);
+        print('TORRENT_DBG: [keepalive] id=$id state=${ti.state} '
+            'progress=${(ti.progress * 100).toStringAsFixed(1)}% '
+            'done=${ti.totalDone}/${ti.totalWanted}B '
+            'peers=${ti.numPeers} isPaused=${ti.isPaused}');
       }
-      final activeStates = {
-        TorrentState.downloading,
-        TorrentState.seeding,
-      };
-      if (ti.isPaused && activeStates.contains(ti.state)) {
-        engine.resumeTorrent(torrentId);
-      }
-      print('TORRENT_DBG: [keepalive] state=${ti.state} progress=${(ti.progress * 100).toStringAsFixed(1)}% '
-          'done=${ti.totalDone}/${ti.totalWanted}B '
-          'peers=${ti.numPeers} isPaused=${ti.isPaused}');
     });
+  }
+
+  /// Reanuda un torrent pausado mientras no esté finished/seeding/error.
+  /// Antes solo reanudaba si `state` era downloading/seeding; un torrent
+  /// pausado en `checkingFiles` (por errores I/O al borrarse el saveDir, o al
+  /// verificar piezas) nunca se reanudaba y el % quedaba congelado.
+  void _resumeIfStalled(LibtorrentFlutter engine, int id, TorrentInfo t) {
+    if (!t.isPaused) return;
+    if (t.isFinished) return;
+    if (t.state == TorrentState.error || t.state == TorrentState.unknown) return;
+    if (t.hasMetadata == false && t.state == TorrentState.downloadingMetadata) {
+      return; // Esperando metadata es normal que aparezca pausado.
+    }
+    engine.resumeTorrent(id);
+  }
+
+  /// Quita UN torrent del keepalive (tras stop()/dispose de esa sesión), sin
+  /// afectar a los demás torrents que sigan activos.
+  void _stopKeepAliveFor(int torrentId) {
+    _managedTorrentIds.remove(torrentId);
+    if (_managedTorrentIds.isEmpty) _stopTorrentKeepAlive();
   }
 
   void _stopTorrentKeepAlive() {
@@ -1251,6 +1318,7 @@ class TorrentStreamingService {
     _keepAliveTimer = null;
     _torrentUpdatesSub?.cancel();
     _torrentUpdatesSub = null;
+    _managedTorrentIds.clear();
   }
 
   int _pickFileIndex(List<FileInfo> files, int? requested) {
@@ -1415,7 +1483,8 @@ class TorrentStreamingService {
   /// Libera el stream y el torrent cuando termina la reproducción.
   Future<void> stop(TorrentPlaybackSession session) async {
     print('TORRENT_DBG: stop() llamado streamId=${session.streamId} torrentId=${session.torrentId}');
-    _stopTorrentKeepAlive();
+    _stopKeepAliveFor(session.torrentId);
+    _managedTorrentIds.remove(session.torrentId);
     if (!_initDone) return;
     try {
       final engine = LibtorrentFlutter.instance;
@@ -1444,20 +1513,31 @@ class TorrentStreamingService {
     print('TORRENT_DBG: downloadComplete() infohash=$infoHash movieName=$movieName');
     await _ensureInit();
     final engine = LibtorrentFlutter.instance;
-    final saveDir = _saveDir!;
+    final saveDir = _saveDirFor(infoHash);
 
-    // Limpia torrents anteriores de streaming para no saturar almacenamiento.
+    // Limpia SOLO el subdirectorio de ESTE infohash (nunca el global).
     try {
       final dir = Directory(saveDir);
       if (dir.existsSync()) {
         dir.deleteSync(recursive: true);
         dir.createSync(recursive: true);
-        print('TORRENT_DBG: downloadComplete limpieza directorio torrents OK');
+        print('TORRENT_DBG: downloadComplete limpieza subdir infohash OK');
       }
     } catch (_) {}
 
+    // Libera un torrent previo del mismo infohash que siga vivo en el engine.
+    final existing = _infohashToTorrentId[infoHash.toLowerCase()];
+    if (existing != null) {
+      print('TORRENT_DBG: downloadComplete libera torrent previo (id=$existing)');
+      try { engine.disposeTorrent(existing); } catch (_) {}
+      _managedTorrentIds.remove(existing);
+      _infohashToTorrentId.remove(infoHash.toLowerCase());
+      _stopKeepAliveFor(existing);
+    }
+
     final magnet = _magnet(infoHash);
     final torrentId = engine.addMagnet(magnet, saveDir, false);
+    _infohashToTorrentId[infoHash.toLowerCase()] = torrentId;
     print('TORRENT_DBG: downloadComplete addMagnet(id=$torrentId) OK');
 
     // Carpeta destino: Descargas/K7-MOVIE/<movieName>/
@@ -1564,12 +1644,18 @@ class TorrentStreamingService {
       // ── Copiar TODOS los archivos a la carpeta destino ──
       _copyTorrentTo(saveDir, destDir.path);
 
+      _stopKeepAliveFor(torrentId);
+      _managedTorrentIds.remove(torrentId);
+      _infohashToTorrentId.remove(infoHash.toLowerCase());
       engine.disposeTorrent(torrentId);
       print('TORRENT_DBG: downloadComplete listo en ${destDir.path}');
       return destDir.path;
     } catch (e) {
       print('TORRENT_DBG: downloadComplete error: $e');
       try { await alertSub.cancel(); } catch (_) {}
+      _stopKeepAliveFor(torrentId);
+      _managedTorrentIds.remove(torrentId);
+      _infohashToTorrentId.remove(infoHash.toLowerCase());
       engine.disposeTorrent(torrentId);
       rethrow;
     }

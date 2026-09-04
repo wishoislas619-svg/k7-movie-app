@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:async';
 import '../providers/series_provider.dart';
 import '../providers/series_category_provider.dart';
 import '../../domain/entities/series.dart';
@@ -25,9 +26,12 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
   bool _isSearching = false;
   String _searchQuery = "";
   final TextEditingController _searchController = TextEditingController();
+  Timer? _searchDebounce;
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
     _carouselController.dispose();
     super.dispose();
   }
@@ -76,6 +80,9 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                           child: TextField(
                             controller: _searchController,
                             autofocus: true,
+                            autocorrect: false,
+                            enableSuggestions: false,
+                            textInputAction: TextInputAction.search,
                             style: const TextStyle(color: Colors.white),
                             decoration: InputDecoration(
                               hintText: 'Buscar series...',
@@ -95,7 +102,19 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                               fillColor: Colors.white.withOpacity(0.05),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                             ),
-                            onChanged: (val) => setState(() => _searchQuery = val),
+                            onChanged: (val) {
+                                // Búsqueda LOCAL en la lista ya cargada, con
+                                // debounce para no re-filtrar/reconstruir el
+                                // grid en cada tecla (evita que se trabe).
+                                _searchDebounce?.cancel();
+                                _searchDebounce = Timer(
+                                  const Duration(milliseconds: 250),
+                                  () {
+                                    if (!mounted) return;
+                                    setState(() => _searchQuery = val.trim());
+                                  },
+                                );
+                              },
                           ),
                         ),
                       ),
@@ -103,49 +122,54 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                         SliverToBoxAdapter(
                           child: _buildCarousel(popularSeries, context),
                         ),
-                    SliverPadding(
-                      padding: const EdgeInsets.only(top: 0, bottom: 10),
-                      sliver: SliverList(
-                        delegate: SliverChildListDelegate([
-                          if (filteredSeries.isNotEmpty && !_isSearching && _selectedCategoryFilter == null) ...[
-                            _buildSeriesSection(
-                              context, 
-                              'RECIÉN AGREGADAS', 
-                              filteredSeries.where((s) => true).toList()..sort((a,b) => b.createdAt.compareTo(a.createdAt)),
+                    if (_isSearching || _selectedCategoryFilter != null)
+                        // Grid perezoso (SliverGrid): solo construye los
+                        // resultados visibles. El GridView con shrinkWrap
+                        // dentro del SliverList construía TODOS los pósters
+                        // (Image.network) de una vez → se realentizaba con el
+                        // teclado activo. SliverGrid construye de forma perezosa.
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+                          sliver: SliverGrid(
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: ResponsiveLayout.getGridCrossAxisCount(context),
+                              crossAxisSpacing: 12,
+                              mainAxisSpacing: 20,
+                              mainAxisExtent: ResponsiveLayout.getPosterHeight(context) + 60,
                             ),
-                          ],
-                          if (_isSearching || _selectedCategoryFilter != null)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16),
-                              child: GridView.builder(
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: ResponsiveLayout.getGridCrossAxisCount(context),
-                                  crossAxisSpacing: 12,
-                                  mainAxisSpacing: 20,
-                                  mainAxisExtent: ResponsiveLayout.getPosterHeight(context) + 60,
+                            delegate: SliverChildBuilderDelegate(
+                              (context, index) => _buildSeriesCard(context, filteredSeries[index]),
+                              childCount: filteredSeries.length,
+                            ),
+                          ),
+                        )
+                      else
+                        SliverPadding(
+                          padding: const EdgeInsets.only(top: 0, bottom: 10),
+                          sliver: SliverList(
+                            delegate: SliverChildListDelegate([
+                              if (filteredSeries.isNotEmpty) ...[
+                                _buildSeriesSection(
+                                  context, 
+                                  'RECIÉN AGREGADAS', 
+                                  filteredSeries.where((s) => true).toList()..sort((a,b) => b.createdAt.compareTo(a.createdAt)),
                                 ),
-                                itemCount: filteredSeries.length,
-                                itemBuilder: (context, index) => _buildSeriesCard(context, filteredSeries[index]),
-                              ),
-                            )
-                          else
-                            ...categories.map((cat) {
-                              final catSeries = filteredSeries.where((m) => m.categoryId == cat.id).toList();
-                              if (catSeries.isEmpty) return const SizedBox.shrink();
-                              return _buildSeriesSection(
-                                context, 
-                                cat.name.toUpperCase(), 
-                                catSeries,
-                                category: cat
-                              );
-                            }),
-                        ]),
-                      ),
-                    ),
-                  ],
-                ),
+                              ],
+                              ...categories.map((cat) {
+                                final catSeries = filteredSeries.where((m) => m.categoryId == cat.id).toList();
+                                if (catSeries.isEmpty) return const SizedBox.shrink();
+                                return _buildSeriesSection(
+                                  context, 
+                                  cat.name.toUpperCase(), 
+                                  catSeries,
+                                  category: cat
+                                );
+                              }),
+                            ]),
+                          ),
+                        ),
+                    ],
+                  ),
               ),
             );
             },

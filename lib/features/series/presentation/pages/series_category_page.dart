@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import '../../domain/entities/series.dart';
 import '../../domain/entities/series_category.dart';
 import 'series_details_page.dart';
@@ -23,6 +24,14 @@ class SeriesCategoryPage extends StatefulWidget {
 class _SeriesCategoryPageState extends State<SeriesCategoryPage> {
   String _searchQuery = "";
   final TextEditingController _searchController = TextEditingController();
+  Timer? _searchDebounce;
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -44,6 +53,9 @@ class _SeriesCategoryPageState extends State<SeriesCategoryPage> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: TextField(
               controller: _searchController,
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.search,
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
                 hintText: 'Buscar en ${widget.category.name}...',
@@ -61,7 +73,18 @@ class _SeriesCategoryPageState extends State<SeriesCategoryPage> {
                 fillColor: Colors.white.withOpacity(0.04),
                 contentPadding: const EdgeInsets.symmetric(vertical: 12),
               ),
-              onChanged: (value) => setState(() => _searchQuery = value),
+              onChanged: (value) {
+                // Búsqueda LOCAL sobre la lista de la categoría ya cargada, con
+                // debounce para no re-filtrar el grid en cada tecla.
+                _searchDebounce?.cancel();
+                _searchDebounce = Timer(
+                  const Duration(milliseconds: 250),
+                  () {
+                    if (!mounted) return;
+                    setState(() => _searchQuery = value.trim());
+                  },
+                );
+              },
             ),
           ),
         ),

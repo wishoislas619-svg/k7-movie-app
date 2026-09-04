@@ -12,10 +12,12 @@ import '../../../../features/player/presentation/pages/video_player_page.dart';
 import '../../../../providers.dart';
 import '../../../../shared/utils/responsive_layout.dart';
 import '../../../../shared/widgets/energy_flow_border.dart';
+import '../../../../shared/widgets/torrent_loading_dialog.dart';
 import '../../domain/entities/addon.dart';
 import '../../domain/entities/torrent_stream.dart';
 import '../providers/addons_provider.dart';
 import '../../data/datasources/torrent_streaming_service.dart';
+import '../../../cast/services/media_proxy_service.dart';
 import 'addons_manager_page.dart';
 
 class StreamListPage extends ConsumerStatefulWidget {
@@ -44,6 +46,10 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   String? _imdbId;
   String? _backdrop;
   bool _resolving = true;
+
+  // Metadatos TMDB mostrados en el header.
+  double? _rating;
+  String? _overview;
 
   // Series
   List<dynamic> _seasons = [];
@@ -77,17 +83,23 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         : await TmdbService.getImdbId(widget.tmdbId);
 
     String? backdrop;
+    double? rating;
+    String? overview;
     try {
       final meta = widget.isSeries
           ? await TmdbService.getSeriesMetadata(widget.tmdbId)
           : await TmdbService.getMovieMetadata(widget.tmdbId);
       backdrop = meta?['backdrop'] as String?;
+      rating = (meta?['rating'] as num?)?.toDouble();
+      overview = meta?['description'] as String?;
     } catch (_) {}
 
     if (!mounted) return;
     setState(() {
       _imdbId = imdb;
       _backdrop = backdrop;
+      _rating = rating;
+      _overview = overview;
       _resolving = false;
     });
     if (widget.isSeries) {
@@ -181,7 +193,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (_) => _TorrentLoadingDialog(progress: progressNotifier),
+        builder: (_) => TorrentLoadingDialog(progress: progressNotifier),
       );
 
       try {
@@ -390,21 +402,56 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                     child: SizedBox(
                       width: posterWidth,
                       height: posterHeight,
-                      child: widget.poster.isEmpty
-                          ? const ColoredBox(
-                              color: Color(0xFF1A1A1A),
-                              child: Icon(Icons.movie_outlined,
-                                  color: Colors.white24, size: 32),
-                            )
-                          : Image.network(
-                              widget.poster,
-                              fit: BoxFit.cover,
-                              errorBuilder: (c, e, s) => const ColoredBox(
-                                color: Color(0xFF1A1A1A),
-                                child: Icon(Icons.broken_image_outlined,
-                                    color: Colors.white24),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          widget.poster.isEmpty
+                              ? const ColoredBox(
+                                  color: Color(0xFF1A1A1A),
+                                  child: Icon(Icons.movie_outlined,
+                                      color: Colors.white24, size: 32),
+                                )
+                              : Image.network(
+                                  widget.poster,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (c, e, s) => const ColoredBox(
+                                    color: Color(0xFF1A1A1A),
+                                    child: Icon(Icons.broken_image_outlined,
+                                        color: Colors.white24),
+                                  ),
+                                ),
+                          if ((_overview ?? '').isNotEmpty)
+                            Positioned(
+                              top: 6,
+                              right: 6,
+                              child: GestureDetector(
+                                onTap: () => _showSynopsis(),
+                                child: Container(
+                                  padding: const EdgeInsets.all(4),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF00A3FF),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                        color: Colors.white38, width: 1),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: const Color(0xFF00A3FF)
+                                            .withValues(alpha: 0.45),
+                                        blurRadius: 8,
+                                        spreadRadius: 1,
+                                      ),
+                                    ],
+                                  ),
+                                  child: const Icon(
+                                    Icons.info,
+                                    color: Colors.white,
+                                    size: 14,
+                                  ),
+                                ),
                               ),
                             ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -433,11 +480,42 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                           ],
                         ),
                       ),
-                      if (widget.year != null) ...[
+                      if (widget.year != null || (_rating != null && _rating! > 0)) ...[
                         const SizedBox(height: 8),
-                        Text(widget.year!,
-                            style: const TextStyle(
-                                color: Colors.white54, fontSize: 14)),
+                        Row(
+                          children: [
+                            if (widget.year != null) ...[
+                              Text(widget.year!,
+                                  style: const TextStyle(
+                                      color: Colors.white54, fontSize: 14)),
+                              if (_rating != null && _rating! > 0) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  width: 1,
+                                  height: 12,
+                                  color: Colors.white24,
+                                ),
+                                const SizedBox(width: 8),
+                              ],
+                            ],
+                            if (_rating != null && _rating! > 0)
+                              Row(
+                                children: [
+                                  const Icon(Icons.star_rounded,
+                                      color: Colors.amber, size: 16),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${_rating!.toStringAsFixed(1)} / 10',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                          ],
+                        ),
                       ],
                       const SizedBox(height: 10),
                       Row(
@@ -801,24 +879,31 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   /// la URL del stream HTTP y la abre en Web Video Caster, siguiendo la
   /// descarga en 2º plano mientras tanto.
   Future<void> _launchWvcCast(TorrentStream stream) async {
-    String? url = stream.url;
+    // Si es un torrente (infoHash), SIEMPRE descargar el archivo completo a
+    // disco primero (startStreaming espera al 100%) y transmitir ese `file://`.
+    // Ignoramos `stream.url` para torrents: transmitir una URL/HTTP parcial o
+    // un proxy sin el archivo completo falla en Web Video Caster.
+    final isTorrent =
+        stream.infoHash != null && stream.infoHash!.isNotEmpty;
+    if (!isTorrent && (stream.url == null || stream.url!.isEmpty)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Este enlace no se puede transmitir (falta infohash).'),
+        ),
+      );
+      return;
+    }
+
+    String? url;
     TorrentStreamingHandle? handle;
 
-    if (url == null || url.isEmpty) {
-      if (stream.infoHash == null || stream.infoHash!.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Este enlace no se puede transmitir (falta infohash).'),
-          ),
-        );
-        return;
-      }
+    if (isTorrent) {
       if (!mounted) return;
       final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (_) => _TorrentLoadingDialog(progress: progressNotifier),
+        builder: (_) => TorrentLoadingDialog(progress: progressNotifier),
       );
       try {
         handle = await TorrentStreamingService.instance.startStreaming(
@@ -828,7 +913,14 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           progressToReport: progressNotifier,
         );
         final TorrentStreamingHandle h = handle;
-        url = h.session.localPath;
+        // WVC es una app externa y NO puede leer rutas privadas file:// de
+        // nuestra sandbox. Servimos el archivo COMPLETO por HTTP (localhost)
+        // vía MediaProxyService, igual que hace el cross-cast de descargas.
+        final rawPath = h.session.localPath.replaceFirst('file://', '');
+        await MediaProxyService().start();
+        final fileId = rawPath.hashCode.abs().toString();
+        MediaProxyService().registerLocalFile(fileId, rawPath);
+        url = 'http://127.0.0.1:${MediaProxyService().port}/local/$fileId.mkv';
         _activeWvcHandle = h;
         h.progress.addListener(() {
           progressNotifier.value = h.progress.value;
@@ -849,6 +941,8 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         }
         return;
       }
+    } else {
+      url = stream.url;
     }
 
     final videoUrl = url;
@@ -899,6 +993,87 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     );
   }
 
+  /// Muestra la sinopsis de la película/serie (metadatos de TMDB).
+  void _showSynopsis() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          child: EnergyFlowBorder(
+            borderRadius: 20,
+            borderWidth: 1.8,
+            duration: const Duration(seconds: 8),
+            backgroundColor: const Color(0xFF101010),
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        widget.movieName,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      icon: const Icon(Icons.close, color: Colors.white54),
+                    ),
+                  ],
+                ),
+                if (_rating != null && _rating! > 0) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Icon(Icons.star_rounded,
+                          color: Colors.amber, size: 18),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${_rating!.toStringAsFixed(1)} / 10',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 16),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _overview ?? 'Sin sinopsis disponible.',
+                    maxLines: 12,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 15,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// Descarga el torrent COMPLETO a `Descargas/K7-MOVIE/<película>/`.
   Future<void> _downloadFull(TorrentStream stream) async {
     if (stream.infoHash == null || stream.infoHash!.isEmpty) {
@@ -915,7 +1090,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _TorrentLoadingDialog(progress: progressNotifier),
+      builder: (_) => TorrentLoadingDialog(progress: progressNotifier),
     );
     print('TORRENT_DBG: _downloadFull infohash=${stream.infoHash} movie=${widget.movieName}');
     try {
@@ -943,124 +1118,5 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         );
       }
     }
-  }
-}
-
-class _TorrentLoadingDialog extends StatefulWidget {
-  final ValueNotifier<TorrentDownloadProgress?> progress;
-
-  const _TorrentLoadingDialog({required this.progress});
-
-  @override
-  State<_TorrentLoadingDialog> createState() => _TorrentLoadingDialogState();
-}
-
-class _TorrentLoadingDialogState extends State<_TorrentLoadingDialog> {
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<TorrentDownloadProgress?>(
-      valueListenable: widget.progress,
-      builder: (context, progress, _) {
-        final hasProgress = progress != null;
-        final percent = hasProgress ? progress.percent : 0.0;
-        final downloadedMB = hasProgress ? progress.downloadedMB : 0.0;
-        final totalMB = hasProgress ? progress.totalMB : 0.0;
-        final speedMBps = hasProgress ? progress.speedMBps : 0.0;
-        final peers = hasProgress ? progress.peers : 0;
-        final seeds = hasProgress ? progress.seeds : 0;
-        final state = hasProgress ? progress.state : 'connecting';
-        final finished = hasProgress ? progress.finished : false;
-        final isDownloading = hasProgress && !finished && (progress.state == 'downloading' || progress.state == 'checkingFiles');
-
-        String statusText;
-        if (!hasProgress) {
-          statusText = 'Conectando con peers del torrent...\nEsto puede tardar unos segundos.';
-        } else if (finished) {
-          statusText = 'Descarga completada\nPreparando reproducción...';
-        } else {
-          final speedStr = speedMBps > 0 ? '${speedMBps.toStringAsFixed(1)} MB/s' : 'esperando peers...';
-          final sizeStr = totalMB > 0
-              ? '${downloadedMB.toStringAsFixed(1)} / ${totalMB.toStringAsFixed(1)} MB'
-              : '${downloadedMB.toStringAsFixed(1)} MB descargados';
-          final etaStr = speedMBps > 0 && (totalMB > downloadedMB || percent > 0)
-              ? (totalMB > downloadedMB
-                  ? ' · ETA ${_formatDuration((totalMB - downloadedMB) / speedMBps * 60)}'
-                  : ' · ETA ${_formatDuration(((100 - percent) / percent) * (downloadedMB / speedMBps) * 60)}')
-              : '';
-          final pctStr = percent >= 0 ? ' (${percent.toStringAsFixed(1)}%)' : '';
-          statusText = 'Descargando $sizeStr$pctStr\n'
-              '$speedStr · $peers peers · $seeds seeds · $state$etaStr';
-        }
-
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    SizedBox(
-                      width: 70,
-                      height: 70,
-                      child: CircularProgressIndicator(
-                        color: const Color(0xFF00A3FF),
-                        strokeWidth: 5,
-                        value: hasProgress && percent >= 0 ? percent / 100 : null,
-                      ),
-                    ),
-                    if (hasProgress)
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            percent >= 0 ? '${percent.toStringAsFixed(1)}%' : '...',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18,
-                            ),
-                          ),
-                          if (isDownloading)
-                            const Text(
-                              '⬇',
-                              style: TextStyle(color: Color(0xFF00A3FF), fontSize: 14),
-                            ),
-                        ],
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                Text(
-                  statusText,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.4),
-                ),
-                if (isDownloading) ...[
-                  const SizedBox(height: 12),
-                  LinearProgressIndicator(
-                    value: percent >= 0 ? percent / 100 : null,
-                    backgroundColor: Colors.white24,
-                    valueColor: const AlwaysStoppedAnimation(Color(0xFF00A3FF)),
-                    minHeight: 4,
-                  ),
-                ],
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  String _formatDuration(double seconds) {
-    if (seconds < 60) return '${seconds.toInt()}s';
-    final mins = (seconds / 60).floor();
-    final secs = (seconds % 60).floor();
-    if (mins < 60) return '${mins}m ${secs}s';
-    final hrs = (mins / 60).floor();
-    return '${hrs}h ${mins % 60}m';
   }
 }
