@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/services/storage_service.dart';
 import '../../../../core/services/tmdb_service.dart';
 import '../../../addons/presentation/pages/stream_list_page.dart';
 
@@ -16,15 +17,33 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage> {
   final TextEditingController _controller = TextEditingController();
   Timer? _debounce;
   List<Map<String, dynamic>> _results = [];
+  List<Map<String, dynamic>> _history = [];
+  bool _historyLoaded = false;
   bool _loading = false;
   bool _searched = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+  }
 
   @override
   void dispose() {
     _debounce?.cancel();
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadHistory() async {
+    final history = await StorageService.loadSearchHistory();
+    if (mounted) {
+      setState(() {
+        _history = history;
+        _historyLoaded = true;
+      });
+    }
   }
 
   void _onChanged(String value) {
@@ -66,9 +85,11 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage> {
   }
 
   Future<void> _openResult(Map<String, dynamic> movie) async {
+    // Persiste la búsqueda localmente (últimas 20) para acceder rápido.
+    StorageService.saveSearchEntry(movie);
     final isSeries = movie['mediaType'] == 'series';
     if (mounted) {
-      Navigator.push(
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => StreamListPage(
@@ -81,6 +102,7 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage> {
         ),
       );
     }
+    _loadHistory();
   }
 
   @override
@@ -136,6 +158,64 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage> {
       );
     }
     if (!_searched) {
+      if (!_historyLoaded) {
+        return const Center(
+          child: CircularProgressIndicator(color: Color(0xFF00A3FF)),
+        );
+      }
+      if (_history.isNotEmpty) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Búsquedas recientes',
+                      style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: () async {
+                      await StorageService.clearSearchHistory();
+                      if (mounted) {
+                        setState(() => _history = []);
+                      }
+                    },
+                    icon: const Icon(Icons.delete_outline,
+                        size: 16, color: Colors.white54),
+                    label: const Text('Borrar',
+                        style: TextStyle(
+                            color: Colors.white54, fontSize: 12)),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: GridView.builder(
+                padding: const EdgeInsets.all(16),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  childAspectRatio: 0.58,
+                  crossAxisSpacing: 10,
+                  mainAxisSpacing: 10,
+                ),
+                itemCount: _history.length,
+                itemBuilder: (context, index) {
+                  final movie = _history[index];
+                  return _MovieCard(
+                      movie: movie, onTap: () => _openResult(movie));
+                },
+              ),
+            ),
+          ],
+        );
+      }
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,

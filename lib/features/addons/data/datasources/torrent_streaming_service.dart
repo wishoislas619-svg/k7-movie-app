@@ -24,6 +24,17 @@ class TorrentPlaybackSession {
 /// Resultado de `startStreaming`: la sesión de reproducción (URL HTTP del
 /// stream) más el progreso de descarga CONTINUO del torrent que sigue bajándose
 /// en segundo plano hasta el 100% mientras se reproduce.
+/// Torrent liberado porque otra sesión (otro enlace) tomó el ancho de banda.
+/// El flujo de la página debe ignorarlo en silencio (el diálogo viejo ya se
+/// cerró al tocar otro enlace) y NO hacer pop/errores sobre la sesión nueva.
+class TorrentReleasedException implements Exception {
+  const TorrentReleasedException(this.torrentId);
+  final int torrentId;
+
+  @override
+  String toString() => 'TorrentReleasedException(torrentId: $torrentId)';
+}
+
 class TorrentStreamingHandle {
   final TorrentPlaybackSession session;
   /// Notificador de progreso que sigue actualizándose en segundo plano hasta
@@ -89,6 +100,11 @@ class TorrentStreamingService {
 
   // Torrents vivos registrados en el servicio (para el keepalive multi-torrent).
   final Set<int> _managedTorrentIds = {};
+
+  // Torrents liberados por `_disposeAllSessionsExcept` (otra sesión ocupó el
+  // ancho de banda). El loop de espera/background de esa sesión antigua lo
+  // consulta para cancelarse en vez de seguir descargando/haciendo poll.
+  final Set<int> _releasedTorrentIds = {};
   final Map<String, int> _infohashToTorrentId = {};
 
   Future<String> _defaultSaveDir() async {
@@ -134,9 +150,12 @@ class TorrentStreamingService {
               disableUtp: false,
               disableUpload: false,
               disableDht: false,
-              disableUpnp: false,
-              enableIpv6: true,
-              downloadRateLimit: 0,
+disableUpnp: false,
+               // IPv4-only: en redes móviles el listen porte IPv6 ([::]:44557)
+               // daba "Network is unreachable" y quemaba intentos de conexión
+               // antes de caer a IPv4 → retrasos en el "no se conecta".
+               enableIpv6: false,
+               downloadRateLimit: 0,
               uploadRateLimit: 0,
               peersListenPort: 6881,
               responsiveMode: true,
@@ -164,6 +183,13 @@ class TorrentStreamingService {
     'udp://tracker.zer0day.to:1337/announce',
     'http://tracker.opentrackr.org:1337/announce',
     'https://tracker.nanoha.org:443/announce',
+    'udp://tracker.torrenthub.org:6969/announce',
+    'udp://tracker.iamhansen.xyz:2000/announce',
+    'udp://tracker.bittor.pw:1337/announce',
+    'udp://tracker.leechers-paradise.org:6969/announce',
+    'udp://tracker.pomf.se:80/announce',
+    'udp://tracker.doko.moe:6969/announce',
+    'udp://tracker.moeking.me:6969/announce',
   ];
 
   // Incrustamos trackers públicos directamente en el magnet para no depender
@@ -355,6 +381,10 @@ class TorrentStreamingService {
 
     final magnet = _magnet(infoHash);
     final torrentId = engine.addMagnet(magnet, saveDir, false);
+    // Solo UNA descarga activa a la vez: libera cualquier otro torrent vivo de
+    // sesiones anteriores (tocar otro enlace cancelaba nada y las dos descargas
+    // dividían ancho de banda y conexiones → lentitud).
+    _disposeAllSessionsExcept(engine, torrentId);
     _infohashToTorrentId[infoHash.toLowerCase()] = torrentId;
     print('TORRENT_DBG: startStreaming addMagnet(id=$torrentId) OK');
 
@@ -383,21 +413,24 @@ class TorrentStreamingService {
       print('TORRENT_DBG: ▶ TARGET FILE: fileIndex=$target '
           '${targetFile != null ? '| name=${targetFile.name} size=${targetFile.size}B' : '(out of range)'}');
 
-      // ⚠️ IMPORTANTE: descargamos TODO el torrent a disco con prioridad 7 en
-      // TODOS los archivos, igual que el commit 6c3512e. Así los alerts nativos
-      // "piece: N finished" cubren el torrent COMPLETO y el % se mide contra el
-      // torrent entero (downloadedPieces.length / (maxPieceSeen+1)), no contra
-      // una sola pieza ni el tamaño de Torrentio. NO usamos `startStream` porque
-      // re-prioritiza/secuencia solo el archivo objetivo: dispara
-      // "torrent finished" de forma prematura (rompe el % y el bloqueo de seek)
-      // y sirve piezas dispersas (origen del SIGSEGV). Reproducimos `file://`
-      // (lo que ya hay en disco) cuando la descarga llega a startPercent% y el
-      // archivo objetivo ya tiene bytes en disco, y seguimos bajando a 100% en
-      // 2º plano (el player bloquea el seek y muestra el % hasta que `done`).
-      final priorities = List<int>.filled(files.length, 7);
+      // ⚠️ IMPORTANTE: descargamos SOLO el archivo objetivo con prioridad 7 y
+      // el resto a 0 (dont_download/skip). En series, el episodio viene dentro
+      // de un pack de muchos archivos (S01E01–E15, capítulos sueltos, etc.):
+      // si priorizáramos TODO el torrent, bajaríamos el pack entero (p.ej.
+      // 1.18GB con 15 episodios) antes de poder reproducir el episodio tocado y
+      // el % iría contra el torrent completo (parecería clavado en 0%). Con
+      // target-solo, libtorrent descarga únicamente las piezas del archivo del
+      // enlace seleccionado y dispara "torrent finished/downloading" cuando ese
+      // archivo está completo en disco → la señal % y `done` quedan acotadas al
+      // archivo objetivo.
+      final priorities = List<int>.filled(files.length, 0);
+      if (target >= 0 && target < files.length) {
+        priorities[target] = 7;
+      }
       engine.setFilePriorities(torrentId, priorities);
       engine.resumeTorrent(torrentId);
-      print('TORRENT_DBG: setFilePriorities TODOS=7 + resume (descarga de todo el torrent, % contra el torrent completo)');
+      print('TORRENT_DBG: setFilePriorities target=$target (archivo del '
+          'enlace seleccionado, resto=0/skip) + resume');
 
       final relPath = (targetFile?.path ?? '')
           .replaceAll('\\', '/')
@@ -412,7 +445,14 @@ class TorrentStreamingService {
       _startKeepAlive(engine, torrentId);
 
       // ── Rastreo nativo de piezas (la señal 100% fiable) ──
+      // En packs, `totalDone`/`totalWanted` del bridge son FALSOS (quedan en
+      // ~0 / tamaño del pack completo pese a descargar el episodio real). Las
+      // piezas de los alerts SÍ son reales y, como priorizamos SOLO el archivo
+      // objetivo, las piezas que se bajan son exactamente el rango contiguo
+      // global [minPieceSeen..maxPieceSeen] de ESE archivo → ahí se calcula el
+      // % y los MB reales, replicando lo que ya funciona en películas.
       int maxPieceSeen = -1;
+      int minPieceSeen = -1;
       int bestTotalWanted = 0;
       final Set<int> downloadedPieces = {};
       // Alerts nativos: piezas terminadas + final del torrent.
@@ -423,6 +463,8 @@ class TorrentStreamingService {
         final piece = _parsePieceFinished(e.$2);
         if (piece != null) {
           downloadedPieces.add(piece);
+          // El rango min/max converge al span real del archivo objetivo.
+          if (minPieceSeen < 0 || piece < minPieceSeen) minPieceSeen = piece;
           if (piece > maxPieceSeen) maxPieceSeen = piece;
         } else if (e.$2.contains('torrent finished downloading') ||
             e.$2.contains('state changed to: finished') ||
@@ -435,16 +477,20 @@ class TorrentStreamingService {
       }, onError: (_) {});
       alertSub = alertsTrack;
 
-      // Tamaño total conocido del torrent (base para MB mostrados).
+      // Tamaño total de referencia para el % y los MB del diálogo. Preferimos
+      // `knownSizeBytes` (Torrentio) porque es el tamaño del ARCHIVO OBJETIVO
+      // (el episodio dentro del pack). El `totalWanted` del bridge NO es fiable
+      // en packs: reporta el torrent COMPLETO (p.ej. 1.7GB con 12392 piezas)
+      // aunque solo estemos descargando el episodio → % y MB se quedaban en 0;
+      // en películas (torrent de 1 solo archivo) ambos coinciden.
       int totalMB = 0;
-      if (bestTotalWanted > 0) {
-        totalMB = bestTotalWanted ~/ 1048576;
-      } else if (knownSizeBytes != null && knownSizeBytes > 0) {
+      if (knownSizeBytes != null && knownSizeBytes > 0) {
         totalMB = knownSizeBytes ~/ 1048576;
+      } else if (bestTotalWanted > 0) {
+        totalMB = bestTotalWanted ~/ 1048576;
       }
 
       final started = DateTime.now();
-      double lastEmittedPct = -1;
       double pct = 0;
       int nativeTotalPieces = 0;
       double lastDoneMB = 0;
@@ -456,25 +502,105 @@ class TorrentStreamingService {
       // `file://` parcial (aunque la cabeza ya tenga datos reales, colgaba 25s).
       // Mientras se descarga emitimos % + velocidad + peers/seeds al diálogo.
       while (DateTime.now().difference(started) < minDownloadWait) {
-        // Convergencia del denominador nativo.
+        // Si otra sesión tocó otro enlace y liberó este torrent, abortamos la
+        // espera para liberar el diálogo y no seguir esperando un torrent muerto.
+        if (_releasedTorrentIds.contains(torrentId)) {
+          // El diálogo viejo ya se cerró al tocar otro enlace; no completamos
+          // `done` con error ni esperamos más: la página ignora esta sesión.
+          print('TORRENT_DBG: [espera] torrent id=$torrentId liberado por otra '
+              'sesión → cancelando espera');
+          _stopKeepAliveFor(torrentId);
+          _managedTorrentIds.remove(torrentId);
+          _infohashToTorrentId.remove(infoHash.toLowerCase());
+          throw const TorrentReleasedException(-1);
+        }
+        // Convergencia del denominador nativo. OJO: con prioridades solo-target,
+        // `totalWanted` del bridge en packs reporta el torrent COMPLETO, no el
+        // archivo objetivo → NO vale como denominador del %. Sólo lo usamos como
+        // fallback si no tenemos `knownSizeBytes`.
         final ti = engine.torrents[torrentId];
         if (ti != null) {
           if (ti.totalWanted > bestTotalWanted) {
             bestTotalWanted = ti.totalWanted;
           }
-          if (bestTotalWanted > 0 && totalMB == 0) totalMB = bestTotalWanted ~/ 1048576;
         }
-        // Denominador = piezas contiguas vistas (máx pieza + 1) porque el bridge
-        // Android no reporta numPieces/totalWanted de forma fiable.
-        if (maxPieceSeen >= 0) nativeTotalPieces = maxPieceSeen + 1;
-        final nativeDonePieces = downloadedPieces.length;
-        if (nativeTotalPieces > 0) {
-          pct = 100.0 * nativeDonePieces / nativeTotalPieces;
-        } else if (bestTotalWanted > 0) {
-          pct = 100.0 * (ti?.totalDone ?? 0) / bestTotalWanted;
-        }
+        // ── % Y MB REALES: piesas del ARCHIVO OBJETIVO ──
+        // En packs `totalDone`/`totalWanted` del bridge son falsos (quedan en
+        // ~0 o en el tamaño del pack). La señal real y exacta son las piezas de
+        // los alerts nativos: como priorizamos SOLO el archivo objetivo, cada
+        // pieza descargada pertenece a su rango [firstPiece..lastPiece]. El
+        // tamaño real del archivo se obtiene de `getFiles` (nativo) o de
+        // `knownSizeBytes` (Torrentio) → replicated el cálculo de películas.
+        final torrentTotalBytes = (files.isNotEmpty && files.any((f) => f.size > 0))
+            ? files.fold<int>(0, (acc, f) => acc + f.size)
+            : 0;
+        final bridgeNumPieces = ti?.numPieces ?? 0;
+        final nativeMaxPiece = maxPieceSeen >= 0 ? maxPieceSeen + 1 : 0;
 
-        final doneMB = totalMB > 0 ? pct / 100.0 * totalMB : nativeDonePieces.toDouble();
+        double doneFraction = 0;
+        double totalMBd = totalMB.toDouble();
+        if (torrentTotalBytes > 0 && bridgeNumPieces > 0 &&
+            target >= 0 && target < files.length) {
+          // pieceLen estimado del torrent completo (nativo real).
+          final pieceLen = torrentTotalBytes / bridgeNumPieces;
+          if (pieceLen > 0) {
+            // Desplazamiento en bytes del archivo objetivo dentro del torrent.
+            final fileOffset = files.take(target).fold<int>(0, (a, f) => a + f.size);
+            // Tamaño REAL del archivo objetivo: preferimos el `size` del
+            // getFiles nativo (fs.file_size) sobre `knownSizeBytes` (Torrentio).
+            final targetSize = (targetFile?.size ?? 0) > 0
+                ? targetFile!.size
+                : (knownSizeBytes ?? 0);
+            if (targetSize > 0) {
+              final firstPiece = (fileOffset / pieceLen).floor();
+              final lastPiece = ((fileOffset + targetSize - 1) / pieceLen).floor();
+              final targetPieceCount = lastPiece - firstPiece + 1;
+              final doneInTarget = downloadedPieces
+                  .where((p) => p >= firstPiece && p <= lastPiece)
+                  .length
+                  .toDouble();
+              doneFraction = targetPieceCount > 0
+                  ? (doneInTarget / targetPieceCount).clamp(0.0, 1.0)
+                  : 0.0;
+              totalMBd = targetSize / 1048576.0;
+            }
+          }
+        } else if (nativeMaxPiece > 0 && minPieceSeen >= 0) {
+          // Fallback sin tamaños: span de piezas vistas converge al archivo
+          // objetivo (rango contiguo). Evita el 100% prematuro no usando el
+          // span como denominador hasta que haya suficientes muestras.
+          final span = maxPieceSeen - minPieceSeen + 1;
+          final done = downloadedPieces.length;
+          if (span > 0 && done >= 2) {
+            doneFraction = (done / (span > done ? span : done)).clamp(0.0, 1.0);
+          }
+        }
+        final pctFromPieces = 100.0 * doneFraction;
+        // Respaldo exacto equivalente a películas: bytes nativos (single-file).
+        final bytesDone = (ti?.totalDone ?? 0).toDouble();
+        final bytesTarget = knownSizeBytes != null && knownSizeBytes > 0
+            ? knownSizeBytes.toDouble()
+            : (bestTotalWanted > 0 ? bestTotalWanted.toDouble() : 0.0);
+        nativeTotalPieces = nativeMaxPiece;
+        if (pctFromPieces > 0) {
+          pct = pctFromPieces.clamp(0.0, 100.0);
+        } else if (bytesTarget > 0) {
+          pct = (100.0 * bytesDone / bytesTarget).clamp(0.0, 100.0);
+        } else if (nativeTotalPieces > 0) {
+          // Fallback bridge sin tamaños: piezas vistas / máximo visto.
+          pct = 100.0 * downloadedPieces.length / nativeTotalPieces;
+        } else {
+          pct = 0;
+        }
+        // Piezas distintas descargadas (debug + fallback de completado).
+        final nativeDonePieces = downloadedPieces.length;
+        // MB mostrados = bytes REALES del archivo objetivo, escalados por la
+        // fracción de piezas (no bytes del pack ni bytes falsos del bridge).
+        final doneMB = totalMBd > 0 ? (doneFraction * totalMBd) : (bytesDone / 1048576.0);
+        if (totalMBd > 0) totalMB = totalMBd.ceil();
+        if (totalMB <= 0 && bytesDone > 0) {
+          totalMB = (bytesDone / 1048576.0).ceil();
+        }
 
         // Velocidad real calculada en Dart (delta de MB descargados entre
         // muestras), porque downloadRate del bridge suele reportar 0.
@@ -491,15 +617,18 @@ class TorrentStreamingService {
         lastDoneMB = doneMB;
         lastSampleTime = nowSample;
 
-        if (pct - lastEmittedPct >= 0.5 || (alertFinished && pct >= 100)) {
-          lastEmittedPct = pct;
+        // Emitimos en CADA tick: el % puede arrancar muy lento (bridge reporta
+        // totalWanted a 0 y totalDone creciendo de a bytes) y el antiguo umbral
+        // `>=0.5` dejaba el diálogo congelado en 0% sin velocidad ni MB pese a
+        // estar descargando a tope.
+        {
           final report = TorrentDownloadProgress(
             percent: pct.clamp(0, 100),
             downloadedMB: doneMB,
             totalMB: totalMB.toDouble(),
             speedMBps: speedMBps,
-            peers: ti?.numPeers ?? 0,
-            seeds: ti?.numSeeds ?? 0,
+            peers: (ti?.numPeers ?? 0) < 0 ? 0 : (ti?.numPeers ?? 0),
+            seeds: (ti?.numSeeds ?? 0) < 0 ? 0 : (ti?.numSeeds ?? 0),
             state: 'downloading',
             finished: false,
           );
@@ -511,20 +640,39 @@ class TorrentStreamingService {
             '${doneMB.toStringAsFixed(1)}/${totalMB.toStringAsFixed(1)}MB '
             'rate=${speedMBps.toStringAsFixed(2)}MB/s '
             'peers=${ti?.numPeers ?? 0} seeds=${ti?.numSeeds ?? 0} '
-            'pieces=${nativeDonePieces}/$nativeTotalPieces '
+            'pieces=$nativeDonePieces/$nativeTotalPieces '
+            'span=${minPieceSeen >= 0 ? (maxPieceSeen - minPieceSeen + 1) : 0} '
             'alertFinished=$alertFinished');
 
         // ⏭ COMPLETADO: cuando todo el torrent está en disco (100%) salimos y
         // devolvemos la sesión; el archivo está COMPLETO, así que media_kit/mpv
-        // podrá abrir el `file://` sin colgarse.
-        if (alertFinished || (nativeTotalPieces > 0 && nativeDonePieces >= nativeTotalPieces)) {
+        // podrá abrir el `file://` sin colgarse. NO usamos `pct >= 100` como
+        // señal de fin: `knownSizeBytes` de Torrentio puede ser menor al archivo
+        // real (ver log) y devolvería un archivo parcial. La señal fiable es
+        // `alertFinished` (torrent finished = objetivo 100% en disco).
+        if (alertFinished ||
+            (nativeTotalPieces > 0 && nativeDonePieces >= nativeTotalPieces)) {
+          // `knownSizeBytes` puede NO coincidir con el archivo real (ver log):
+          // el % se mostró vs Torrentio pero el archivo en disco puede ser otro.
+          // Al completar usamos el tamaño REAL del archivo en disco (File
+          // completa) como total + descargado; `ti.totalDone` es falso en packs.
+          final fileLenAtFinish =
+              (localPath.isNotEmpty && await File(localPath).exists())
+                  ? await File(localPath).length()
+                  : 0;
+          final doneAtFinishMB = fileLenAtFinish > 0
+              ? fileLenAtFinish / 1048576.0
+              : (knownSizeBytes ?? 0) / 1048576.0;
+          final totalAtFinishMB = doneAtFinishMB > totalMB.toDouble()
+              ? doneAtFinishMB
+              : totalMB.toDouble();
           final finished = TorrentDownloadProgress(
             percent: 100,
-            downloadedMB: totalMB.toDouble(),
-            totalMB: totalMB.toDouble(),
+            downloadedMB: doneAtFinishMB,
+            totalMB: totalAtFinishMB,
             speedMBps: 0,
-            peers: ti?.numPeers ?? 0,
-            seeds: ti?.numSeeds ?? 0,
+            peers: (ti?.numPeers ?? 0) < 0 ? 0 : (ti?.numPeers ?? 0),
+            seeds: (ti?.numSeeds ?? 0) < 0 ? 0 : (ti?.numSeeds ?? 0),
             state: 'finished',
             finished: true,
           );
@@ -557,16 +705,28 @@ class TorrentStreamingService {
         print('TORRENT_DBG: ⏳ timeout antes del 100% (${pct.toStringAsFixed(1)}%) '
             '— la descarga sigue en 2º plano; esperamos al 100% antes de arrancar el player');
         final _ = _backgroundDownload(engine, torrentId, downloadedPieces,
-            maxPieceSeen, bestTotalWanted, alertFinished, done, progress, totalMB);
+            maxPieceSeen, bestTotalWanted, alertFinished, done, progress, totalMB, knownSizeBytes,
+            files: files, target: target, minPieceSeen: minPieceSeen,
+            localPath: localPath);
         // El usuario quiere esperar a la descarga COMPLETA para que el archivo
         // `file://` se pueda abrir. Mantenemos el diálogo (con % + velocidad)
         // hasta que `done` se complete (100%), y solo entonces devolvemos la
         // sesión para iniciar la reproducción sobre un archivo íntegro.
         await done.future;
+        final finalFileLen =
+            (localPath.isNotEmpty && await File(localPath).exists())
+                ? await File(localPath).length()
+                : 0;
+        final finalDoneMB = finalFileLen > 0
+            ? finalFileLen / 1048576.0
+            : totalMB.toDouble();
+        final finalTotalMB = finalDoneMB > totalMB.toDouble()
+            ? finalDoneMB
+            : totalMB.toDouble();
         progress.value = TorrentDownloadProgress(
           percent: 100,
-          downloadedMB: totalMB.toDouble(),
-          totalMB: totalMB.toDouble(),
+          downloadedMB: finalDoneMB,
+          totalMB: finalTotalMB,
           speedMBps: 0,
           peers: 0,
           seeds: 0,
@@ -592,7 +752,7 @@ class TorrentStreamingService {
       _infohashToTorrentId.remove(infoHash.toLowerCase());
       try { alertSub.cancel(); } catch (_) {}
       try { done.completeError(e); } catch (_) {}
-      engine.disposeTorrent(torrentId);
+      try { engine.disposeTorrent(torrentId); } catch (_) {}
       rethrow;
     }
   }
@@ -611,9 +771,16 @@ class TorrentStreamingService {
     Completer<void> done,
     ValueNotifier<TorrentDownloadProgress> progress,
     int totalMB,
-  ) async {
+    int? knownSizeBytes, {
+    List<FileInfo>? files,
+    int? target,
+    int minPieceSeen = -1,
+    String localPath = '',
+  }) async {
     int localMaxPiece = maxPieceSeen;
+    int localMinPiece = minPieceSeen;
     int localBest = bestTotalWanted;
+    int localTotalMB = totalMB;
     final localPieces = Set<int>.from(downloadedPieces);
     bool finishedTracking = alertFinished;
     final StreamSubscription<(int, String)> bgAlerts =
@@ -622,6 +789,7 @@ class TorrentStreamingService {
       final piece = _parsePieceFinished(e.$2);
       if (piece != null) {
         localPieces.add(piece);
+        if (localMinPiece < 0 || piece < localMinPiece) localMinPiece = piece;
         if (piece > localMaxPiece) localMaxPiece = piece;
       } else if (e.$2.contains('torrent finished downloading') ||
           e.$2.contains('state changed to: finished') ||
@@ -631,30 +799,107 @@ class TorrentStreamingService {
     }, onError: (_) {});
     try {
       while (!finishedTracking) {
+        // Si otra sesión liberó este torrent, salimos sin esperar el final.
+        if (_releasedTorrentIds.contains(torrentId)) {
+          print('TORRENT_DBG: [background] torrent id=$torrentId liberado por '
+              'otra sesión → deteniendo descarga de fondo');
+          if (!done.isCompleted) {
+            done.completeError(const TorrentReleasedException(-1));
+          }
+          break;
+        }
         final ti = engine.torrents[torrentId];
         if (ti != null) {
           if (ti.totalWanted > localBest) localBest = ti.totalWanted;
         }
-        final totalN = localMaxPiece >= 0 ? localMaxPiece + 1 : 0;
-        final p = totalN > 0
-            ? (100.0 * localPieces.length / totalN).clamp(0.0, 100.0).toDouble()
-            : 0.0;
-        final mb = totalMB > 0 ? p / 100.0 * totalMB : localPieces.length.toDouble();
+        // Igual que en `startStreaming`: el % y los MB se calculan contra el
+        // rango de piezas del ARCHIVO OBJETIVO (señal real). `localBest`
+        // (totalWanted del bridge) en packs apunta al torrent completo, no al
+        // episodio; `ti.totalDone` queda congelado en ~0 en packs.
+        double doneFraction = 0;
+        double totalMBd = totalMB.toDouble();
+        final filesL = files ?? const <FileInfo>[];
+        final torrentTotalBytes = (filesL.isNotEmpty && filesL.any((f) => f.size > 0))
+            ? filesL.fold<int>(0, (acc, f) => acc + f.size)
+            : 0;
+        final bridgeNumPieces = ti?.numPieces ?? 0;
+        final int totalN = localMaxPiece >= 0 ? localMaxPiece + 1 : 0;
+        if (torrentTotalBytes > 0 && bridgeNumPieces > 0) {
+          final pieceLen = torrentTotalBytes / bridgeNumPieces;
+          if (pieceLen > 0 && target != null && target >= 0 &&
+              target < filesL.length) {
+            final fileOffset =
+                filesL.take(target).fold<int>(0, (a, f) => a + f.size);
+            final targetSize = (filesL[target].size > 0)
+                ? filesL[target].size
+                : (knownSizeBytes ?? 0);
+            if (targetSize > 0) {
+              final firstPiece = (fileOffset / pieceLen).floor();
+              final lastPiece = ((fileOffset + targetSize - 1) / pieceLen).floor();
+              final targetPieceCount = lastPiece - firstPiece + 1;
+              final doneInTarget = localPieces
+                  .where((p) => p >= firstPiece && p <= lastPiece)
+                  .length
+                  .toDouble();
+              doneFraction = targetPieceCount > 0
+                  ? (doneInTarget / targetPieceCount).clamp(0.0, 1.0)
+                  : 0.0;
+              totalMBd = targetSize / 1048576.0;
+            } else if (localMaxPiece >= 0 && localMinPiece >= 0) {
+              final span = localMaxPiece - localMinPiece + 1;
+              if (span > 0 && localPieces.length >= 2) {
+                doneFraction = (localPieces.length / span).clamp(0.0, 1.0);
+              }
+            }
+          }
+        } else if (localMaxPiece >= 0 && localMinPiece >= 0) {
+          final span = localMaxPiece - localMinPiece + 1;
+          if (span > 0 && localPieces.length >= 2) {
+            doneFraction = (localPieces.length / span).clamp(0.0, 1.0);
+          }
+        }
+        final bytesDone = (ti?.totalDone ?? 0).toDouble();
+        final targetBytes = knownSizeBytes != null && knownSizeBytes > 0
+            ? knownSizeBytes.toDouble()
+            : (localBest > 0 ? localBest.toDouble() : 0.0);
+        final double p;
+        if (doneFraction > 0) {
+          p = (100.0 * doneFraction).clamp(0.0, 100.0).toDouble();
+        } else if (targetBytes > 0) {
+          p = (100.0 * bytesDone / targetBytes).clamp(0.0, 100.0).toDouble();
+        } else if (totalN > 0) {
+          p = (100.0 * localPieces.length / totalN).clamp(0.0, 100.0).toDouble();
+        } else {
+          p = 0.0;
+        }
+        if (totalMBd > 0) localTotalMB = totalMBd.ceil().toInt();
+        final mb = totalMBd > 0 ? (doneFraction * totalMBd) : (bytesDone / 1048576.0);
         progress.value = TorrentDownloadProgress(
           percent: p,
           downloadedMB: mb,
-          totalMB: totalMB.toDouble(),
+          totalMB: localTotalMB > 0 ? localTotalMB.toDouble() : mb,
           speedMBps: (ti?.downloadRate ?? 0) / 1048576.0,
-          peers: ti?.numPeers ?? 0,
-          seeds: ti?.numSeeds ?? 0,
+          peers: (ti?.numPeers ?? 0) < 0 ? 0 : (ti?.numPeers ?? 0),
+          seeds: (ti?.numSeeds ?? 0) < 0 ? 0 : (ti?.numSeeds ?? 0),
           state: 'downloading',
           finished: false,
         );
-        if (finishedTracking || (totalN > 0 && localPieces.length >= totalN)) {
+        if (finishedTracking ||
+            (totalN > 0 && localPieces.length >= totalN)) {
+          final fileLen =
+              (localPath.isNotEmpty && await File(localPath).exists())
+                  ? await File(localPath).length()
+                  : 0;
+          final doneMBFinish = fileLen > 0
+              ? fileLen / 1048576.0
+              : (localTotalMB > 0 ? localTotalMB.toDouble() : mb);
+          final totalMBFinish = doneMBFinish > localTotalMB.toDouble()
+              ? doneMBFinish
+              : localTotalMB.toDouble();
           progress.value = TorrentDownloadProgress(
             percent: 100,
-            downloadedMB: totalMB.toDouble(),
-            totalMB: totalMB.toDouble(),
+            downloadedMB: doneMBFinish,
+            totalMB: totalMBFinish,
             speedMBps: 0,
             peers: ti?.numPeers ?? 0,
             seeds: ti?.numSeeds ?? 0,
@@ -741,6 +986,8 @@ class TorrentStreamingService {
 
     final magnet = _magnet(infoHash);
     final torrentId = engine.addMagnet(magnet, saveDir, false);
+    // Solo UNA descarga activa a la vez (libera sesiones de streaming previas).
+    _disposeAllSessionsExcept(engine, torrentId);
     _infohashToTorrentId[infoHash.toLowerCase()] = torrentId;
     print('TORRENT_DBG: downloadAndPlay addMagnet(id=$torrentId, streamOnly=false) OK');
 
@@ -1131,7 +1378,7 @@ class TorrentStreamingService {
       _stopKeepAliveFor(torrentId);
       _managedTorrentIds.remove(torrentId);
       _infohashToTorrentId.remove(infoHash.toLowerCase());
-      engine.disposeTorrent(torrentId);
+      try { engine.disposeTorrent(torrentId); } catch (_) {}
       rethrow;
     }
   }
@@ -1319,6 +1566,29 @@ class TorrentStreamingService {
     _torrentUpdatesSub?.cancel();
     _torrentUpdatesSub = null;
     _managedTorrentIds.clear();
+  }
+
+  /// Libera TODOS los torrents activos de otras sesiones (distinto a
+  /// [keepTorrentId]) para que no consuman ancho de banda ni conexiones.
+  ///
+  /// Con el flujo "el archivo del enlace seleccionado completo y luego lo
+  /// reproducimos" solo debe existir UNA descarga activa a la vez. Si el
+  /// usuario vuelve atrás y toca otro enlace, el torrent anterior se quedaba
+  /// descargando en 2º plano y dividía el ancho de banda/conexiones con el
+  /// nuevo (origen de la lentitud).
+  void _disposeAllSessionsExcept(LibtorrentFlutter engine, int keepTorrentId) {
+    for (final id in List.of(_managedTorrentIds)) {
+      if (id == keepTorrentId) continue;
+      _managedTorrentIds.remove(id);
+      _releasedTorrentIds.add(id);
+      _infohashToTorrentId.removeWhere((_, v) => v == id);
+      _stopKeepAliveFor(id);
+      print('TORRENT_DBG: liberando torrent de sesión anterior id=$id '
+          '(solo se mantiene activa la nueva descarga id=$keepTorrentId)');
+      try {
+        engine.disposeTorrent(id);
+      } catch (_) {}
+    }
   }
 
   int _pickFileIndex(List<FileInfo> files, int? requested) {
@@ -1537,6 +1807,8 @@ class TorrentStreamingService {
 
     final magnet = _magnet(infoHash);
     final torrentId = engine.addMagnet(magnet, saveDir, false);
+    // Solo UNA descarga activa a la vez (libera sesiones de streaming previas).
+    _disposeAllSessionsExcept(engine, torrentId);
     _infohashToTorrentId[infoHash.toLowerCase()] = torrentId;
     print('TORRENT_DBG: downloadComplete addMagnet(id=$torrentId) OK');
 
@@ -1647,7 +1919,7 @@ class TorrentStreamingService {
       _stopKeepAliveFor(torrentId);
       _managedTorrentIds.remove(torrentId);
       _infohashToTorrentId.remove(infoHash.toLowerCase());
-      engine.disposeTorrent(torrentId);
+      try { engine.disposeTorrent(torrentId); } catch (_) {}
       print('TORRENT_DBG: downloadComplete listo en ${destDir.path}');
       return destDir.path;
     } catch (e) {
@@ -1656,7 +1928,7 @@ class TorrentStreamingService {
       _stopKeepAliveFor(torrentId);
       _managedTorrentIds.remove(torrentId);
       _infohashToTorrentId.remove(infoHash.toLowerCase());
-      engine.disposeTorrent(torrentId);
+      try { engine.disposeTorrent(torrentId); } catch (_) {}
       rethrow;
     }
   }

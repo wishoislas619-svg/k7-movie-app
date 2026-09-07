@@ -28,6 +28,7 @@ class StreamListPage extends ConsumerStatefulWidget {
     this.year,
     required this.tmdbId,
     this.isSeries = false,
+    this.seriesEpisodeKey,
   });
 
   final String movieName;
@@ -36,12 +37,21 @@ class StreamListPage extends ConsumerStatefulWidget {
   final String tmdbId;
   final bool isSeries;
 
+  /// Cuando se abre UN episodio concreto de una serie (desde el selector
+  /// temporadas/capítulos), `seasonNumber:episodeNumber`. En ese modo la
+  /// página NO muestra el selector; resuelve el imdbId y carga DIRECTAMENTE
+  /// los streams del addon para ese capítulo (`series/{imdb}:{S}:{E}`).
+  final String? seriesEpisodeKey;
+
+  /// ¿Esta instancia está en modo "episodio dedicado"?
+  bool get isEpisodeMode => isSeries && seriesEpisodeKey != null;
+
   @override
   ConsumerState<StreamListPage> createState() => _StreamListPageState();
 }
 
 class _StreamListPageState extends ConsumerState<StreamListPage>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late TabController _tabController;
   String? _imdbId;
   String? _backdrop;
@@ -102,11 +112,32 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       _overview = overview;
       _resolving = false;
     });
-    if (widget.isSeries) {
+    if (widget.isEpisodeMode) {
+      // Modo "episodio dedicado": el selector temporadas/capítulos ya se vio;
+      // aquí cargamos los enlaces del capítulo específico con el addon.
+      await _loadEpisodeStreams();
+    } else if (widget.isSeries) {
       await _loadSeriesSeasons();
     } else {
       await _loadStreams('movie', imdb ?? '');
     }
+  }
+
+  /// Carga los streams del addon para el capítulo exacto
+  /// (`series/{imdb}:{season}:{episode}`) en modo episodio dedicado.
+  Future<void> _loadEpisodeStreams() async {
+    final key = widget.seriesEpisodeKey;
+    final imdb = _imdbId;
+    if (key == null || imdb == null) {
+      if (mounted) {
+        setState(() {
+          _streamsError =
+              'No se pudo identificar el episodio en IMDb. Verifica que tengas conectados tus addons.';
+        });
+      }
+      return;
+    }
+    await _loadStreams('series', '$imdb:$key');
   }
 
   Future<void> _loadSeriesSeasons() async {
@@ -115,6 +146,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     setState(() {
       _seasons = seasons;
       if (seasons.isNotEmpty) {
+        _tabController.dispose();
         _tabController = TabController(
             length: seasons.length, vsync: this);
       }
@@ -165,12 +197,6 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     }
   }
 
-  Future<void> _selectEpisode(int episodeNumber) async {
-    if (_imdbId == null) return;
-    setState(() => _activeEpisodeNumber = episodeNumber);
-    await _loadStreams('series', '$_imdbId:$_currentSeasonNumber:$episodeNumber');
-  }
-
   Future<void> _play(TorrentStream stream) async {
     String? directUrl = stream.url;
     TorrentPlaybackSession? torrentSession;
@@ -216,6 +242,11 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
             'localPath=${handle.session.localPath} (descarga continúa en 2º plano)');
       } catch (e, st) {
         print('TORRENT_DBG: start() FALLÓ: $e\n$st');
+        // El torrent fue liberado porque se tocó OTRO enlace mientras este
+        // seguía descargando. El diálogo de ESE flow ya no está (el usuario lo
+        // cerró para tocar el nuevo); solo volvemos sin pop ni error para no
+        // interferir con la sesión nueva.
+        if (e is TorrentReleasedException) return;
         if (mounted) {
           Navigator.of(context, rootNavigator: true).pop();
           ScaffoldMessenger.of(context).showSnackBar(
@@ -323,8 +354,15 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         _buildHeader(addons),
         const Divider(color: Colors.white10),
         Expanded(
-          child: widget.isSeries && _episodes.isNotEmpty
-              ? _buildEpisodesList()
+          child: widget.isEpisodeMode
+              ? _buildStreamsSection(addons)
+              : widget.isSeries
+              ? (!_seriesTabsReady
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                            color: Color(0xFF00A3FF)),
+                      )
+                    : _buildEpisodesList())
               : _buildStreamsSection(addons),
         ),
       ],
@@ -557,60 +595,68 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         final name = ep['name'] as String? ?? 'Episodio $episodeNumber';
         final image = ep['image'] as String? ?? '';
 
-        final streams =
-            _activeEpisodeNumber == episodeNumber ? _streamsByEpisode[episodeNumber] : null;
-        final loading = _loadingStreams && _activeEpisodeNumber == episodeNumber;
-
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
-          child: ExpansionTile(
-            key: ValueKey(episodeNumber),
-            leading: Container(
-              width: 56,
-              height: 40,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(6),
-                color: const Color(0xFF1A1A1A),
+          child: EnergyFlowBorder(
+            borderRadius: 12,
+            borderWidth: 1,
+            duration: const Duration(seconds: 8),
+            backgroundColor: const Color(0xFF141414),
+            child: ListTile(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => StreamListPage(
+                      movieName:
+                          '${widget.movieName} · S$_currentSeasonNumber E$episodeNumber',
+                      poster: image.isEmpty ? widget.poster : image,
+                      year: widget.year,
+                      tmdbId: widget.tmdbId,
+                      isSeries: true,
+                      seriesEpisodeKey:
+                          '$_currentSeasonNumber:$episodeNumber',
+                    ),
+                  ),
+                );
+              },
+              leading: Container(
+                width: 56,
+                height: 40,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(6),
+                  color: const Color(0xFF1A1A1A),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: image.isEmpty
+                    ? const Center(
+                        child: Icon(Icons.tv, color: Colors.white24, size: 20),
+                      )
+                    : Image.network(image,
+                        fit: BoxFit.cover,
+                        errorBuilder: (c, e, s) => const Center(
+                              child: Icon(Icons.tv,
+                                  color: Colors.white24, size: 20),
+                            )),
               ),
-              clipBehavior: Clip.antiAlias,
-              child: image.isEmpty
-                  ? const Center(
-                      child: Icon(Icons.tv, color: Colors.white24, size: 20),
-                    )
-                  : Image.network(image,
-                      fit: BoxFit.cover,
-                      errorBuilder: (c, e, s) => const Center(
-                            child: Icon(Icons.tv,
-                                color: Colors.white24, size: 20),
-                          )),
+              title: Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+              subtitle: Row(
+                children: [
+                  Text(
+                    'Episodio $episodeNumber',
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                  const Spacer(),
+                  const Icon(Icons.chevron_right,
+                      color: Color(0xFF00A3FF), size: 20),
+                ],
+              ),
             ),
-            backgroundColor: Colors.transparent,
-            collapsedBackgroundColor: Colors.transparent,
-            iconColor: const Color(0xFF00A3FF),
-            collapsedIconColor: Colors.white38,
-            title: Text(
-              name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white, fontSize: 14),
-            ),
-            subtitle: Text(
-              'Episodio $episodeNumber',
-              style: const TextStyle(color: Colors.white38, fontSize: 12),
-            ),
-            onExpansionChanged: (expanded) {
-              if (expanded) _selectEpisode(episodeNumber);
-            },
-            children: [
-              if (loading)
-                const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: CircularProgressIndicator(
-                      color: Color(0xFF00A3FF), strokeWidth: 2),
-                )
-              else if (streams != null)
-                ..._buildStreamChips(streams),
-            ],
           ),
         );
       },
@@ -618,12 +664,10 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     );
   }
 
-  /// Recarga la lista de episodios y los streams del episodio activo.
+  /// Recarga la lista de episodios de la temporada actual.
   Future<void> _refreshEpisodes() async {
     if (_imdbId == null) return;
     await _loadEpisodes(_currentSeasonNumber);
-    final ep = _activeEpisodeNumber ?? 1;
-    await _loadStreams('series', '$_imdbId:$_currentSeasonNumber:$ep');
   }
 
   Widget _buildStreamsSection(List<InstalledAddon> addons) {
@@ -706,21 +750,14 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   /// Vuelve a cargar los streams (refresh con pull-to-refresh).
   Future<void> _refreshStreams() async {
     if (_imdbId == null) return;
-    if (widget.isSeries) {
+    if (widget.isEpisodeMode) {
+      await _loadEpisodeStreams();
+    } else if (widget.isSeries) {
       final ep = _activeEpisodeNumber ?? 1;
       await _loadStreams('series', '$_imdbId:$_currentSeasonNumber:$ep');
     } else {
       await _loadStreams('movie', _imdbId!);
     }
-  }
-
-  List<Widget> _buildStreamChips(List<TorrentStream> streams) {
-    final sorted = [...streams]..sort((a, b) {
-        final sa = a.seeders ?? 0;
-        final sb = b.seeders ?? 0;
-        return sb.compareTo(sa);
-      });
-    return [for (final s in sorted) _buildStreamTile(s)];
   }
 
   Widget _buildStreamTile(TorrentStream stream) {
@@ -933,6 +970,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         );
       } catch (e) {
         print('TORRENT_DBG: _launchWvcCast startStreaming FALLÓ: $e');
+        if (e is TorrentReleasedException) return;
         if (mounted) {
           Navigator.of(context, rootNavigator: true).pop();
           ScaffoldMessenger.of(context).showSnackBar(
