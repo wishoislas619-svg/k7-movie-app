@@ -1486,21 +1486,14 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       }
       return;
     }
-    // Fallback para historial viejo de algo 5 sin directUrl: intentar re-resolver
+    // Historial viejo de algo 5 sin directUrl: no usar primer enlace,
+    // mejor ir a detalle para que el usuario elija el capítulo/enlace correcto.
+    // El directUrl se guardará correctamente la próxima vez que reproduzca.
     if (!_isDirectHttpHistoryItem(item) &&
         !_isTorrentHistoryItem(item) &&
         (item.videoOptionId?.startsWith('tt') ?? false)) {
-      final fallback = await _resolveBestDirectHttpStream(item.videoOptionId!);
-      if (fallback != null && fallback.url != null && fallback.url!.isNotEmpty) {
-        // Crear item temporal con directUrl para reproducir
-        final tmp = item.copyWith(directUrl: fallback.url);
-        if (tmp.mediaType == 'movie') {
-          await _playDirectHttpMovieFromHistory(context, tmp, resume: resume);
-        } else {
-          await _playDirectHttpSeriesFromHistory(context, tmp, resume: resume);
-        }
-        return;
-      }
+      _goToDetails(context, item);
+      return;
     }
     if (_isTorrentHistoryItem(item)) {
       if (item.mediaType == 'movie') {

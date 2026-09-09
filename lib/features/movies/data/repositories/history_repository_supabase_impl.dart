@@ -7,6 +7,13 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
   static bool _directUrlColumnMissing = false;
 
   WatchHistory _fromRow(Map<String, dynamic> row) {
+    var torrentHash = row['torrent_info_hash'] as String?;
+    var directUrl = row['direct_url'] as String?;
+    // Fallback: directUrl persistido en torrent_info_hash con prefijo "direct:"
+    if ((directUrl == null || directUrl.isEmpty) && torrentHash != null && torrentHash.startsWith('direct:')) {
+      directUrl = torrentHash.substring(7);
+      torrentHash = null;
+    }
     return WatchHistory(
       id: row['id'] as String,
       mediaId: row['media_id'] as String,
@@ -21,9 +28,9 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       videoOptionId: row['video_option_id'] as String?,
       lastCastWasCast: row['last_cast_was_cast'] as bool? ?? false,
       castDeviceName: row['cast_device_name'] as String?,
-      torrentInfoHash: row['torrent_info_hash'] as String?,
+      torrentInfoHash: torrentHash,
       torrentFileIdx: row['torrent_file_idx'] as int?,
-      directUrl: row['direct_url'] as String?,
+      directUrl: directUrl,
     );
   }
 
@@ -95,6 +102,12 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       return;
     }
 
+    // Fallback: si direct_url aún no existe en Supabase, persistir directUrl en torrent_info_hash con prefijo
+    String? torrentHashForRow = history.torrentInfoHash;
+    String? directUrlForRow = history.directUrl;
+    if (_directUrlColumnMissing && directUrlForRow != null && (torrentHashForRow == null || torrentHashForRow.isEmpty)) {
+      torrentHashForRow = 'direct:$directUrlForRow';
+    }
     final row = {
       'user_id': userId,
       'media_id': history.mediaId,
@@ -109,9 +122,9 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       'video_option_id': history.videoOptionId,
       'last_cast_was_cast': history.lastCastWasCast,
       'cast_device_name': history.castDeviceName,
-      'torrent_info_hash': history.torrentInfoHash,
+      'torrent_info_hash': torrentHashForRow,
       'torrent_file_idx': history.torrentFileIdx,
-      if (!_directUrlColumnMissing) 'direct_url': history.directUrl,
+      if (!_directUrlColumnMissing) 'direct_url': directUrlForRow,
     };
 
     try {
