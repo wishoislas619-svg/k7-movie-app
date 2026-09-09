@@ -803,6 +803,7 @@ if (widget.videoOptions.isNotEmpty) {
             videoOptionId: _currentOption.id,
             torrentInfoHash: widget.torrentDownloadProgress?.infoHash,
             torrentFileIdx: widget.torrentDownloadProgress?.fileIdx,
+            directUrl: _effectiveAlgorithm == 5 ? _currentOption.videoUrl : null,
           );
     } catch (e) {
       print("⚠️ [SAVE_PROGRESS] Error saving progress: $e");

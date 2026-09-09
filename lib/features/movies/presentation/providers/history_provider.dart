@@ -41,6 +41,7 @@ class HistoryNotifier extends StateNotifier<AsyncValue<List<WatchHistory>>> {
     String? castDeviceName,
     String? torrentInfoHash,
     int? torrentFileIdx,
+    String? directUrl,
   }) async {
     final id = episodeId ?? mediaId;
     final history = WatchHistory(
@@ -59,6 +60,7 @@ class HistoryNotifier extends StateNotifier<AsyncValue<List<WatchHistory>>> {
       castDeviceName: castDeviceName,
       torrentInfoHash: torrentInfoHash,
       torrentFileIdx: torrentFileIdx,
+      directUrl: directUrl,
     );
 
     await ref.read(historyRepositoryProvider).saveHistory(history);

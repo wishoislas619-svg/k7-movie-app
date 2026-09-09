@@ -22,6 +22,7 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       castDeviceName: row['cast_device_name'] as String?,
       torrentInfoHash: row['torrent_info_hash'] as String?,
       torrentFileIdx: row['torrent_file_idx'] as int?,
+      directUrl: row['direct_url'] as String?,
     );
   }
 
@@ -109,6 +110,7 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       'cast_device_name': history.castDeviceName,
       'torrent_info_hash': history.torrentInfoHash,
       'torrent_file_idx': history.torrentFileIdx,
+      'direct_url': history.directUrl,
     };
 
     try {
@@ -120,7 +122,21 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
           .upsert(row, onConflict: 'user_id, media_id');
       print('--- [HISTORIAL] Guardado con éxito en Supabase ---');
     } catch (e) {
-      print('--- [HISTORIAL] ERROR al guardar en Supabase: $e ---');
+      // Fallback si la columna direct_url aún no existe en Supabase (migración pendiente)
+      if (e.toString().contains('direct_url')) {
+        print('--- [HISTORIAL] direct_url no existe en Supabase, reintentando sin él: $e ---');
+        row.remove('direct_url');
+        try {
+          await _client
+              .from('user_watch_history')
+              .upsert(row, onConflict: 'user_id, media_id');
+          print('--- [HISTORIAL] Guardado sin direct_url con éxito ---');
+        } catch (e2) {
+          print('--- [HISTORIAL] ERROR al guardar sin direct_url: $e2 ---');
+        }
+      } else {
+        print('--- [HISTORIAL] ERROR al guardar en Supabase: $e ---');
+      }
     }
   }
 

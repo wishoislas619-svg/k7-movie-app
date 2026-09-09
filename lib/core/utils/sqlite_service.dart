@@ -31,7 +31,7 @@ version: 23,
         '--- [SQLITE] Intentando borrar base de datos corrupta para resetear ---',
       );
       await deleteDatabase(path);
-      return await openDatabase(path, version: 23, onCreate: _onCreate);
+      return await openDatabase(path, version: 24, onCreate: _onCreate, onUpgrade: _onUpgrade);
     }
   }
 
@@ -242,6 +242,13 @@ version: 23,
         );
       } catch (_) {}
     }
+    if (oldVersion < 24) {
+      try {
+        await db.execute(
+          'ALTER TABLE watch_history ADD COLUMN directUrl TEXT',
+        );
+      } catch (_) {}
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -393,7 +400,8 @@ version: 23,
         lastCastWasCast INTEGER DEFAULT 0,
         castDeviceName TEXT,
         torrentInfoHash TEXT,
-        torrentFileIdx INTEGER
+        torrentFileIdx INTEGER,
+        directUrl TEXT
       )
     ''');
   }

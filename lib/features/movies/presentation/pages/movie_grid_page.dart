@@ -1197,8 +1197,8 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                     icon: Icons.details,
                     iconColor: const Color(0xFFFFD54F),
                     title: 'Ver Detalle',
-                    subtitle: _isTorrentHistoryItem(item)
-                        ? 'Abrir pantalla de enlaces del torrent'
+                    subtitle: (_isTorrentHistoryItem(item) || _isDirectHttpHistoryItem(item))
+                        ? 'Abrir pantalla de enlaces'
                         : 'Abrir pantalla de detalles',
                     onTap: () {
                       Navigator.pop(ctx);
@@ -1411,7 +1411,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   }
 
   void _goToDetails(BuildContext context, WatchHistory item) {
-    if (_isTorrentHistoryItem(item)) {
+    if (_isTorrentHistoryItem(item) || _isDirectHttpHistoryItem(item)) {
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -1478,6 +1478,14 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     WatchHistory item, {
     required bool resume,
   }) async {
+    if (_isDirectHttpHistoryItem(item)) {
+      if (item.mediaType == 'movie') {
+        await _playDirectHttpMovieFromHistory(context, item, resume: resume);
+      } else {
+        await _playDirectHttpSeriesFromHistory(context, item, resume: resume);
+      }
+      return;
+    }
     if (_isTorrentHistoryItem(item)) {
       if (item.mediaType == 'movie') {
         await _playTorrentMovieFromHistory(context, item, resume: resume);
@@ -1585,7 +1593,13 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   /// torrents se registran en el historial con `videoOptionId` = imdb id).
   bool _isTorrentHistoryItem(WatchHistory item) =>
       (item.videoOptionId?.startsWith('tt') ?? false) &&
-      item.mediaId.isNotEmpty;
+      item.mediaId.isNotEmpty &&
+      (item.torrentInfoHash != null && item.torrentInfoHash!.isNotEmpty);
+
+  /// Detecta si un item de "Continuar Viendo" proviene de Addon Latam /
+  /// algoritmo 5 (http directo). Se guarda `directUrl` en el historial.
+  bool _isDirectHttpHistoryItem(WatchHistory item) =>
+      item.directUrl != null && item.directUrl!.isNotEmpty;
 
   /// Devuelve el stream desde el torrent EXACTO que se reproduce/aprueba en el
   /// historial (infoHash + fileIdx guardados al jugar), saltándose la
@@ -1863,6 +1877,85 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
     });
   }
 
+  /// Reproduce una peli Addon Latam (algo 5 / http directo) desde "Continuar
+  /// viendo" usando la URL guardada en `directUrl`. Es reproducción directa
+  /// con VideoPlayerPage algoritmo 5 y resume si corresponde.
+  Future<void> _playDirectHttpMovieFromHistory(
+    BuildContext context,
+    WatchHistory item, {
+    required bool resume,
+  }) async {
+    final url = item.directUrl;
+    if (url == null || url.isEmpty) {
+      _goToDetails(context, item);
+      return;
+    }
+    final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
+    final option = VideoOption(
+      id: item.videoOptionId ?? item.mediaId,
+      movieId: item.mediaId,
+      serverImagePath: item.imagePath,
+      resolution: 'Auto',
+      videoUrl: url,
+      extractionAlgorithm: 5,
+    );
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerPage(
+          movieName: item.title,
+          videoOptions: [option],
+          mediaId: item.mediaId,
+          mediaType: 'movie',
+          imagePath: item.imagePath,
+          extractionAlgorithm: 5,
+          startPosition: startPos,
+          skipAd: true,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _playDirectHttpSeriesFromHistory(
+    BuildContext context,
+    WatchHistory item, {
+    required bool resume,
+  }) async {
+    final url = item.directUrl;
+    if (url == null || url.isEmpty) {
+      _goToDetails(context, item);
+      return;
+    }
+    final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
+    final chapterLabel = (item.subtitle != null && item.subtitle!.isNotEmpty)
+        ? '${item.title} · ${item.subtitle}'
+        : item.title;
+    final option = VideoOption(
+      id: item.videoOptionId ?? item.mediaId,
+      movieId: item.mediaId,
+      serverImagePath: item.imagePath,
+      resolution: 'Auto',
+      videoUrl: url,
+      extractionAlgorithm: 5,
+    );
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerPage(
+          movieName: chapterLabel,
+          videoOptions: [option],
+          mediaId: item.mediaId,
+          mediaType: 'series',
+          imagePath: item.imagePath,
+          episodeId: item.episodeId,
+          extractionAlgorithm: 5,
+          startPosition: startPos,
+          skipAd: true,
+        ),
+      ),
+    );
+  }
+
   /// Sirve un archivo local de torrent vía HTTP localhost para que WVC (app
   /// externa) pueda leerlo. Igual a lo que hace stream_list_page._launchWvcCast.
   /// Devuelve una URL http://127.0.0.1:port/local/<fileId>.ext.
@@ -2107,6 +2200,34 @@ final totalDuration = item.totalDuration > 0
     required String mode,
     required bool resume,
   }) async {
+    if (_isDirectHttpHistoryItem(item)) {
+      final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
+      final totalDuration = item.totalDuration > 0 ? Duration(milliseconds: item.totalDuration) : null;
+      // Direct http (Addon Latam / algo 5): CastButton con URL directa.
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: const Color(0xFF141414),
+        isScrollControlled: true,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        builder: (_) => CastButton(
+          videoUrl: item.directUrl!,
+          title: item.title,
+          imageUrl: item.imagePath,
+          currentPosition: startPos,
+          duration: totalDuration,
+          mediaId: item.mediaId,
+          mediaType: item.mediaType,
+          subtitleLabel: item.subtitle,
+          videoOptionId: item.videoOptionId,
+          showImmediately: true,
+          preferredLaunchMode: mode,
+          skipAd: true,
+        ),
+      );
+      return;
+    }
     if (_isTorrentHistoryItem(item)) {
       if (item.mediaType == 'movie') {
         await _castTorrentMovieFromHistory(context, item, mode: mode, resume: resume);

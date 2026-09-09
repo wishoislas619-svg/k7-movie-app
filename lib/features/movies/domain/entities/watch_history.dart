@@ -18,6 +18,9 @@ class WatchHistory {
   // sin seeders y jamás obtener metadata).
   final String? torrentInfoHash;
   final int? torrentFileIdx;
+  // URL http directa para Addon Latam / algoritmo 5 (sin torrent). Se guarda
+  // para que "Continuar viendo" pueda reanudar sin re-resolver addons.
+  final String? directUrl;
 
   WatchHistory({
     required this.id,
@@ -35,6 +38,7 @@ class WatchHistory {
     this.castDeviceName,
     this.torrentInfoHash,
     this.torrentFileIdx,
+    this.directUrl,
   });
 
   WatchHistory copyWith({
@@ -46,6 +50,7 @@ class WatchHistory {
     String? castDeviceName,
     String? torrentInfoHash,
     int? torrentFileIdx,
+    String? directUrl,
   }) {
     return WatchHistory(
       id: id,
@@ -63,6 +68,7 @@ class WatchHistory {
       castDeviceName: castDeviceName ?? this.castDeviceName,
       torrentInfoHash: torrentInfoHash ?? this.torrentInfoHash,
       torrentFileIdx: torrentFileIdx ?? this.torrentFileIdx,
+      directUrl: directUrl ?? this.directUrl,
     );
   }
 
@@ -90,6 +96,7 @@ class WatchHistory {
       castDeviceName: map['castDeviceName']?.toString(),
       torrentInfoHash: map['torrentInfoHash']?.toString(),
       torrentFileIdx: map['torrentFileIdx'] as int?,
+      directUrl: map['directUrl']?.toString(),
     );
   }
 
@@ -110,6 +117,7 @@ class WatchHistory {
       'castDeviceName': castDeviceName,
       'torrentInfoHash': torrentInfoHash,
       'torrentFileIdx': torrentFileIdx,
+      'directUrl': directUrl,
     };
   }
 }
