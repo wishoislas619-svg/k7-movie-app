@@ -1112,7 +1112,33 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         return;
       }
     } else {
-      url = stream.url;
+      final directUrl = stream.url!;
+      // Heurística para WVC: si es MKV o 5.1/6ch/DTS/TrueHD, usar ffmpeg para 2ch
+      final lowerName = '${stream.name} ${stream.title}'.toLowerCase();
+      final needsTranscode = lowerName.contains('5.1') ||
+          lowerName.contains('6ch') ||
+          lowerName.contains('dts') ||
+          lowerName.contains('truehd') ||
+          directUrl.toLowerCase().contains('.mkv');
+      if (needsTranscode) {
+        try {
+          await MediaProxyService().start();
+          final headers = <String, String>{
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': Uri.parse(directUrl).origin,
+            'Origin': Uri.parse(directUrl).origin,
+          };
+          final ffmpegUrl = await MediaProxyService().getFfmpegUrl(directUrl, headers);
+          print('🔊 [WVC] Direct http 6ch/MKV -> ffmpeg: $ffmpegUrl');
+          url = ffmpegUrl;
+        } catch (e) {
+          print('⚠️ [WVC] ffmpeg fallback failed: $e');
+          url = directUrl;
+        }
+      } else {
+        url = directUrl;
+      }
     }
 
     final videoUrl = url;

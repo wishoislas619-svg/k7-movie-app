@@ -2300,7 +2300,32 @@ final totalDuration = item.totalDuration > 0
     if (_isDirectHttpHistoryItem(item)) {
       final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
       final totalDuration = item.totalDuration > 0 ? Duration(milliseconds: item.totalDuration) : null;
-      // Direct http (Addon Latam / algo 5): CastButton con URL directa.
+      String videoUrlForCast = item.directUrl!;
+      // Para WVC, si es posible 6ch/MKV, usar ffmpeg para 2ch (TVs fallan con 5.1)
+      if (mode == 'wvc') {
+        final lowerTitle = item.title.toLowerCase();
+        final lowerUrl = videoUrlForCast.toLowerCase();
+        if (lowerTitle.contains('5.1') ||
+            lowerTitle.contains('6ch') ||
+            lowerTitle.contains('dts') ||
+            lowerTitle.contains('truehd') ||
+            lowerUrl.contains('.mkv')) {
+          try {
+            await MediaProxyService().start();
+            final headers = <String, String>{
+              'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              'Referer': Uri.parse(videoUrlForCast).origin,
+              'Origin': Uri.parse(videoUrlForCast).origin,
+            };
+            videoUrlForCast = await MediaProxyService().getFfmpegUrl(videoUrlForCast, headers);
+            print('🔊 [WVC-HISTORY] Direct http 6ch/MKV -> ffmpeg: $videoUrlForCast');
+          } catch (e) {
+            print('⚠️ [WVC-HISTORY] ffmpeg fallback failed: $e');
+          }
+        }
+      }
+      if (!context.mounted) return;
       showModalBottomSheet(
         context: context,
         backgroundColor: const Color(0xFF141414),
@@ -2309,7 +2334,7 @@ final totalDuration = item.totalDuration > 0
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
         builder: (_) => CastButton(
-          videoUrl: item.directUrl!,
+          videoUrl: videoUrlForCast,
           title: item.title,
           imageUrl: item.imagePath,
           currentPosition: startPos,
