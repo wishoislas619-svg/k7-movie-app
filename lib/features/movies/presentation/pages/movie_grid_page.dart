@@ -3,9 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_https_gpl/ffprobe_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:movie_app/features/movies/presentation/providers/movie_provider.dart';
 import 'package:movie_app/features/movies/presentation/providers/category_provider.dart';
@@ -1995,73 +1992,14 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   }
 
   /// Sirve un archivo local de torrent vía HTTP localhost para que WVC (app
-  /// externa) pueda leerlo. Si el audio es 6ch (5.1) lo transcodifica a 2ch
-  /// AAC para que WVC/TV lo reproduzca (muchas TVs fallan con 6ch en MKV).
+  /// externa) pueda leerlo. Igual a lo que hace stream_list_page._launchWvcCast.
+  /// Devuelve una URL http://127.0.0.1:port/local/<fileId>.ext.
   Future<String> _serveFileForWvc(String localPath) async {
     final rawPath = localPath.replaceFirst('file://', '');
-    String pathToServe = rawPath;
-    // Detectar 6ch y transcodificar a 2ch para compatibilidad WVC/TV
-    try {
-      final info = await FFprobeKit.getMediaInformation(rawPath);
-      final mediaInfo = info.getMediaInformation();
-      bool needsTranscode = false;
-      if (mediaInfo != null) {
-        final streams = mediaInfo.getStreams();
-        if (streams != null) {
-          for (final s in streams) {
-            if (s.getType() == 'audio') {
-              final chVal = s.getNumberProperty('channels') ?? s.getProperty('channels');
-              final chStr = chVal?.toString() ?? s.getChannelLayout() ?? '';
-              // channelLayout "5.1" -> 6ch, "stereo" -> 2ch
-              int? ch;
-              if (chStr.contains('5.1') || chStr.contains('6')) ch = 6;
-              else ch = int.tryParse(chStr);
-              if (ch == null) {
-                final rawCh = s.getProperty('channels');
-                ch = rawCh is int ? rawCh : int.tryParse(rawCh?.toString() ?? '');
-              }
-              if (ch != null && ch > 2) {
-                needsTranscode = true;
-                break;
-              }
-              final codec = (s.getCodec() ?? '').toLowerCase();
-              if (codec.contains('truehd') || codec.contains('dts')) {
-                needsTranscode = true;
-                break;
-              }
-            }
-          }
-        }
-      }
-      if (needsTranscode) {
-        final outputPath = rawPath.replaceAll(RegExp(r'\.[^\.]+$'), '_wvc.mp4');
-        final outFile = File(outputPath);
-        final exists = await outFile.exists();
-        final sizeOk = exists ? (await outFile.length()) > 1024 * 1024 : false;
-        if (!sizeOk) {
-          print('🔊 [WVC] Transcoding 6ch -> 2ch AAC para WVC: $rawPath');
-          final cmd =
-              '-y -i "$rawPath" -c:v copy -c:a aac -ac 2 -b:a 128k -movflags +faststart "$outputPath"';
-          final session = await FFmpegKit.execute(cmd);
-          final rc = await session.getReturnCode();
-          if (ReturnCode.isSuccess(rc) && await outFile.exists()) {
-            print('✅ [WVC] Transcode OK: $outputPath');
-            pathToServe = outputPath;
-          } else {
-            print('⚠️ [WVC] Transcode falló, sirviendo original');
-          }
-        } else {
-          print('✅ [WVC] Usando transcode cacheado: $outputPath');
-          pathToServe = outputPath;
-        }
-      }
-    } catch (e) {
-      print('⚠️ [WVC] Check audio falló: $e');
-    }
     await MediaProxyService().start();
-    final fileId = pathToServe.hashCode.abs().toString();
-    MediaProxyService().registerLocalFile(fileId, pathToServe);
-    final ext = pathToServe.contains('.') ? pathToServe.split('.').last : 'mp4';
+    final fileId = rawPath.hashCode.abs().toString();
+    MediaProxyService().registerLocalFile(fileId, rawPath);
+    final ext = rawPath.contains('.') ? rawPath.split('.').last : 'mkv';
     return 'http://127.0.0.1:${MediaProxyService().port}/local/$fileId.$ext';
   }
 
@@ -2300,37 +2238,7 @@ final totalDuration = item.totalDuration > 0
     if (_isDirectHttpHistoryItem(item)) {
       final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
       final totalDuration = item.totalDuration > 0 ? Duration(milliseconds: item.totalDuration) : null;
-      String videoUrlForCast = item.directUrl!;
-      // Para WVC, si es posible 6ch/MKV, usar ffmpeg para 2ch (TVs fallan con 5.1)
-      if (mode == 'wvc') {
-        final lowerTitle = item.title.toLowerCase();
-        final lowerUrl = videoUrlForCast.toLowerCase();
-        if (lowerTitle.contains('5.1') ||
-            lowerTitle.contains('6ch') ||
-            lowerTitle.contains('dts') ||
-            lowerTitle.contains('truehd') ||
-            lowerUrl.contains('.mkv')) {
-          try {
-            await MediaProxyService().start();
-            final headers = <String, String>{
-              'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-              'Referer': Uri.parse(videoUrlForCast).origin,
-              'Origin': Uri.parse(videoUrlForCast).origin,
-            };
-            videoUrlForCast = await MediaProxyService().getFfmpegUrl(videoUrlForCast, headers);
-            print('🔊 [WVC-HISTORY] Direct http 6ch/MKV -> ffmpeg: $videoUrlForCast');
-          } catch (e) {
-            print('⚠️ [WVC-HISTORY] ffmpeg fallback failed: $e');
-          }
-        }
-        // Mantener proxy/ffmpeg vivo mientras WVC reproduce (app va a background)
-        await ForegroundService.start(
-          title: 'Transmitiendo a Web Video Caster',
-          text: item.title,
-        );
-      }
-      if (!context.mounted) return;
+      // Direct http (Addon Latam / algo 5): CastButton con URL directa.
       showModalBottomSheet(
         context: context,
         backgroundColor: const Color(0xFF141414),
@@ -2339,7 +2247,7 @@ final totalDuration = item.totalDuration > 0
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
         builder: (_) => CastButton(
-          videoUrl: videoUrlForCast,
+          videoUrl: item.directUrl!,
           title: item.title,
           imageUrl: item.imagePath,
           currentPosition: startPos,
