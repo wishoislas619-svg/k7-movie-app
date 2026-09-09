@@ -87,7 +87,8 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage> {
   Future<void> _openResult(Map<String, dynamic> movie) async {
     // Persiste la búsqueda localmente (últimas 20) para acceder rápido.
     StorageService.saveSearchEntry(movie);
-    final isSeries = movie['mediaType'] == 'series';
+    final rawType = (movie['mediaType'] as String?)?.toLowerCase() ?? '';
+    final isSeries = rawType == 'series' || rawType == 'tv' || rawType.contains('series');
     if (mounted) {
       await Navigator.push(
         context,
