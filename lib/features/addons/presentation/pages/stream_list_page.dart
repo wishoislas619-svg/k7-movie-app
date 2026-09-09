@@ -1112,38 +1112,56 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         return;
       }
     } else {
-      final directUrl = stream.url!;
-      // Heurística para WVC: si es MKV o 5.1/6ch/DTS/TrueHD, usar ffmpeg para 2ch
-      final lowerName = '${stream.name} ${stream.title}'.toLowerCase();
-      final needsTranscode = lowerName.contains('5.1') ||
-          lowerName.contains('6ch') ||
-          lowerName.contains('dts') ||
-          lowerName.contains('truehd') ||
-          directUrl.toLowerCase().contains('.mkv');
-      if (needsTranscode) {
+      // Direct http (Addon Latam) - Para WVC, algunos MKV con audio 6ch (EAC3/DTS)
+      // no se escuchan en TVs. Si es Latam/MKV, transcodificar audio a AAC 2ch vía FFmpeg.
+      final isLatamForWvc = _isLatamStream(stream);
+      final isMkv = (stream.url?.toLowerCase().contains('.mkv') ?? false) ||
+          stream.name.toLowerCase().contains('mkv') ||
+          stream.title.toLowerCase().contains('mkv');
+      if (isLatamForWvc || isMkv) {
+        // Mostrar diálogo de carga mientras FFmpeg arranca (similar a torrent)
+        final progressNotifier = ValueNotifier<String?>(null);
+        if (mounted) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => AlertDialog(
+              backgroundColor: const Color(0xFF141414),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(color: Color(0xFF00A3FF)),
+                  const SizedBox(height: 16),
+                  const Text('Preparando stream para TV...', style: TextStyle(color: Colors.white)),
+                  const SizedBox(height: 8),
+                  ValueListenableBuilder<String?>(
+                    valueListenable: progressNotifier,
+                    builder: (_, msg, __) => Text(msg ?? 'Iniciando FFmpeg...', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
         try {
           await MediaProxyService().start();
           final headers = <String, String>{
-            'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Referer': Uri.parse(directUrl).origin,
-            'Origin': Uri.parse(directUrl).origin,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': Uri.parse(stream.url!).origin,
+            'Accept': '*/*',
           };
-          final ffmpegUrl = await MediaProxyService().getFfmpegUrl(directUrl, headers);
-          print('🔊 [WVC] Direct http 6ch/MKV -> ffmpeg: $ffmpegUrl');
-          url = ffmpegUrl;
+          progressNotifier.value = 'Transcodificando audio a AAC 2ch...';
+          url = await MediaProxyService().getFfmpegUrl(stream.url!, headers, useLocalhost: false, transcodeAudio: true);
+          if (mounted) Navigator.of(context, rootNavigator: true).pop();
+          // Mantener FFmpeg vivo mientras WVC reproduce (el proxy lo mantiene)
         } catch (e) {
-          print('⚠️ [WVC] ffmpeg fallback failed: $e');
-          url = directUrl;
+          if (mounted) Navigator.of(context, rootNavigator: true).pop();
+          print('⚠️ [WVC] FFmpeg transcode fallo, usando URL directa: $e');
+          url = stream.url;
         }
       } else {
-        url = directUrl;
+        url = stream.url;
       }
-      // Mantener proxy/ffmpeg vivo en 2º plano mientras WVC reproduce (app va a background)
-      await ForegroundService.start(
-        title: 'Transmitiendo a Web Video Caster',
-        text: stream.title,
-      );
     }
 
     final videoUrl = url;
