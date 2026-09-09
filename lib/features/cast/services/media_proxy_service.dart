@@ -53,9 +53,9 @@ class MediaProxyService {
     }
     final headerStr = headerLines.join('\\r\\n');
 
-    // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
+    // FFmpeg: remux → MP4 fragmentado + audio a AAC 2ch para WVC/TV (6ch falla en muchas TVs)
     // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
-    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c:v copy -c:a aac -ac 2 -b:a 128k -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
     print('🎬 [FFMPEG] Starting stream $id: $cmd');
 
     _activeStreams[id] = _FfmpegStream(
