@@ -4689,12 +4689,19 @@ if (widget.videoOptions.isNotEmpty) {
                       child: Slider(
                         value: _videoScale,
                         min: 0.8,
-                        max: 2.8,
-                        divisions: 20,
+                        max: 3.0,
+                        divisions: 22,
                         label: '${(_videoScale * 100).toInt()}%',
                         onChanged: (v) {
                           setState(() => _videoScale = v);
-                          _transformController.value = Matrix4.identity()..scale(v);
+                          // Escala centrada para que la imagen no se vaya a la esquina
+                          final size = MediaQuery.of(context).size;
+                          final cx = size.width / 2;
+                          final cy = size.height / 2;
+                          _transformController.value = Matrix4.identity()
+                            ..translate(cx, cy)
+                            ..scale(v)
+                            ..translate(-cx, -cy);
                         },
                       ),
                     ),
