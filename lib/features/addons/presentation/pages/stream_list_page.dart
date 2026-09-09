@@ -1113,6 +1113,16 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       }
     } else {
       url = await _prepareWvcUrl(stream.url!);
+      // Solo mantener vivo el servicio si la URL apunta a nuestro proxy local
+      // (transcode/remux); si WVC recibe la URL original/HLS no es necesario.
+      final servesFromProxy =
+          url.startsWith('http://127.0.0.1:${MediaProxyService().port}');
+      if (servesFromProxy) {
+        await ForegroundService.start(
+          title: 'Transmitiendo a Web Video Caster',
+          text: 'Preparando stream para la TV',
+        );
+      }
     }
 
     final videoUrl = url;
