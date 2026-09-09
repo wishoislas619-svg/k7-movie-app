@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+
+import '../../../../core/constants/app_constants.dart';
 
 /// Resultado de iniciar la reproducción de un torrent vía libtorrent.
 class TorrentPlaybackSession {
@@ -122,6 +125,33 @@ class TorrentStreamingService {
     final dir = Directory(p.join(_saveDir!, infoHash.toLowerCase()));
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return dir.path;
+  }
+
+  /// Elimina los subdirectorios `torrents/<infohash>/` de TODOS los demás
+  /// infohashes salvo el indicado (limpieza de caché al empezar una descarga
+  /// nueva desde "Continuar viendo"). Nunca borra el subdir de torrents aún
+  /// vivos en el engine ni el del infohash actual.
+  void _cleanOtherCachesExcept(String keepInfoHash) {
+    final keep = keepInfoHash.toLowerCase();
+    try {
+      final root = Directory(_saveDir!);
+      if (!root.existsSync()) return;
+      for (final entity in root.listSync(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final name = p.basename(entity.path);
+        final subHash = name.toLowerCase();
+        final isActive = _managedTorrentIds.any(
+            (id) => _infohashToTorrentId.entries.any(
+                (e) => e.value == id && e.key.toString().toLowerCase() == subHash));
+        if (subHash.isNotEmpty &&
+            subHash != keep &&
+            !isActive) {
+          entity.deleteSync(recursive: true);
+          print('TORRENT_DBG: caché de infohash $name eliminada (descarga '
+              'nueva de otro torrent desde Continuar viendo)');
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _ensureInit() async {
@@ -347,12 +377,35 @@ disableUpnp: false,
     int preloadBytes = 50 * 1024 * 1024,
     int? knownSizeBytes,
     ValueNotifier<TorrentDownloadProgress?>? progressToReport,
+    bool resumeFromCache = false,
   }) async {
     print('TORRENT_DBG: startStreaming() infohash=$infoHash fileIdx=$fileIndex '
         'startPercent=$startPercent%');
     await _ensureInit();
     final engine = LibtorrentFlutter.instance;
     final saveDir = _saveDirFor(infoHash);
+
+    // 🗂 Reanudar desde una descarga COMPLETA en disco: si este infohash
+    // (+fileIdx) ya terminó de descargarse al 100% y el archivo sigue en disco
+    // (marcador `.k7complete.json`), reproducimos DIRECTAMENTE ese archivo sin
+    // tocar el engine: nada de delete ni re-descarga, reproducción inmediata.
+    // Solo opera cuando el caller lo pide; si el archivo no está completo o ya
+    // se borró, cae al flujo normal (limpieza + descarga desde cero).
+    if (resumeFromCache) {
+      final cachedPath = completedCacheLocalPath(infoHash, fileIndex);
+      if (cachedPath != null) {
+        print('TORRENT_DBG: ▶ CACHE COMPLETA encontrada para infohash='
+            '${infoHash.toLowerCase()} fileIdx=$fileIndex → reproduciendo '
+            'directamente desde disco (sin re-descarga): $cachedPath');
+        return cachedStreamingHandle(
+          infoHash: infoHash,
+          fileIdx: fileIndex,
+          localPath: cachedPath,
+        );
+      }
+      print('TORRENT_DBG: resumeFromCache sin descarga completa en disco → '
+          'empieza descarga normal (limpiando subdir).');
+    }
 
     // Limpia SOLO el subdirectorio de ESTE infohash (nunca el global): un
     // `startStreaming` no debe romper los archivos de otro torrent en curso.
@@ -387,6 +440,15 @@ disableUpnp: false,
     _disposeAllSessionsExcept(engine, torrentId);
     _infohashToTorrentId[infoHash.toLowerCase()] = torrentId;
     print('TORRENT_DBG: startStreaming addMagnet(id=$torrentId) OK');
+
+    // Si el usuario pidió reanudar pero no había caché completa reutilizable
+    // (torrent diferente o descarga incompleta/borrada), limpiamos las cachés
+    // de OTROS infohashes para liberar disco: el flujo "Continuar viendo" no
+    // debe arrastrar descargas viejas. El subdir del infohash actual ya fue
+    // limpiado más arriba (delete → create) para empezar de cero.
+    if (resumeFromCache) {
+      _cleanOtherCachesExcept(infoHash);
+    }
 
     final progress = ValueNotifier(TorrentDownloadProgress(
       percent: 0,
@@ -538,7 +600,27 @@ disableUpnp: false,
         final nativeMaxPiece = maxPieceSeen >= 0 ? maxPieceSeen + 1 : 0;
 
         double doneFraction = 0;
-        double totalMBd = totalMB.toDouble();
+        // MB totales recalcularlos CADA iteración (no solo al inicio, cuando
+        // `bestTotalWanted` aún es 0): preferimos el tamaño del archivo objetivo
+        // (episodio en packs / película single-file), después `knownSizeBytes` de
+        // Torrentio, y como último recurso el `totalWanted` del bridge.
+        double totalMBd = 0;
+        if (targetFile != null && targetFile.size > 0) {
+          totalMBd = targetFile.size / 1048576.0;
+        } else if (knownSizeBytes != null && knownSizeBytes > 0) {
+          totalMBd = knownSizeBytes / 1048576.0;
+        } else if (bestTotalWanted > 0) {
+          totalMBd = bestTotalWanted / 1048576.0;
+        } else if (localPath.isNotEmpty) {
+          // Reanudar (historial): el archivo ya está completo/parcial en disco y
+          // el bridge no reporta totalWanted (queda 0) ni size en getFiles.
+          // El tamaño REAL del archivo objetivo en disco es el único total
+          // fiable → lo escalamos por la fracción de piezas.
+          try {
+            final diskLen = await File(localPath).length();
+            totalMBd = diskLen > 0 ? diskLen / 1048576.0 : 0;
+          } catch (_) {}
+        }
         if (torrentTotalBytes > 0 && bridgeNumPieces > 0 &&
             target >= 0 && target < files.length) {
           // pieceLen estimado del torrent completo (nativo real).
@@ -679,6 +761,8 @@ disableUpnp: false,
           progress.value = finished;
           progressToReport?.value = finished;
           if (!done.isCompleted) done.complete();
+          _writeCompleteMarker(
+              infoHash, target >= 0 ? target : null, localPath, fileLenAtFinish);
           print('TORRENT_DBG: ▶ descarga COMPLETA al 100% → devolviendo sesión '
               'file:// (${totalMB.toStringAsFixed(1)}MB en disco)');
           break;
@@ -707,7 +791,7 @@ disableUpnp: false,
         final _ = _backgroundDownload(engine, torrentId, downloadedPieces,
             maxPieceSeen, bestTotalWanted, alertFinished, done, progress, totalMB, knownSizeBytes,
             files: files, target: target, minPieceSeen: minPieceSeen,
-            localPath: localPath);
+            localPath: localPath, infoHash: infoHash);
         // El usuario quiere esperar a la descarga COMPLETA para que el archivo
         // `file://` se pueda abrir. Mantenemos el diálogo (con % + velocidad)
         // hasta que `done` se complete (100%), y solo entonces devolvemos la
@@ -776,6 +860,7 @@ disableUpnp: false,
     int? target,
     int minPieceSeen = -1,
     String localPath = '',
+    String infoHash = '',
   }) async {
     int localMaxPiece = maxPieceSeen;
     int localMinPiece = minPieceSeen;
@@ -817,8 +902,28 @@ disableUpnp: false,
         // (totalWanted del bridge) en packs apunta al torrent completo, no al
         // episodio; `ti.totalDone` queda congelado en ~0 en packs.
         double doneFraction = 0;
-        double totalMBd = totalMB.toDouble();
+        // MB totales recalcularlos CADA iteración (no solo al inicio, cuando
+        // `localBest`/`totalMB` aún es 0): preferimos el tamaño del archivo
+        // objetivo, después `knownSizeBytes` de Torrentio, y como último
+        // recurso el `totalWanted` del bridge (`localBest` convergido).
         final filesL = files ?? const <FileInfo>[];
+        double totalMBd = 0;
+        if (target != null && target >= 0 && target < filesL.length &&
+            filesL[target].size > 0) {
+          totalMBd = filesL[target].size / 1048576.0;
+        } else if (knownSizeBytes != null && knownSizeBytes > 0) {
+          totalMBd = knownSizeBytes / 1048576.0;
+        } else if (localBest > 0) {
+          totalMBd = localBest / 1048576.0;
+        } else if (localPath.isNotEmpty) {
+          // Reanudar (historial): mismo fallback que en `startStreaming`: el
+          // archivo ya está en disco (completo o parcial) y el bridge no da
+          // totalWanted ni size → usamos el tamaño real del archivo como total.
+          try {
+            final diskLen = await File(localPath).length();
+            totalMBd = diskLen > 0 ? diskLen / 1048576.0 : 0;
+          } catch (_) {}
+        }
         final torrentTotalBytes = (filesL.isNotEmpty && filesL.any((f) => f.size > 0))
             ? filesL.fold<int>(0, (acc, f) => acc + f.size)
             : 0;
@@ -906,6 +1011,11 @@ disableUpnp: false,
             state: 'finished',
             finished: true,
           );
+          if (infoHash.isNotEmpty) {
+            _writeCompleteMarker(
+                infoHash, target != null && target >= 0 ? target : null,
+                localPath, fileLen);
+          }
           if (!done.isCompleted) done.complete();
           break;
         }
@@ -1734,6 +1844,90 @@ disableUpnp: false,
     return p >= 0 ? p : null;
   }
 
+  /// Persiste un marcador `.k7complete.json` dentro del subdir del infohash
+  /// cuando el archivo objetivo terminó de descargarse al 100% en disco.
+  /// Permite que "Continuar viendo" detecte una descarga COMPLETA reutilizable
+  /// y la reproduzca directo (`file://`) SIN re-descargarla desde cero, al
+  /// tiempo que evita reusar descargas parciales (sin marcador → se descarga
+  /// de nuevo).
+  void _writeCompleteMarker(String infoHash, int? fileIdx, String localPath, int sizeBytes) {
+    if (sizeBytes <= 0 || localPath.isEmpty) return;
+    try {
+      final dir = Directory(_saveDirFor(infoHash));
+      final marker = File(p.join(dir.path, '.k7complete.json'));
+      marker.writeAsStringSync(jsonEncode({
+        'fileIdx': fileIdx,
+        'localPath': localPath,
+        'sizeBytes': sizeBytes,
+        'completedAt': DateTime.now().toIso8601String(),
+      }));
+      print('TORRENT_DBG: marcador de descarga COMPLETA ✓ $localPath '
+          '(${sizeBytes}B) fileIdx=$fileIdx');
+    } catch (_) {}
+  }
+
+  /// Devuelve la ruta local del archivo COMPLETO cacheado para `infoHash`
+  /// (+`fileIdx` opcional), o null si no hay descarga completa reutilizable
+  /// (no existe marcador, el archivo fue borrado o quedó a medio terminar).
+  /// SOLO reusamos descargas al 100%; parciales → null (se re-descarga).
+  String? completedCacheLocalPath(String infoHash, int? fileIdx) {
+    try {
+      final marker = File(p.join(_saveDirFor(infoHash), '.k7complete.json'));
+      if (!marker.existsSync()) return null;
+      final map = jsonDecode(marker.readAsStringSync()) as Map<String, dynamic>;
+      final mIdx = map['fileIdx'] as int?;
+      final localPath = map['localPath'] as String?;
+      final size = map['sizeBytes'] as int? ?? 0;
+      if (localPath == null || localPath.isEmpty) return null;
+      if (mIdx != null && fileIdx != null && mIdx != fileIdx) return null;
+      final f = File(localPath);
+      if (!f.existsSync()) return null;
+      final len = f.lengthSync();
+      if (size > 0 && len < size) return null;
+      return localPath;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Handle sintético "ya descargado al 100%" para reproducir un archivo
+  /// cacheado sin necesidad de torrent: `done` ya completado, progreso en
+  /// finished y `stop()` es no-op (torrentId=-1). Conserva infoHash/fileIdx
+  /// para que el historial siga apuntando al torrent exacto.
+  TorrentStreamingHandle cachedStreamingHandle({
+    required String infoHash,
+    required int? fileIdx,
+    required String localPath,
+  }) {
+    final len = File(localPath).lengthSync();
+    final totalMB = len / 1048576.0;
+    final progress = ValueNotifier<TorrentDownloadProgress>(
+      TorrentDownloadProgress(
+        percent: 100,
+        downloadedMB: totalMB,
+        totalMB: totalMB,
+        speedMBps: 0,
+        peers: 0,
+        seeds: 0,
+        state: 'finished',
+        finished: true,
+      ),
+    );
+    final done = Completer<void>()..complete();
+    return TorrentStreamingHandle(
+      session: TorrentPlaybackSession(
+        torrentId: -1,
+        streamId: 0,
+        localPath: localPath,
+        name: localPath,
+      ),
+      progress: progress,
+      done: done.future,
+      infoHash: infoHash,
+      fileIdx: fileIdx,
+    );
+  }
+
   /// Registra en logs la lista completa de archivos del torrent para poder
   /// decodificar qué es lo que trae el enlace extraído por el addon.
   void _logFileList(List<FileInfo> files, {int max = 200}) {
@@ -1755,6 +1949,13 @@ disableUpnp: false,
     print('TORRENT_DBG: stop() llamado streamId=${session.streamId} torrentId=${session.torrentId}');
     _stopKeepAliveFor(session.torrentId);
     _managedTorrentIds.remove(session.torrentId);
+    // Sesión servida desde caché (descarga COMPLETA reutilizada): no hay
+    // torrent real en el engine; solo terminamos de limpiar bookkeeping.
+    if (session.torrentId < 0) {
+      print('TORRENT_DBG: stop() sesión de CACHÉ (sin torrent en engine) → '
+          'se conserva el archivo en disco');
+      return;
+    }
     if (!_initDone) return;
     try {
       final engine = LibtorrentFlutter.instance;
@@ -1766,12 +1967,12 @@ disableUpnp: false,
     } catch (_) {}
   }
 
-  /// Descarga el torrent COMPLETO (todos los archivos) a la carpeta pública
-  /// `Descargas/K7-MOVIE/<movieName>/` del almacenamiento externo. A diferencia
-  /// de `startStreaming`/`downloadAndPlay`, no reproduce: solo descarga y copia
-  /// todos los archivos del torrent a una carpeta con nombre legible, y luego
-  /// libera el torrent. Emite progreso vía [onProgress] hasta el 100% y devuelve
-  /// la ruta de la carpeta destino.
+  /// Descarga el torrent COMPLETO (solo el archivo principal) a la carpeta
+  /// pública `Descargas/K7-MOVIE/` del almacenamiento externo, SIN crear
+  /// subcarpeta por película/episodio: el archivo queda directo con su nombre
+  /// original. A diferencia de `startStreaming`/`downloadAndPlay`, no reproduce:
+  /// solo descarga y libera el torrent. Emite progreso vía [onProgress] hasta el
+  /// 100% y devuelve la ruta del archivo destino.
   Future<String> downloadComplete({
     required String infoHash,
     required String movieName,
@@ -1812,14 +2013,11 @@ disableUpnp: false,
     _infohashToTorrentId[infoHash.toLowerCase()] = torrentId;
     print('TORRENT_DBG: downloadComplete addMagnet(id=$torrentId) OK');
 
-    // Carpeta destino: Descargas/K7-MOVIE/<movieName>/
+    // Carpeta destino: Descargas/K7-MOVIE/ (sin subcarpeta por película).
     final downloadsRoot = await _downloadsRootDir();
-    final safeName = movieName
-        .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
-        .trim();
-    final destDir = Directory(p.join(downloadsRoot, 'K7-MOVIE', safeName));
-    destDir.createSync(recursive: true);
-    print('TORRENT_DBG: downloadComplete carpeta destino=$destDir.path');
+    final k7Dir = Directory(p.join(downloadsRoot, 'K7-MOVIE'));
+    k7Dir.createSync(recursive: true);
+    print('TORRENT_DBG: downloadComplete carpeta destino=${k7Dir.path}');
 
     final deadline = DateTime.now().add(maxWait);
     late StreamSubscription<(int, String)> alertSub;
@@ -1837,8 +2035,27 @@ disableUpnp: false,
       }
       _logFileList(files);
 
-      // Descargar TODOS los archivos (torrent completo).
-      engine.setFilePriorities(torrentId, List<int>.filled(files.length, 7));
+      // Descargar SOLO el archivo principal (el mayor reproducible). El resto
+      // va a prioridad 0 (skip) para no desperdiciar ancho de banda.
+      final target = _pickFileIndex(files, null);
+      if (target < 0 || target >= files.length) {
+        engine.disposeTorrent(torrentId);
+        throw Exception('Torrent sin archivo reproducible.');
+      }
+      final targetFile = files[target];
+      final priorities = List<int>.filled(files.length, 0);
+      priorities[target] = 7;
+      engine.setFilePriorities(torrentId, priorities);
+      print('TORRENT_DBG: downloadComplete target file idx=$target '
+          '${targetFile.name} (${targetFile.size}B)');
+
+      // Ruta real en disco del archivo objetivo dentro del saveDir.
+      final relPath = targetFile.path
+          .replaceAll('\\', '/')
+          .split('/')
+          .where((s) => s.isNotEmpty && s != '.' && s != '..')
+          .join('/');
+      final localPath = p.join(saveDir, relPath);
 
       _startKeepAlive(engine, torrentId);
       alertSub = LibtorrentFlutter.alertStream.listen((e) {
@@ -1913,15 +2130,26 @@ disableUpnp: false,
         throw Exception('La descarga no completó a tiempo.');
       }
 
-      // ── Copiar TODOS los archivos a la carpeta destino ──
-      _copyTorrentTo(saveDir, destDir.path);
+      // ── Copiar SOLO el archivo principal a K7-MOVIE (sin carpetas) ──
+      final destFile = File(p.join(k7Dir.path, p.basename(localPath)));
+      final srcFile = File(localPath);
+      if (!srcFile.existsSync()) {
+        throw Exception('El archivo descargado no existe: $localPath');
+      }
+      final parent = p.dirname(destFile.path);
+      Directory(parent).createSync(recursive: true);
+      try {
+        if (destFile.existsSync()) destFile.deleteSync();
+      } catch (_) {}
+      srcFile.copySync(destFile.path);
+      print('TORRENT_DBG: downloadComplete archivo final ${destFile.path}');
 
       _stopKeepAliveFor(torrentId);
       _managedTorrentIds.remove(torrentId);
       _infohashToTorrentId.remove(infoHash.toLowerCase());
       try { engine.disposeTorrent(torrentId); } catch (_) {}
-      print('TORRENT_DBG: downloadComplete listo en ${destDir.path}');
-      return destDir.path;
+      print('TORRENT_DBG: downloadComplete listo en ${destFile.path}');
+      return destFile.path;
     } catch (e) {
       print('TORRENT_DBG: downloadComplete error: $e');
       try { await alertSub.cancel(); } catch (_) {}
@@ -1934,38 +2162,14 @@ disableUpnp: false,
   }
 
   Future<String> _downloadsRootDir() async {
-    // Almacenamiento externo raíz: /storage/emulated/0 (Android).
-    try {
-      if (Platform.isAndroid) {
-        final ext = await getExternalStorageDirectory();
-        if (ext != null) return ext.path;
-      }
-    } catch (_) {}
+    // Carpeta pública que la app ya usa para las descargas de pelis/series
+    // normales: /storage/emulated/0/Download/K7-MOVIE. `getExternalStorageDirectory`
+    // NO sirve aquí porque devuelve la ruta privada de la app (/Android/data/...).
+    if (!AppConstants.secureSave && Platform.isAndroid) {
+      return '/storage/emulated/0/Download';
+    }
     final docs = await getApplicationDocumentsDirectory();
     return docs.path;
-  }
-
-  void _copyTorrentTo(String srcDir, String destDir) {
-    // Recorre recursivamente saveDir y copia cada archivo real a destDir,
-    // respetando la estructura de subcarpetas internas del torrent.
-    final src = Directory(srcDir);
-    if (!src.existsSync()) return;
-    for (final entity in src.listSync(recursive: false)) {
-      final rel = p.relative(entity.path, from: srcDir);
-      if (entity is File) {
-        final target = p.join(destDir, rel);
-        final parent = p.dirname(target);
-        Directory(parent).createSync(recursive: true);
-        try {
-          entity.copySync(target);
-          print('TORRENT_DBG: copiado ${entity.path} → $target');
-        } catch (e) {
-          print('TORRENT_DBG: error copiando ${entity.path}: $e');
-        }
-      } else if (entity is Directory) {
-        _copyTorrentTo(entity.path, p.join(destDir, rel));
-      }
-    }
   }
 
   /// Detiene todos los torrents activos (p.ej. al salir de la app).

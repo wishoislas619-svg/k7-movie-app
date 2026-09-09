@@ -24,6 +24,9 @@ class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
   static const String _torrentioConfigureUrl =
       'https://torrentio.strem.fun/configure';
 
+  static const String _latamConfigureUrl =
+      'https://addonlatampagina.duckdns.org';
+
   void _openConfig(String url) {
     Navigator.push(
       context,
@@ -108,6 +111,8 @@ class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
             _buildInstallTorrentioCard()
           else
             _buildAlreadyInstalledCard(),
+          const SizedBox(height: 16),
+          _buildInstallLatamCard(),
           const SizedBox(height: 16),
           _buildManualInstallCard(),
           const SizedBox(height: 24),
@@ -247,6 +252,59 @@ class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
                 child: Text(_error!,
                     style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInstallLatamCard() {
+    return EnergyFlowBorder(
+      borderRadius: 14,
+      borderWidth: 1.2,
+      duration: const Duration(seconds: 6),
+      backgroundColor: const Color(0xFF0E1B2A),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Instalar Addon Latam',
+                style: TextStyle(
+                    color: Color(0xFF00FF87),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 17)),
+            const SizedBox(height: 8),
+            const Text(
+              'Addon Latam agrega fuentes de películas y series con audio en '
+              'español latino (enlaces directos http). El enlace de instalación '
+              'es personal: al registrarte con tu correo lo recibes en el email.',
+              style: TextStyle(color: Colors.white70, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Regístrate en la página de configuración y guarda el email con tu '
+              'enlace (termina en manifest.json).',
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+            const SizedBox(height: 4),
+            SelectableText('https://addonlatampagina.duckdns.org',
+                style: const TextStyle(color: Color(0xFF00FF87))),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF00FF87),
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                onPressed: () => _openConfig(_latamConfigureUrl),
+                icon: const Icon(Icons.tune),
+                label: const Text('Configurar Addon Latam',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ),
           ],
         ),
       ),

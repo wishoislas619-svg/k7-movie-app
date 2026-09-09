@@ -139,9 +139,10 @@ class _AddonConfigPageState extends ConsumerState<AddonConfigPage> {
   }
 
   Widget _buildInstallBanner() {
+    final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: EdgeInsets.fromLTRB(12, 12, 12, 12 + bottomInset),
       color: const Color(0xFF00FF87).withValues(alpha: 0.08),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -186,9 +187,10 @@ class _AddonConfigPageState extends ConsumerState<AddonConfigPage> {
   }
 
   Widget _buildManualHint() {
+    final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: EdgeInsets.fromLTRB(12, 12, 12, 12 + bottomInset),
       color: const Color(0xFF1A1A1A),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

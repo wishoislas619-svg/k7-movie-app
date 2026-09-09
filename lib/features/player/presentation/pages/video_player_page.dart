@@ -119,6 +119,11 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
   /// mantiene el seek bloqueado (barra gris) hasta que la descarga completa.
   final TorrentStreamingHandle? torrentDownloadProgress;
 
+  /// Si el anuncio recompensado ya se mostró antes de iniciar la descarga del
+  /// torrent (flujos de play desde pantalla de enlaces o "Continuar Viendo"),
+  /// el player omite su propio gate de anuncio para no duplicarlo.
+  final bool skipAd;
+
   const VideoPlayerPage({
     super.key,
     required this.movieName,
@@ -142,6 +147,7 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.initialBrightness,
     this.headers,
     this.initialController,
+    this.skipAd = false,
   });
 
   final double? initialVolume;
@@ -286,16 +292,19 @@ List<SubtitleInfo> _internalSubtitles = [];
   @override
   void initState() {
     super.initState();
+    print('🚀 [VP_INIT] widget.extractionAlgorithm=${widget.extractionAlgorithm} widget.isLocal=${widget.isLocal} widget.skipAd=${widget.skipAd} widget.mediaId=${widget.mediaId}');
     WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     _setupTorrentProgress();
 
     _initialVolume = widget.initialVolume;
     _initialBrightness = widget.initialBrightness;
-    if (widget.videoOptions.isNotEmpty) {
+if (widget.videoOptions.isNotEmpty) {
       _currentOption = widget.videoOptions.first;
       final lcUrl = _currentOption.videoUrl.toLowerCase();
-      
+
+      print('🔍 [INIT_STATE] widget.extractionAlgorithm=${widget.extractionAlgorithm} lcUrl=$lcUrl');
+
       // Detectar streams locales de libtorrent. Dos formatos posibles:
       //   - Legacy HTTP with range: http://127.0.0.1:PORT/stream/<infohash>/...
       //   - Nuevo: file://<ruta real en disco> tras pre-descargar ~1 minuto.
@@ -312,12 +321,18 @@ List<SubtitleInfo> _internalSubtitles = [];
       } else if (lcUrl.contains('embed.su') || lcUrl.contains('videasy')) {
         _effectiveAlgorithm = 3;
         print('🎯 [ALGO_DETECT] embed.su/videasy → _effectiveAlgorithm=3');
+      } else if (widget.extractionAlgorithm == 5) {
+        // Stream http directo (Addon Latam / debrid con URL). Reproducción
+        // directa sin scraper ni proxy local: el enlace ya es reproducible.
+        _effectiveAlgorithm = 5; // 5 = stream http directo
+        print('🎯 [ALGO_DETECT] Stream http directo (Addon Latam) → _effectiveAlgorithm=5');
       } else {
         _effectiveAlgorithm = widget.extractionAlgorithm;
         print('🎯 [ALGO_DETECT] extractionAlgorithm del widget → _effectiveAlgorithm=$_effectiveAlgorithm');
       }
     } else {
       _effectiveAlgorithm = widget.extractionAlgorithm;
+      print('🎯 [ALGO_DETECT] Sin videoOptions → _effectiveAlgorithm=$_effectiveAlgorithm');
       // Evitar crash si la lista está vacía
       _errorMessage =
           "No hay opciones de video disponibles para este contenido.";
@@ -426,6 +441,14 @@ List<SubtitleInfo> _internalSubtitles = [];
     // Permisos de almacenamiento para local/torrent independientemente del rol
     if (widget.isLocal || _isLibtorrentStream) {
       await _ensureStoragePermissions();
+    }
+
+    // Flujo inciado desde pantalla de enlaces/Continuar Viendo donde el anuncio
+    // recompensado YA se mostró antes de la descarga → reproducción directa.
+    if (widget.skipAd) {
+      print('✅ [AD_CHECK] skipAd=true → direct playback (ad ya visto)');
+      _startPlayback();
+      return;
     }
 
     if (role == 'admin' || role == 'uservip' || widget.isLocal) {
@@ -685,6 +708,7 @@ List<SubtitleInfo> _internalSubtitles = [];
 
   Future<void> _startPlayback() async {
     _isAdVerified = true;
+    print('🎬 [START_PLAYBACK] _effectiveAlgorithm=$_effectiveAlgorithm widget.extractionAlgorithm=${widget.extractionAlgorithm} isLocal=${widget.isLocal} _isLibtorrentStream=$_isLibtorrentStream');
     // Asegurar modo inmersivo al empezar la peli
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
@@ -694,6 +718,7 @@ List<SubtitleInfo> _internalSubtitles = [];
         videoUrl.contains('.m3u8') ||
         videoUrl.contains('.m3u') ||
         (videoUrl.contains('cf-master') && videoUrl.contains('.txt'));
+    print('🎬 [START_PLAYBACK] videoUrl=$videoUrl isDirect=$isDirect');
 
     if (widget.initialController != null) {
       _controller = widget.initialController;
@@ -703,8 +728,15 @@ List<SubtitleInfo> _internalSubtitles = [];
       _controller?.addListener(_onVideoTick);
       _startHideTimer();
       _startProgressTimer();
-    } else if (widget.isLocal || isDirect || _isLibtorrentStream) {
+    } else if (widget.isLocal ||
+        isDirect ||
+        _isLibtorrentStream ||
+        _effectiveAlgorithm == 5 ||
+        widget.extractionAlgorithm == 5) {
       // Streams de torrent local (libtorrent) también usan reproducción directa
+      // Algoritmo 5 = stream http directo (Addon Latam): reproducción directa.
+      // Chequeo doble con widget.extractionAlgorithm por si _effectiveAlgorithm
+      // no se detectó correctamente en initState.
       _isLoading = false;
       _isInitialLoading = false;
       // Pausa extendida + pre-check HTTP para que el servidor local de libtorrent estabilice.
@@ -1935,6 +1967,11 @@ List<SubtitleInfo> _internalSubtitles = [];
           remux: false,
           toCast: false, // Bypass para ExoPlayer
         );
+      } else if (_effectiveAlgorithm == 5) {
+        // Algoritmo 5 (http directo / Addon Latam): reproducción directa de la
+        // URL original. El proxy local no debe tocar el stream: algunos CDNs
+        // envían cabeceras inválidas/no-ASCII (Content-Disposition) al proxy.
+        effectiveUrl = videoUrl;
       } else {
         effectiveUrl = MediaProxyService().getProxiedUrl(
           videoUrl,
@@ -2924,6 +2961,69 @@ List<SubtitleInfo> _internalSubtitles = [];
                           ),
                         ),
 
+                      // Loading overlays (moved here to render UNDER video player)
+                      // Pantalla negra que oculta la vista técnica al usuario
+                      if ((_isWebViewExtracting || _isScrapingSubtitles) &&
+                          _isInitialLoading &&
+                          _effectiveAlgorithm != 3)
+                        Positioned.fill(
+                          child: Container(
+                            color: Colors.black,
+                            child: const Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  CircularProgressIndicator(
+                                    color: Color(0xFF00A3FF),
+                                  ),
+                                  SizedBox(height: 20),
+                                  Text(
+                                    'Cargando video...',
+                                    style: TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      // Loading / Error Overlay (moved UNDER video player)
+                      if (_isAlgo3Extracting &&
+                          (_controller == null ||
+                              !_controller!.value.isInitialized))
+                        Positioned.fill(child: _buildAlgo3LoadingOverlay())
+                      else if (_isLoading &&
+                          !_isWebViewExtracting &&
+                          !_isSwitchingStream)
+                        Positioned.fill(
+                          child: Container(
+                            color: Colors.black,
+                            child: Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const CircularProgressIndicator(
+                                    color: Color(0xFF00A3FF),
+                                  ),
+                                  const SizedBox(height: 20),
+                                  Text(
+                                    _isWebViewExtracting
+                                        ? "Analizando origen de video..."
+                                        : "Cargando video...",
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        )
+                      else if (_errorMessage != null)
+                        Positioned.fill(child: _buildErrorContent()),
+
                       // Video Player
                       if (_isAdVerified &&
                           _errorMessage == null &&
@@ -3851,75 +3951,15 @@ List<SubtitleInfo> _internalSubtitles = [];
                                 ],
                               ),
                             ),
-                          ),
+),
                         ),
-                      // Pantalla negra que oculta la vista técnica al usuario
-                      if ((_isWebViewExtracting || _isScrapingSubtitles) &&
-                          _isInitialLoading &&
-                          _effectiveAlgorithm != 3)
-                        Positioned.fill(
-                          child: Container(
-                            color: Colors.black,
-                            child: const Center(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  CircularProgressIndicator(
-                                    color: Color(0xFF00A3FF),
-                                  ),
-                                  SizedBox(height: 20),
-                                  Text(
-                                    'Cargando video...',
-                                    style: TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 14,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      // Loading / Error Overlay (Moved to end to ensure it covers WebViews)
-                      if (_isAlgo3Extracting &&
-                          (_controller == null ||
-                              !_controller!.value.isInitialized))
-                        Positioned.fill(child: _buildAlgo3LoadingOverlay())
-                      else if (_isLoading &&
-                          !_isWebViewExtracting &&
-                          !_isSwitchingStream)
-                        Positioned.fill(
-                          child: Container(
-                            color: Colors.black,
-                            child: Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const CircularProgressIndicator(
-                                    color: Color(0xFF00A3FF),
-                                  ),
-                                  const SizedBox(height: 20),
-                                  Text(
-                                    _isWebViewExtracting
-                                        ? "Analizando origen de video..."
-                                        : "Cargando video...",
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        )
-                      else if (_errorMessage != null)
-                        Positioned.fill(child: _buildErrorContent()),
+
                     ],
                   ),
                 ),
               ),
             ),
-    );
+        );
   }
 
   Future<void> _loadCreditsData() async {
@@ -6343,6 +6383,14 @@ List<SubtitleInfo> _internalSubtitles = [];
     }
     // Lógica para Algoritmo 2 (Cuevana / Vidsrc)
     else if (_effectiveAlgorithm == 2) {
+      h['Referer'] = _currentOption.videoUrl;
+      h['Origin'] = initialOrigin;
+    }
+    // Algoritmo 5 = stream http directo (Addon Latam): headers genéricos
+    // desktop para evitar bloqueos de CDN. Usa Referer/Origin de la URL original.
+    else if (_effectiveAlgorithm == 5) {
+      h['User-Agent'] =
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
       h['Referer'] = _currentOption.videoUrl;
       h['Origin'] = initialOrigin;
     }

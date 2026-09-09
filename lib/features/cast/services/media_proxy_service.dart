@@ -576,12 +576,21 @@ class MediaProxyService {
 
     request.response.statusCode = response.statusCode;
 
-    // Copiar cabeceras base
+    // Copiar cabeceras base. Dart valida la codificación de cada valor y los
+    // servidores de streams (p.ej. Addon Latam) envían Content-Disposition con
+    // filenames
+    // no-ASCII ("El Hombre Araña 2 (2004) 720p" con Ñ) que lanzan
+    // FormatException en HttpHeaders.set. Si una cabecera no es válida, se
+    // omite: el reproductor no la necesita para reproducir el vídeo.
     response.headers.forEach((key, value) {
       final k = key.toLowerCase();
       // Permitir cabeceras de rango y longitud para evitar corrupción en ExoPlayer
       if (k != 'transfer-encoding' && k != 'content-encoding') {
-        request.response.headers.set(key, value);
+        try {
+          request.response.headers.set(key, value);
+        } catch (e) {
+          print('⚠️ [PROXY][$requestId] Header omitido (valor inválido): $key = $e');
+        }
       }
     });
 

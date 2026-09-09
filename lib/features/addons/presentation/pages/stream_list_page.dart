@@ -4,10 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:android_intent_plus/android_intent.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../../core/services/foreground_service.dart';
 import '../../../../core/services/tmdb_service.dart';
+import '../../../../core/services/ad_gate.dart';
 import '../../../../features/movies/domain/entities/movie.dart';
+import '../../../../features/movies/domain/entities/download_task.dart';
+import '../../../../features/movies/data/repositories/download_repository_impl.dart';
 import '../../../../features/player/presentation/pages/video_player_page.dart';
 import '../../../../providers.dart';
 import '../../../../shared/utils/responsive_layout.dart';
@@ -202,6 +206,22 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     TorrentPlaybackSession? torrentSession;
     TorrentStreamingHandle? torrentHandle;
 
+    final isTorrent =
+        stream.infoHash != null && stream.infoHash!.isNotEmpty;
+    final willUseTorrent =
+        isTorrent && (stream.url == null || stream.url!.isEmpty);
+    print('🎬 [STREAM_PLAY] stream.name=${stream.name} isTorrent=$isTorrent hasUrl=${stream.url != null && stream.url!.isNotEmpty} willUseTorrent=$willUseTorrent');
+    if (willUseTorrent) {
+      // Anuncio recompensado ANTES de empezar la descarga del torrent.
+      final adOk = await requireRewardedAdForTorrent(
+        context,
+        ref,
+        mediaId: widget.tmdbId,
+        mediaType: widget.isSeries ? 'series' : 'movie',
+      );
+      if (!adOk || !mounted) return;
+    }
+
     if (directUrl == null || directUrl.isEmpty) {
       if (stream.infoHash == null || stream.infoHash!.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -230,6 +250,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           fileIndex: stream.fileIdx,
           knownSizeBytes: stream.sizeBytes,
           progressToReport: progressNotifier,
+          resumeFromCache: true,
         );
         torrentSession = handle.session;
         torrentHandle = handle;
@@ -262,6 +283,12 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     final url = directUrl;
     if (url == null || url.isEmpty) return;
 
+    // Algoritmo 4 = stream local de libtorrent (infoHash SIN URL directa).
+    // Algoritmo 5 = stream http directo (Addon Latam / debrid con URL).
+    // 1, 2 y 3 quedan intactos para los flujos de scraper que los usan.
+    final algo = willUseTorrent ? 4 : 5;
+    print('🎬 [STREAM_PLAY] URL=$url computed algo=$algo (willUseTorrent=$willUseTorrent)');
+
     final option = VideoOption(
       id: _imdbId ?? '',
       movieId: widget.tmdbId,
@@ -269,7 +296,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       resolution: stream.quality ?? 'Auto',
       videoUrl: url,
       language: stream.language,
-      extractionAlgorithm: 4,
+      extractionAlgorithm: algo,
     );
     await Navigator.push(
       context,
@@ -280,8 +307,9 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           mediaId: widget.tmdbId,
           mediaType: widget.isSeries ? 'series' : 'movie',
           imagePath: widget.poster,
-          extractionAlgorithm: 4,
+          extractionAlgorithm: algo,
           torrentDownloadProgress: torrentHandle,
+          skipAd: willUseTorrent,
           externalSubtitles: [
             for (final s in stream.subtitles)
               SubtitleInfo(language: s.language, url: s.url)
@@ -880,7 +908,8 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                     onPressed: () => _launchWvcCast(stream),
                   ),
                 ),
-              if (stream.infoHash != null && stream.infoHash!.isNotEmpty)
+              if ((stream.infoHash != null && stream.infoHash!.isNotEmpty) ||
+                  (stream.url != null && stream.url!.isNotEmpty))
                 Tooltip(
                   message: 'Descargar a Descargas/K7-MOVIE',
                   child: IconButton(
@@ -935,7 +964,14 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     TorrentStreamingHandle? handle;
 
     if (isTorrent) {
-      if (!mounted) return;
+      // Anuncio recompensado ANTES de empezar la descarga del torrent.
+      final adOk = await requireRewardedAdForTorrent(
+        context,
+        ref,
+        mediaId: widget.tmdbId,
+        mediaType: widget.isSeries ? 'series' : 'movie',
+      );
+      if (!adOk || !mounted) return;
       final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
       showDialog(
         context: context,
@@ -948,6 +984,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           fileIndex: stream.fileIdx,
           knownSizeBytes: stream.sizeBytes,
           progressToReport: progressNotifier,
+          resumeFromCache: true,
         );
         final TorrentStreamingHandle h = handle;
         // WVC es una app externa y NO puede leer rutas privadas file:// de
@@ -1113,16 +1150,35 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   }
 
   /// Descarga el torrent COMPLETO a `Descargas/K7-MOVIE/<película>/`.
+  /// Si el enlace es un stream http directo (Addon Latam / sin infohash),
+  /// lo descarga con un DownloadTask normal a la misma carpeta pública.
   Future<void> _downloadFull(TorrentStream stream) async {
-    if (stream.infoHash == null || stream.infoHash!.isEmpty) {
+    if ((stream.infoHash == null || stream.infoHash!.isEmpty) &&
+        (stream.url == null || stream.url!.isEmpty)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Este enlace no tiene infohash para descargar.'),
+          content: Text('Este enlace no se puede descargar (falta URL).'),
         ),
       );
       return;
     }
+
+    // Stream http directo (Addon Latam): descarga HTTP normal.
+    if (stream.infoHash == null || stream.infoHash!.isEmpty) {
+      await _downloadDirectHttp(stream);
+      return;
+    }
     if (!mounted) return;
+
+    // Anuncio recompensado ANTES de empezar la descarga completa del torrent.
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: widget.tmdbId,
+      mediaType: widget.isSeries ? 'series' : 'movie',
+    );
+    if (!adOk || !mounted) return;
+
     final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
     // Dialog de progreso no cancelable (descarga completa hasta el 100%).
     showDialog(
@@ -1155,6 +1211,59 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           SnackBar(content: Text('No se pudo descargar el torrent: $e')),
         );
       }
+    }
+  }
+
+  /// Descarga un stream HTTP directo (Addon Latam / debrid) mediante
+  /// `DownloadTask` → `Downloads/K7-MOVIE/`. Misma infraestructura que
+  /// las descargas normales de película (background_downloader + shared storage).
+  Future<void> _downloadDirectHttp(TorrentStream stream) async {
+    final url = stream.url;
+    if (url == null || url.isEmpty) return;
+    if (!mounted) return;
+
+    // Anuncio recompensado (mismo gate que torrent descarga).
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: widget.tmdbId,
+      mediaType: widget.isSeries ? 'series' : 'movie',
+    );
+    if (!adOk || !mounted) return;
+
+    // Headers mínimos para CDNs que validan Referer/UA.
+    final referer = Uri.parse(url).origin;
+    final headers = <String, String>{
+      'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Referer': referer,
+      'Origin': referer,
+      'Accept': '*/*',
+    };
+
+    final task = DownloadTask(
+      id: const Uuid().v4(),
+      movieId: widget.tmdbId,
+      movieName: widget.movieName,
+      imagePath: widget.poster,
+      videoUrl: url,
+      resolution: stream.quality ?? 'Auto',
+      status: DownloadStatus.pending,
+      createdAt: DateTime.now(),
+      headers: headers,
+      isSeries: widget.isSeries,
+      episodeNumber: _activeEpisodeNumber,
+    );
+
+    ref.read(downloadsListProvider.notifier).addDownload(task);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Iniciando descarga en Descargas/K7-MOVIE...'),
+          backgroundColor: Colors.green,
+        ),
+      );
     }
   }
 }

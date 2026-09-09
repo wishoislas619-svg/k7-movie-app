@@ -132,13 +132,95 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
     }
   }
 
+  // Altura media estimada de una tarjeta de episodio (ListTile + márgenes).
+  // Sirve para saltar a un episodio concreto en la SliverList virtualizada
+  // cuando ese item aún no se ha construido (está fuera del viewport).
+  static const double _episodeItemEstimate = 88.0;
+
   void _scrollToEpisode() {
     final centerId = widget.centerOnEpisodeId;
     if (centerId == null) return;
+    // Ya construido (visible / dentro del cacheExtent): snap directo.
     final ctx = _episodeKeys[centerId]?.currentContext;
-    if (ctx == null) return;
+    if (ctx != null) {
+      _animateToEpisode(ctx);
+      return;
+    }
+    // Virtualizado y aún sin construir: estimamos el offset respecto al FINAL
+    // de la lista (los items tienen altura casi constante) y saltamos a él;
+    // un frame después el item queda dentro del cacheExtent y lo centramos.
+    final eps = _episodesMap[_selectedSeason?.id] ?? const <Episode>[];
+    final index = eps.indexWhere((e) => e.id == centerId);
+    if (index < 0 || !_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final maxExtent = position.maxScrollExtent;
+    var estimate = maxExtent -
+        ((eps.length - index) * _episodeItemEstimate) -
+        64; // trailing SizedBox(50) + margen
+    if (estimate < 0) estimate = 0;
+    if (estimate > maxExtent) estimate = maxExtent;
+    _scrollController.jumpTo(estimate);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _convergeToEpisode(
+          centerId,
+          estimate: estimate,
+          direction: 0,
+        ));
+  }
+
+  /// Tras el salto estimado, si el episodio aún no se construyó, recorremos la
+  /// lista en la dirección correcta hasta que entre en el cacheExtent y luego
+  /// lo centramos con `Scrollable.ensureVisible`.
+  void _convergeToEpisode(
+    String centerId, {
+    required double estimate,
+    required int direction,
+  }) {
+    if (!mounted || !_scrollController.hasClients) return;
+    final ctx = _episodeKeys[centerId]?.currentContext;
+    if (ctx != null) {
+      _animateToEpisode(ctx);
+      return;
+    }
+    if (direction.abs() > 20) return; // limite de convergencia
+
+    final eps = _episodesMap[_selectedSeason?.id] ?? const <Episode>[];
+    final index = eps.indexWhere((e) => e.id == centerId);
+    if (index < 0) return;
+    final position = _scrollController.position;
+    // De qué lado del punto estimado estamos: si no construimos y llegamos a
+    // un extremo, el episodio está en el lado opuesto.
+    int nextDir = direction;
+    var nextEstimate = estimate;
+    if (position.pixels <= position.minScrollExtent) {
+      // Tocando el tope → el episodio está más abajo.
+      nextDir = 1;
+      nextEstimate += _episodeItemEstimate;
+    } else if (position.pixels >= position.maxScrollExtent) {
+      // En el final → el episodio está más arriba.
+      nextDir = -1;
+      nextEstimate -= _episodeItemEstimate;
+    } else if (direction == 0) {
+      // Estimación inicial no exacta: avanzamos un item (el target queda cerca).
+      nextDir = 1;
+      nextEstimate += _episodeItemEstimate;
+    } else {
+      nextEstimate = estimate + (_episodeItemEstimate * direction);
+    }
+    final clamped = nextEstimate.clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    _scrollController.jumpTo(clamped);
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _convergeToEpisode(centerId, estimate: clamped, direction: nextDir),
+    );
+  }
+
+  void _animateToEpisode(BuildContext targetContext) {
+    if (!mounted) return;
     Scrollable.ensureVisible(
-      ctx,
+      targetContext,
       duration: const Duration(milliseconds: 400),
       curve: Curves.easeInOut,
       alignment: 0.5,
@@ -652,8 +734,8 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                       opacity: 0.99,
                       child: Image.network(
                         (curSeries.backdropUrl?.isNotEmpty == true
-                                ? curSeries.backdropUrl!
-                                : curSeries.backdrop!) ??
+                                ? curSeries.backdropUrl
+                                : curSeries.backdrop) ??
                             curSeries.imagePath,
                         fit: BoxFit.cover,
                         alignment: Alignment.topCenter,
@@ -693,6 +775,7 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
             child: CustomScrollView(
               controller: _scrollController,
               physics: const AlwaysScrollableScrollPhysics(),
+              cacheExtent: 600,
               slivers: [
                 SliverAppBar(
                   expandedHeight: ResponsiveLayout.isLandscape(context)
@@ -1095,21 +1178,36 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                             ),
                           ),
                           const SizedBox(height: 16),
-                          if (_selectedSeason != null)
-                            ...(_episodesMap[_selectedSeason!.id] ?? []).map(
-                              (ep) => _buildEpisodeItem(
-                                ep,
-                                key: _episodeKeys.putIfAbsent(
-                                  ep.id,
-                                  () => GlobalKey(),
-                                ),
-                              ),
-                            ),
                         ],
-                        const SizedBox(height: 50),
                       ],
                     ),
                   ),
+                ),
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                  sliver: SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      childCount: _selectedSeason == null
+                          ? 0
+                          : (_episodesMap[_selectedSeason!.id]?.length ?? 0),
+                      (context, index) {
+                        final eps = _episodesMap[_selectedSeason!.id] ?? [];
+                        if (index >= eps.length) {
+                          return const SizedBox.shrink();
+                        }
+                        return _buildEpisodeItem(
+                          eps[index],
+                          key: _episodeKeys.putIfAbsent(
+                            eps[index].id,
+                            () => GlobalKey(),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                const SliverToBoxAdapter(
+                  child: SizedBox(height: 50),
                 ),
               ],
             ),

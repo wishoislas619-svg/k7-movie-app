@@ -3,29 +3,41 @@ import 'package:http/http.dart' as http;
 import '../../domain/entities/torrent_stream.dart';
 
 class TorrentioClient {
-  static const String base = 'https://torrentio.strem.fun';
+  /// Host del stream asociado a un manifest. NO debe fijarse a Torrentio:
+  /// cada addon sirve sus streams desde SU host configurado.
+  static String _hostFor(String manifestUrl) {
+    final uri = Uri.tryParse(manifestUrl);
+    if (uri == null || uri.host.isEmpty) return '';
+    return '${uri.scheme}://${uri.host}';
+  }
 
-  /// Descompone una URL de manifest de addon y devuelve los parámetros de
-  /// configuración embebidos para poder construir la URL de streams.
+  /// Descompone una URL de manifest de addon y devuelve la configuración
+  /// embebida en la ruta para poder construir la URL de streams. Quita el
+  /// `manifest.json` final y usa el resto de segmentos como config.
   static String configFromManifest(String manifestUrl) {
-    // Se espera algo como: https://torrentio.strem.fun/{config}/manifest.json
     final uri = Uri.tryParse(manifestUrl);
     if (uri == null) return '';
     final segments = uri.pathSegments;
     if (segments.isEmpty) return '';
-    // El primer segmento es la config (puede estar vacío)
+    // https://host/{config}/manifest.json  ->  {config} (puede tener varias partes)
+    if (segments.last == 'manifest.json' && segments.length > 1) {
+      return segments.sublist(0, segments.length - 1).join('/');
+    }
+    // Sin manifest.json: se asume el primer segmento como config (torrentio).
     return segments.length >= 2 ? segments[0] : '';
   }
 
-  /// Construye la URL base de streams: https://torrentio.strem.fun/{config}/stream/{type}/{id}.json
+  /// Construye la URL base de streams: https://{host}/{config}/stream/{type}/{id}.json
   static String streamUrl({
     required String manifestUrl,
     required String type, // 'movie' | 'series'
     required String imdbId,
   }) {
+    final host = _hostFor(manifestUrl);
+    if (host.isEmpty) return '';
     final config = configFromManifest(manifestUrl);
     final prefix = config.isEmpty ? '' : '/$config';
-    return '$base$prefix/stream/$type/$imdbId.json';
+    return '$host$prefix/stream/$type/$imdbId.json';
   }
 
   static Future<List<Map<String, dynamic>>> fetchManifest(

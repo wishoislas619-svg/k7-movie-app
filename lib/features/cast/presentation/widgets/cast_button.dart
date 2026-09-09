@@ -36,6 +36,11 @@ class CastButton extends ConsumerStatefulWidget {
   final String? videoOptionId;
   final String? preferredLaunchMode;
 
+  /// Si ya se mostró el anuncio recompensado antes de iniciar la descarga del
+  /// torrent (flujos de "Continuar Viendo" y de pantalla de enlaces), se omite
+  /// el gate de anuncio interno del CastButton para no mostrar anuncio doble.
+  final bool skipAd;
+
   const CastButton({
     super.key,
     required this.videoUrl,
@@ -53,6 +58,7 @@ class CastButton extends ConsumerStatefulWidget {
     this.subtitleLabel,
     this.videoOptionId,
     this.preferredLaunchMode,
+    this.skipAd = false,
   });
 
   @override
@@ -337,6 +343,11 @@ class _CastButtonState extends ConsumerState<CastButton>
   }
 
   Future<void> _checkAdAndProceed(VoidCallback onDone) async {
+    if (widget.skipAd) {
+      onDone();
+      return;
+    }
+
     final appUser = ref.read(authStateProvider);
     final role = appUser?.role.toLowerCase() ?? 'user';
     final isAdminOrVip = role == 'admin' || role == 'uservip';

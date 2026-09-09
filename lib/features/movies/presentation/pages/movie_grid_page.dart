@@ -11,6 +11,7 @@ import 'package:movie_app/features/movies/domain/entities/category.dart';
 import 'package:movie_app/features/movies/presentation/pages/movie_details_page.dart';
 import 'package:movie_app/features/movies/presentation/pages/category_page.dart';
 import 'package:movie_app/core/constants/app_constants.dart';
+import 'package:movie_app/core/services/ad_gate.dart';
 import 'package:movie_app/features/auth/presentation/providers/auth_provider.dart';
 import 'package:movie_app/shared/widgets/marquee_text.dart';
 import 'package:movie_app/features/movies/presentation/pages/downloads_page.dart';
@@ -26,6 +27,8 @@ import 'package:movie_app/features/movies/presentation/pages/history_view_all_pa
 import 'package:movie_app/features/series/presentation/providers/series_provider.dart';
 import 'package:movie_app/features/player/presentation/pages/video_player_page.dart';
 import 'package:movie_app/features/cast/presentation/widgets/cast_button.dart';
+import 'package:movie_app/features/cast/services/media_proxy_service.dart';
+import 'package:movie_app/core/services/foreground_service.dart';
 import 'package:movie_app/providers.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 import 'package:movie_app/shared/widgets/tv_focus_wrapper.dart';
@@ -1479,10 +1482,12 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       if (item.mediaType == 'movie') {
         await _playTorrentMovieFromHistory(context, item, resume: resume);
       } else {
-        // Serie por torrent: sin datos de episodio en el historial, llevamos
-        // al usuario a la pantalla de enlaces para que elija capítulo/link.
-        if (!context.mounted) return;
-        _goToDetails(context, item);
+        // Serie por torrent: se reproduce el capítulo EXACTO del torrent
+        // guardado en el historial (infoHash + fileIdx), reusando la descarga
+        // completa si ya está en disco, o limpiando caché y descargando el
+        // enlace torrent de ese capítulo si no. Ya no se manda a la pantalla
+        // de enlaces para elegir de nuevo.
+        await _playTorrentSeriesFromHistory(context, item, resume: resume);
       }
       return;
     }
@@ -1652,6 +1657,18 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       return;
     }
 
+    // Anuncio recompensado ANTES de empezar la descarga del torrent.
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: item.mediaId,
+      mediaType: item.mediaType,
+    );
+    if (!adOk || !context.mounted) {
+      _pendingTorrentInit.remove(launchKey);
+      return;
+    }
+
     final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
     showDialog(
       context: context,
@@ -1666,6 +1683,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         fileIndex: stream.fileIdx,
         knownSizeBytes: stream.sizeBytes,
         progressToReport: progressNotifier,
+        resumeFromCache: true,
       );
       handle = h;
       h.progress.addListener(
@@ -1708,6 +1726,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           extractionAlgorithm: 4,
           startPosition: startPos,
           torrentDownloadProgress: handle,
+          skipAd: true,
           externalSubtitles: [
             for (final s in stream.subtitles)
               SubtitleInfo(language: s.language, url: s.url),
@@ -1720,6 +1739,140 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         TorrentStreamingService.instance.stop(handle!.session);
       }
     });
+  }
+
+  /// Reproduce el capítulo de una serie TORRENT directamente desde "Continuar
+  /// Viendo": usa SIEMPRE el torrent EXACTO guardado en el historial
+  /// (infoHash + fileIdx del enlace de ese capítulo), en lugar de mandar al
+  /// usuario a la pantalla de capítulos/enlaces. Si ese torrent ya está
+  /// descargado al 100% en disco lo reproduce de inmediato; si no, limpia la
+  /// caché de otros infohashes y descarga el enlace torrent del capítulo.
+  Future<void> _playTorrentSeriesFromHistory(
+    BuildContext context,
+    WatchHistory item, {
+    required bool resume,
+  }) async {
+    final imdbId = item.videoOptionId;
+    if (imdbId == null) {
+      _goToDetails(context, item);
+      return;
+    }
+    final launchKey = item.mediaId;
+    if (_pendingTorrentInit.contains(launchKey)) {
+      print('TORRENT_DBG: ignoro tap repetido de serie para mediaId=$launchKey');
+      return;
+    }
+    _pendingTorrentInit.add(launchKey);
+
+    final stream = _historyTorrentStream(item);
+    if (!context.mounted) return;
+    if (stream == null || stream.infoHash == null) {
+      _pendingTorrentInit.remove(launchKey);
+      _goToDetails(context, item);
+      return;
+    }
+
+    // Anuncio recompensado ANTES de empezar la descarga del torrent.
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: item.mediaId,
+      mediaType: item.mediaType,
+    );
+    if (!adOk || !context.mounted) {
+      _pendingTorrentInit.remove(launchKey);
+      return;
+    }
+
+    final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => TorrentLoadingDialog(progress: progressNotifier),
+    );
+
+    TorrentStreamingHandle? handle;
+    try {
+      final h = await TorrentStreamingService.instance.startStreaming(
+        infoHash: stream.infoHash!,
+        fileIndex: stream.fileIdx,
+        knownSizeBytes: stream.sizeBytes,
+        progressToReport: progressNotifier,
+        resumeFromCache: true,
+      );
+      handle = h;
+      h.progress.addListener(
+        () => progressNotifier.value = h.progress.value,
+      );
+    } catch (e) {
+      _pendingTorrentInit.remove(launchKey);
+      if (!context.mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo reproducir el capítulo: $e')),
+      );
+      return;
+    }
+    _pendingTorrentInit.remove(launchKey);
+    if (!context.mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+
+    final startPos = resume
+        ? Duration(milliseconds: item.lastPosition)
+        : Duration.zero;
+    // Título con el capítulo: en el historial los torrents guardan la serie en
+    // `title` y el capítulo en `subtitle` (p.ej. "S1 E5: Capítulo").
+    final chapterLabel = (item.subtitle != null && item.subtitle!.isNotEmpty)
+        ? '${item.title} · ${item.subtitle}'
+        : item.title;
+    final option = VideoOption(
+      id: imdbId,
+      movieId: item.mediaId,
+      serverImagePath: item.imagePath,
+      resolution: stream.quality ?? 'Auto',
+      videoUrl: handle.session.localPath,
+      language: stream.language,
+      extractionAlgorithm: 4,
+    );
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VideoPlayerPage(
+          movieName: chapterLabel,
+          videoOptions: [option],
+          mediaId: item.mediaId,
+          episodeId: item.episodeId,
+          mediaType: 'series',
+          imagePath: item.imagePath,
+          subtitleLabel: item.subtitle,
+          extractionAlgorithm: 4,
+          startPosition: startPos,
+          torrentDownloadProgress: handle,
+          skipAd: true,
+          externalSubtitles: [
+            for (final s in stream.subtitles)
+              SubtitleInfo(language: s.language, url: s.url),
+          ],
+        ),
+      ),
+    ).then((_) {
+      // Libera el torrent y detiene la descarga en 2º plano al cerrar el player.
+      if (handle != null) {
+        TorrentStreamingService.instance.stop(handle!.session);
+      }
+    });
+  }
+
+  /// Sirve un archivo local de torrent vía HTTP localhost para que WVC (app
+  /// externa) pueda leerlo. Igual a lo que hace stream_list_page._launchWvcCast.
+  /// Devuelve una URL http://127.0.0.1:port/local/<fileId>.ext.
+  Future<String> _serveFileForWvc(String localPath) async {
+    final rawPath = localPath.replaceFirst('file://', '');
+    await MediaProxyService().start();
+    final fileId = rawPath.hashCode.abs().toString();
+    MediaProxyService().registerLocalFile(fileId, rawPath);
+    final ext = rawPath.contains('.') ? rawPath.split('.').last : 'mkv';
+    return 'http://127.0.0.1:${MediaProxyService().port}/local/$fileId.$ext';
   }
 
   /// Descarga el torrent de la película con % visible y después transmite por
@@ -1751,6 +1904,18 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       return;
     }
 
+    // Anuncio recompensado ANTES de empezar la descarga del torrent.
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: item.mediaId,
+      mediaType: item.mediaType,
+    );
+    if (!adOk || !context.mounted) {
+      _pendingTorrentInit.remove(launchKey);
+      return;
+    }
+
     final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
     showDialog(
       context: context,
@@ -1765,6 +1930,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         fileIndex: stream.fileIdx,
         knownSizeBytes: stream.sizeBytes,
         progressToReport: progressNotifier,
+        resumeFromCache: true,
       );
       handle = h;
       h.progress.addListener(
@@ -1791,6 +1957,11 @@ final totalDuration = item.totalDuration > 0
         : null;
 
     final localPath = handle.session.localPath;
+    // Para WVC: servir el archivo por HTTP localhost (app externa no puede leer
+    // rutas file:// privadas de la sandbox, y depende de la extensión).
+    final videoUrl = mode == 'wvc'
+        ? await _serveFileForWvc(localPath)
+        : localPath;
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF141414),
@@ -1799,7 +1970,7 @@ final totalDuration = item.totalDuration > 0
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (_) => CastButton(
-        videoUrl: localPath,
+        videoUrl: videoUrl,
         localFilePath: localPath,
         title: item.title,
         imageUrl: item.imagePath,
@@ -1811,6 +1982,121 @@ final totalDuration = item.totalDuration > 0
         videoOptionId: item.videoOptionId,
         showImmediately: true,
         preferredLaunchMode: mode,
+        skipAd: true,
+      ),
+    );
+  }
+
+  /// Descarga/recupera el capítulo de una serie TORRENT y lo transmite por el
+  /// modo indicado (cast local o Web Video Caster) desde el torrent EXACTO del
+  /// historial (infoHash + fileIdx), igual que las películas.
+  Future<void> _castTorrentSeriesFromHistory(
+    BuildContext context,
+    WatchHistory item, {
+    required String mode,
+    required bool resume,
+  }) async {
+    if (item.videoOptionId == null || !_isTorrentHistoryItem(item)) {
+      _goToDetails(context, item);
+      return;
+    }
+    final launchKey = item.mediaId;
+    if (_pendingTorrentInit.contains(launchKey)) {
+      print('TORRENT_DBG: ignoro tap repetido de cast serie para mediaId=$launchKey');
+      return;
+    }
+    _pendingTorrentInit.add(launchKey);
+
+    final stream = _historyTorrentStream(item);
+    if (!context.mounted) return;
+    if (stream == null || stream.infoHash == null) {
+      _pendingTorrentInit.remove(launchKey);
+      _goToDetails(context, item);
+      return;
+    }
+
+    // Anuncio recompensado ANTES de empezar la descarga del torrent.
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: item.mediaId,
+      mediaType: item.mediaType,
+    );
+    if (!adOk || !context.mounted) {
+      _pendingTorrentInit.remove(launchKey);
+      return;
+    }
+
+    final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => TorrentLoadingDialog(progress: progressNotifier),
+    );
+
+    TorrentStreamingHandle? handle;
+    try {
+      final h = await TorrentStreamingService.instance.startStreaming(
+        infoHash: stream.infoHash!,
+        fileIndex: stream.fileIdx,
+        knownSizeBytes: stream.sizeBytes,
+        progressToReport: progressNotifier,
+        resumeFromCache: true,
+      );
+      handle = h;
+      h.progress.addListener(
+        () => progressNotifier.value = h.progress.value,
+      );
+    } catch (e) {
+      _pendingTorrentInit.remove(launchKey);
+      if (!context.mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo transmitir el torrent: $e')),
+      );
+      return;
+    }
+    _pendingTorrentInit.remove(launchKey);
+    if (!context.mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+
+    final startPos = resume
+        ? Duration(milliseconds: item.lastPosition)
+        : Duration.zero;
+    final totalDuration = item.totalDuration > 0
+        ? Duration(milliseconds: item.totalDuration)
+        : null;
+
+    final localPath = handle.session.localPath;
+    // Para WVC: servir el archivo por HTTP localhost (app externa no puede leer
+    // rutas file:// privadas de la sandbox).
+    final videoUrl = mode == 'wvc'
+        ? await _serveFileForWvc(localPath)
+        : localPath;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF141414),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => CastButton(
+        videoUrl: videoUrl,
+        localFilePath: localPath,
+        title: (item.subtitle != null && item.subtitle!.isNotEmpty)
+            ? '${item.title} · ${item.subtitle}'
+            : item.title,
+        imageUrl: item.imagePath,
+        currentPosition: startPos,
+        duration: totalDuration,
+        mediaId: item.mediaId,
+        episodeId: item.episodeId,
+        mediaType: 'series',
+        subtitleLabel: item.subtitle,
+        videoOptionId: item.videoOptionId,
+        showImmediately: true,
+        preferredLaunchMode: mode,
+        skipAd: true,
       ),
     );
   }
@@ -1825,8 +2111,7 @@ final totalDuration = item.totalDuration > 0
       if (item.mediaType == 'movie') {
         await _castTorrentMovieFromHistory(context, item, mode: mode, resume: resume);
       } else {
-        if (!context.mounted) return;
-        _goToDetails(context, item);
+        await _castTorrentSeriesFromHistory(context, item, mode: mode, resume: resume);
       }
       return;
     }
