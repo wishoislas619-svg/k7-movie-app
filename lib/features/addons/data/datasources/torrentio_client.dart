@@ -3,19 +3,29 @@ import 'package:http/http.dart' as http;
 import '../../domain/entities/torrent_stream.dart';
 
 class TorrentioClient {
+  /// Normaliza manifestUrl: Stremio usa `stremio://` pero http necesita `https://`
+  static String _normalize(String manifestUrl) {
+    if (manifestUrl.startsWith('stremio://')) {
+      return manifestUrl.replaceFirst('stremio://', 'https://');
+    }
+    return manifestUrl;
+  }
+
   /// Host del stream asociado a un manifest. NO debe fijarse a Torrentio:
   /// cada addon sirve sus streams desde SU host configurado.
   static String _hostFor(String manifestUrl) {
-    final uri = Uri.tryParse(manifestUrl);
+    final normalized = _normalize(manifestUrl);
+    final uri = Uri.tryParse(normalized);
     if (uri == null || uri.host.isEmpty) return '';
-    return '${uri.scheme}://${uri.host}';
+    return 'https://${uri.host}';
   }
 
   /// Descompone una URL de manifest de addon y devuelve la configuración
   /// embebida en la ruta para poder construir la URL de streams. Quita el
   /// `manifest.json` final y usa el resto de segmentos como config.
   static String configFromManifest(String manifestUrl) {
-    final uri = Uri.tryParse(manifestUrl);
+    final normalized = _normalize(manifestUrl);
+    final uri = Uri.tryParse(normalized);
     if (uri == null) return '';
     final segments = uri.pathSegments;
     if (segments.isEmpty) return '';
@@ -43,8 +53,9 @@ class TorrentioClient {
   static Future<List<Map<String, dynamic>>> fetchManifest(
     String manifestUrl,
   ) async {
+    final normalized = _normalize(manifestUrl);
     final resp =
-        await http.get(Uri.parse(manifestUrl), headers: {'accept': 'application/json'});
+        await http.get(Uri.parse(normalized), headers: {'accept': 'application/json'});
     if (resp.statusCode != 200) {
       throw Exception('Manifest error: HTTP ${resp.statusCode}');
     }
