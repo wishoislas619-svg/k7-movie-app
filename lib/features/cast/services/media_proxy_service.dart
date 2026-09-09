@@ -54,8 +54,7 @@ class MediaProxyService {
     final headerStr = headerLines.join('\\r\\n');
 
     // FFmpeg: remux → MP4 fragmentado + audio a AAC 2ch para WVC/TV (6ch falla en muchas TVs)
-    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
-    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c:v copy -c:a aac -ac 2 -b:a 128k -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    final cmd = '-y -headers "$headerStr\\r\\n" -analyzeduration 0 -probesize 32M -i "$url" -c:v copy -c:a aac -ac 2 -b:a 128k -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"';
     print('🎬 [FFMPEG] Starting stream $id: $cmd');
 
     _activeStreams[id] = _FfmpegStream(
@@ -66,7 +65,14 @@ class MediaProxyService {
     FFmpegKit.executeAsync(cmd, (session) async {
       final rc = await session.getReturnCode();
       final isOk = ReturnCode.isSuccess(rc);
-      print('🎬 [FFMPEG] Stream $id ended: rc=$rc success=$isOk');
+      String logStr = '';
+      try {
+        final logs = await session.getAllLogsAsString();
+        if (logs != null && logs.isNotEmpty) {
+          logStr = logs.length > 800 ? logs.substring(logs.length - 800) : logs;
+        }
+      } catch (_) {}
+      print('🎬 [FFMPEG] Stream $id ended: rc=$rc success=$isOk ${logStr.isNotEmpty ? "logTail: $logStr" : ""}');
       final entry = _activeStreams[id];
       if (entry != null) {
         entry.isComplete = true;
@@ -122,23 +128,30 @@ class MediaProxyService {
           await Future.delayed(const Duration(milliseconds: 200));
         }
       } else {
-        // Sin Range: stream progresivo chunked
-        // Esperar primer chunk de FFmpeg
-        const chunkSize = 64 * 1024;
-        int offset = 0;
-        while (!entry.isComplete || offset < await file.length()) {
-          final currentSize = await file.length();
-          if (currentSize > offset) {
-            final end = (offset + chunkSize).clamp(0, currentSize);
-            final chunk = await file.openRead(offset, end).toList();
-            for (final data in chunk) {
-              request.response.add(data);
+        // Sin Range: si el file ya está completo, servir con Content-Length (no chunked)
+        if (entry.isComplete) {
+          final fileSize = await file.length();
+          request.response.headers.set('Content-Length', fileSize.toString());
+          print('📡 [FFSTREAM][$id] Serving complete file $fileSize bytes (no Range)');
+          await file.openRead().pipe(request.response);
+        } else {
+          // Stream progresivo chunked mientras FFmpeg escribe
+          const chunkSize = 64 * 1024;
+          int offset = 0;
+          while (!entry.isComplete || offset < await file.length()) {
+            final currentSize = await file.length();
+            if (currentSize > offset) {
+              final end = (offset + chunkSize).clamp(0, currentSize);
+              final chunk = await file.openRead(offset, end).toList();
+              for (final data in chunk) {
+                request.response.add(data);
+              }
+              await request.response.flush();
+              offset = end;
+            } else {
+              if (entry.isComplete) break;
+              await Future.delayed(const Duration(milliseconds: 200));
             }
-            await request.response.flush();
-            offset = end;
-          } else {
-            if (entry.isComplete) break;
-            await Future.delayed(const Duration(milliseconds: 200));
           }
         }
       }
