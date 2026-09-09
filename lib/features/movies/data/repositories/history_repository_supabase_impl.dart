@@ -4,6 +4,7 @@ import '../../domain/repositories/history_repository.dart';
 
 class HistoryRepositorySupabaseImpl implements HistoryRepository {
   final _client = SupabaseService.client;
+  static bool _directUrlColumnMissing = false;
 
   WatchHistory _fromRow(Map<String, dynamic> row) {
     return WatchHistory(
@@ -110,7 +111,7 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       'cast_device_name': history.castDeviceName,
       'torrent_info_hash': history.torrentInfoHash,
       'torrent_file_idx': history.torrentFileIdx,
-      'direct_url': history.directUrl,
+      if (!_directUrlColumnMissing) 'direct_url': history.directUrl,
     };
 
     try {
@@ -124,7 +125,8 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
     } catch (e) {
       // Fallback si la columna direct_url aún no existe en Supabase (migración pendiente)
       if (e.toString().contains('direct_url')) {
-        print('--- [HISTORIAL] direct_url no existe en Supabase, reintentando sin él: $e ---');
+        _directUrlColumnMissing = true;
+        print('--- [HISTORIAL] direct_url no existe en Supabase, reintentando sin él (futuras escrituras sin direct_url): $e ---');
         row.remove('direct_url');
         try {
           await _client
