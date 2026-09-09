@@ -4690,7 +4690,7 @@ if (widget.videoOptions.isNotEmpty) {
                         value: _videoScale,
                         min: 0.8,
                         max: 3.0,
-                        divisions: 22,
+                        divisions: 220,
                         label: '${(_videoScale * 100).toInt()}%',
                         onChanged: (v) {
                           setState(() => _videoScale = v);
