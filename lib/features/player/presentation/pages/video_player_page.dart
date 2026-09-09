@@ -3051,9 +3051,7 @@ if (widget.videoOptions.isNotEmpty) {
                               height: _controller!.value.size.height > 0
                                   ? _controller!.value.size.height
                                   : 1080,
-                              child: AspectRatio(
-                                aspectRatio: _controller!.value.aspectRatio,
-                                child: Stack(
+                              child: Stack(
                               alignment: Alignment.bottomCenter,
                               children: [
                                 InteractiveViewer(
@@ -3107,7 +3105,6 @@ if (widget.videoOptions.isNotEmpty) {
                               ],
                             ),
                           ),
-                            ),
                             ),
                           ),
 
