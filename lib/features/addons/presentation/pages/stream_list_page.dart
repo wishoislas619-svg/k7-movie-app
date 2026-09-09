@@ -1139,6 +1139,11 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       } else {
         url = directUrl;
       }
+      // Mantener proxy/ffmpeg vivo en 2º plano mientras WVC reproduce (app va a background)
+      await ForegroundService.start(
+        title: 'Transmitiendo a Web Video Caster',
+        text: stream.title,
+      );
     }
 
     final videoUrl = url;

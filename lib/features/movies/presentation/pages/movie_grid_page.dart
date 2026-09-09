@@ -2324,6 +2324,11 @@ final totalDuration = item.totalDuration > 0
             print('⚠️ [WVC-HISTORY] ffmpeg fallback failed: $e');
           }
         }
+        // Mantener proxy/ffmpeg vivo mientras WVC reproduce (app va a background)
+        await ForegroundService.start(
+          title: 'Transmitiendo a Web Video Caster',
+          text: item.title,
+        );
       }
       if (!context.mounted) return;
       showModalBottomSheet(
