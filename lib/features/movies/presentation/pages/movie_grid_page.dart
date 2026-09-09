@@ -3,6 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/ffprobe_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:movie_app/features/movies/presentation/providers/movie_provider.dart';
 import 'package:movie_app/features/movies/presentation/providers/category_provider.dart';
@@ -1992,14 +1995,73 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   }
 
   /// Sirve un archivo local de torrent vía HTTP localhost para que WVC (app
-  /// externa) pueda leerlo. Igual a lo que hace stream_list_page._launchWvcCast.
-  /// Devuelve una URL http://127.0.0.1:port/local/<fileId>.ext.
+  /// externa) pueda leerlo. Si el audio es 6ch (5.1) lo transcodifica a 2ch
+  /// AAC para que WVC/TV lo reproduzca (muchas TVs fallan con 6ch en MKV).
   Future<String> _serveFileForWvc(String localPath) async {
     final rawPath = localPath.replaceFirst('file://', '');
+    String pathToServe = rawPath;
+    // Detectar 6ch y transcodificar a 2ch para compatibilidad WVC/TV
+    try {
+      final info = await FFprobeKit.getMediaInformation(rawPath);
+      final mediaInfo = info.getMediaInformation();
+      bool needsTranscode = false;
+      if (mediaInfo != null) {
+        final streams = mediaInfo.getStreams();
+        if (streams != null) {
+          for (final s in streams) {
+            if (s.getType() == 'audio') {
+              final chVal = s.getNumberProperty('channels') ?? s.getProperty('channels');
+              final chStr = chVal?.toString() ?? s.getChannelLayout() ?? '';
+              // channelLayout "5.1" -> 6ch, "stereo" -> 2ch
+              int? ch;
+              if (chStr.contains('5.1') || chStr.contains('6')) ch = 6;
+              else ch = int.tryParse(chStr);
+              if (ch == null) {
+                final rawCh = s.getProperty('channels');
+                ch = rawCh is int ? rawCh : int.tryParse(rawCh?.toString() ?? '');
+              }
+              if (ch != null && ch > 2) {
+                needsTranscode = true;
+                break;
+              }
+              final codec = (s.getCodec() ?? '').toLowerCase();
+              if (codec.contains('truehd') || codec.contains('dts')) {
+                needsTranscode = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (needsTranscode) {
+        final outputPath = rawPath.replaceAll(RegExp(r'\.[^\.]+$'), '_wvc.mp4');
+        final outFile = File(outputPath);
+        final exists = await outFile.exists();
+        final sizeOk = exists ? (await outFile.length()) > 1024 * 1024 : false;
+        if (!sizeOk) {
+          print('🔊 [WVC] Transcoding 6ch -> 2ch AAC para WVC: $rawPath');
+          final cmd =
+              '-y -i "$rawPath" -c:v copy -c:a aac -ac 2 -b:a 128k -movflags +faststart "$outputPath"';
+          final session = await FFmpegKit.execute(cmd);
+          final rc = await session.getReturnCode();
+          if (ReturnCode.isSuccess(rc) && await outFile.exists()) {
+            print('✅ [WVC] Transcode OK: $outputPath');
+            pathToServe = outputPath;
+          } else {
+            print('⚠️ [WVC] Transcode falló, sirviendo original');
+          }
+        } else {
+          print('✅ [WVC] Usando transcode cacheado: $outputPath');
+          pathToServe = outputPath;
+        }
+      }
+    } catch (e) {
+      print('⚠️ [WVC] Check audio falló: $e');
+    }
     await MediaProxyService().start();
-    final fileId = rawPath.hashCode.abs().toString();
-    MediaProxyService().registerLocalFile(fileId, rawPath);
-    final ext = rawPath.contains('.') ? rawPath.split('.').last : 'mkv';
+    final fileId = pathToServe.hashCode.abs().toString();
+    MediaProxyService().registerLocalFile(fileId, pathToServe);
+    final ext = pathToServe.contains('.') ? pathToServe.split('.').last : 'mp4';
     return 'http://127.0.0.1:${MediaProxyService().port}/local/$fileId.$ext';
   }
 
