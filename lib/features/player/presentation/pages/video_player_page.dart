@@ -1975,17 +1975,9 @@ if (widget.videoOptions.isNotEmpty) {
           toCast: false, // Bypass para ExoPlayer
         );
       } else if (_effectiveAlgorithm == 5) {
-        // Algoritmo 5 (http directo / Addon Latam): usar proxy local para
-        // que el seek (Range) se reenvíe correctamente con headers. El fix
-        // de Content-Disposition no-ASCII ya evita el crash del proxy.
-        effectiveUrl = MediaProxyService().getProxiedUrl(
-          videoUrl,
-          headers,
-          useLocalhost: true,
-          algorithm: _effectiveAlgorithm,
-          remux: false,
-          toCast: false,
-        );
+        // Algoritmo 5 (http directo / Addon Latam): directo para carga rápida.
+        // El proxy queda solo para Cast. isHls ya corregido para /stream/ con algo5.
+        effectiveUrl = videoUrl;
       } else {
         effectiveUrl = MediaProxyService().getProxiedUrl(
           videoUrl,
@@ -3037,32 +3029,32 @@ if (widget.videoOptions.isNotEmpty) {
                           ),
                         ),
 
-                      // Video Player — contain: toca borde sin recortar, re-escala tras anuncio
+                      // Video Player — contain: toca borde sin recortar, LayoutBuilder para tamaño real disponible
                       if (_isAdVerified &&
                           _errorMessage == null &&
                           _controller != null &&
                           _controller!.value.isInitialized)
                         Positioned.fill(
-                          child: Builder(
-                            builder: (context) {
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
                               final vSize = _controller!.value.size;
                               final vw = vSize.width > 0 ? vSize.width : 1920.0;
                               final vh = vSize.height > 0 ? vSize.height : 1080.0;
-                              final screen = MediaQuery.of(context).size;
+                              final availW = constraints.maxWidth > 0 ? constraints.maxWidth : MediaQuery.of(context).size.width;
+                              final availH = constraints.maxHeight > 0 ? constraints.maxHeight : MediaQuery.of(context).size.height;
                               final scale = (vw > 0 && vh > 0)
-                                  ? (screen.width / vw < screen.height / vh
-                                      ? screen.width / vw
-                                      : screen.height / vh)
+                                  ? (availW / vw < availH / vh ? availW / vw : availH / vh)
                                   : 1.0;
                               final scaledW = vw * scale;
                               final scaledH = vh * scale;
-                              final touches = scaledW >= screen.width - 2 || scaledH >= screen.height - 2
-                                  ? "SÍ toca borde"
-                                  : "NO toca borde";
+                              final touchesW = (scaledW - availW).abs() < 2;
+                              final touchesH = (scaledH - availH).abs() < 2;
+                              final touches = touchesW || touchesH ? "SÍ toca borde" : "NO toca borde (bandas 4 lados)";
+                              final bands = !touchesW && !touchesH ? "4 lados" : touchesW && touchesH ? "0 lados" : touchesW ? "2 lados vert" : "2 lados horiz";
                               print(
-                                  '📐 [RESIZE] video=${vw.toInt()}x${vh.toInt()} aspect=${_controller!.value.aspectRatio.toStringAsFixed(3)} screen=${screen.width.toInt()}x${screen.height.toInt()} '
-                                  'scale=${scale.toStringAsFixed(3)} scaled=${scaledW.toInt()}x${scaledH.toInt()} $touches '
-                                  'fit=contain algo=$_effectiveAlgorithm isDirect=${_currentOption.videoUrl.contains(".mp4") || _currentOption.videoUrl.contains(".m3u8")}');
+                                  '📐 [RESIZE] video=${vw.toInt()}x${vh.toInt()} aspect=${_controller!.value.aspectRatio.toStringAsFixed(3)} avail=${availW.toInt()}x${availH.toInt()} '
+                                  'scale=${scale.toStringAsFixed(3)} scaled=${scaledW.toInt()}x${scaledH.toInt()} $touches bands=$bands '
+                                  'fit=contain algo=$_effectiveAlgorithm constraints=$constraints');
                               return FittedBox(
                                 fit: BoxFit.contain,
                                 child: SizedBox(
