@@ -355,6 +355,12 @@ if (widget.videoOptions.isNotEmpty) {
       _isLoading = false;
       _isInitialLoading = false;
       _useProxy = false; // No usar proxy para streams locales
+    } else if (_effectiveAlgorithm == 5) {
+      // Algoritmo 5 = stream http directo (Addon Latam): reproducción directa
+      // sin webview — evita scraper y overlay "Analizando origen de video..."
+      _isWebViewExtracting = false;
+      _isLoading = false;
+      _isInitialLoading = false;
     }
 
     _initSettings();
@@ -3020,9 +3026,7 @@ if (widget.videoOptions.isNotEmpty) {
                               ),
                             ),
                           ),
-                        )
-                      else if (_errorMessage != null)
-                        Positioned.fill(child: _buildErrorContent()),
+                        ),
 
                       // Video Player
                       if (_isAdVerified &&
@@ -3445,7 +3449,10 @@ if (widget.videoOptions.isNotEmpty) {
                               ],
                             ),
                           ),
-                        ),
+
+                      // Error overlay — siempre encima del video
+                      if (_errorMessage != null)
+                        Positioned.fill(child: _buildErrorContent()),
 
                       // Extractor Interactivo para Depuración (Visible en la capa más externa)
                       if (!_useWebViewPlayer &&
