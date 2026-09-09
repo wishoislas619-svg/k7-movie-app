@@ -57,9 +57,8 @@ class MediaProxyService {
     // FFmpeg: remux/transcode para TV (WVC/DLNA)
     String cmd;
     if (transcodeAudio) {
-      // MKV 6ch/EAC3 → MP4 AAC 2ch: transcodifica todo el archivo y pone moov al inicio
-      // para que la TV lo lea completo. Se espera a que termine antes de servir.
-      cmd = '-y -headers "$headerStr\\r\\n" -fflags +genpts -i "$url" -map 0 -c:v copy -c:a aac -ac 2 -b:a 192k -f mp4 -movflags +faststart "$outputPath"';
+      // MKV 6ch/EAC3 → MP4 AAC 2ch: solo video y primer audio si existen, ignora subs/datos
+      cmd = '-y -headers "$headerStr\\r\\n" -fflags +genpts -i "$url" -map 0:v:0? -map 0:a:0? -c:v copy -c:a aac -ac 2 -b:a 192k -f mp4 -movflags +faststart "$outputPath"';
     } else {
       // Remux HLS → MP4 fragmentado para streaming progresivo
       cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
