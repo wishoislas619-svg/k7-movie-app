@@ -64,7 +64,13 @@ class MediaProxyService {
     final filters = transcodeAudio
         ? '-map 0:v:0 -map 0:a:0 -c:v copy -c:a aac -b:a 192k'
         : '-c copy';
-    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" $filters -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    // Input HTTP robusto: los servidores tipo "kill-link" (p.ej. liontv.es)
+    // cierran la conexión a mitad del archivo; sin esto FFmpeg termina rc=0
+    // y solo quedan unos segundos en el MP4. Con reconnect FFmpeg reabre la
+    // conexión (con Range) y continúa el remux, igual que hace mpv en la app.
+    final reconnect = '-rw_timeout 15000000 -reconnect 1 -reconnect_streamed 1 '
+        '-reconnect_on_network_error 1 -reconnect_at_eof 1 -reconnect_delay_max 10';
+    final cmd = '-y $reconnect -headers "$headerStr\\r\\n" -i "$url" $filters -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
     print('🎬 [FFMPEG] Starting stream $id (transcodeAudio=$transcodeAudio): $cmd');
 
     _activeStreams[id] = _FfmpegStream(
