@@ -335,10 +335,21 @@ class DownloadRepository {
     finalHeaders.remove('range');
     finalHeaders.remove('Range');
 
-    var finalExt = finalUrl.split('?').first.split('.').last;
+    var rawExt = finalUrl.split('?').first.split('/').last.split('.').last.toLowerCase();
+    var finalExt = rawExt;
+    // URLs sin extensión (p.ej. Addon Latam /stream/file/.../720p?api_key=) o con
+    // nombre largo sin punto -> rawExt es el nombre completo. Validar extensión.
+    const validExts = {'mp4', 'mkv', 'avi', 'mov', 'webm', 'ts', 'm3u8', 'txt', 'flv', 'wmv', 'mpd'};
+    if (finalExt.contains('/') ||
+        finalExt.contains('%') ||
+        finalExt.length > 5 ||
+        finalExt.isEmpty ||
+        !validExts.contains(finalExt)) {
+      finalExt = 'mp4';
+    }
     // Normalize .txt manifests to be treated as m3u8 for downstream logic
     if (isHls && finalExt == 'txt') finalExt = 'm3u8';
-    print('[DL] finalUrl=$finalUrl ext=$finalExt');
+    print('[DL] finalUrl=$finalUrl ext=$finalExt (rawExt=$rawExt)');
 
     // If HLS, skip the m3u8→mp4 direct-link conversion (txt manifests can't be converted that way)
     if (isHls && !finalUrl.contains('.txt')) {
