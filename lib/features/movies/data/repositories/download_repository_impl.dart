@@ -1221,20 +1221,39 @@ class DownloadRepository {
             _DownloadProgressInfo(lastUpdate: now, lastProgress: 0);
 
         String speedStr = "";
+        final ns = update.networkSpeed;
+        final nsStr = update.networkSpeedAsString;
+        // Usar networkSpeed numérico si el string viene vacío/"0 B/s"
+        String candidate = nsStr;
+        if (candidate.isEmpty ||
+            candidate == '0 B/s' ||
+            candidate == '0 KB/s' ||
+            candidate == '0.0 KB/s') {
+          if (ns > 0) {
+            candidate = ns > 1024 * 1024
+                ? '${(ns / 1024 / 1024).toStringAsFixed(1)} MB/s'
+                : ns > 1024
+                    ? '${(ns / 1024).toStringAsFixed(1)} KB/s'
+                    : '${ns.toStringAsFixed(0)} B/s';
+          } else {
+            candidate = "";
+          }
+        }
         if (update.progress > info.lastProgress) {
           final timeDiff =
               now.difference(info.lastUpdate).inMilliseconds / 1000.0;
           if (timeDiff > 0.5) {
-            // Update speed every 0.5s
-            // background_downloader doesn't provide file size in progress update easily
-            // but we can estimate or use {networkSpeed} in notifications.
-            // For the UI, we'll use the networkSpeed if available or just show progress
-            speedStr = update.networkSpeedAsString;
+            speedStr = candidate;
             _progressInfos[id] = _DownloadProgressInfo(
               lastUpdate: now,
               lastProgress: update.progress,
             );
+          } else {
+            // Entre updates rápidos, mostrar candidate si hay
+            speedStr = candidate;
           }
+        } else if (update.progress > 0) {
+          speedStr = candidate;
         }
 
         final percent = (update.progress * 100).clamp(0, 100).toInt();
