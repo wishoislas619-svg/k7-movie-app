@@ -73,21 +73,35 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
 
   // Streams
   Map<int, List<TorrentStream>> _streamsByEpisode = {};
+  // Agrupados por fuente para tabs Torrentio / Latam / Otros
+  Map<int, Map<String, List<TorrentStream>>> _groupedBySource = {};
   bool _loadingStreams = false;
   String? _streamsError;
   int? _activeEpisodeNumber;
+  late TabController _sourceTabController;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 1, vsync: this);
+    _sourceTabController = TabController(length: 3, vsync: this);
     _resolveImdb();
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    _sourceTabController.dispose();
     super.dispose();
+  }
+
+  bool _isLatamStream(TorrentStream s) {
+    final url = s.url ?? '';
+    final name = s.name.toLowerCase();
+    return url.contains('roydr-m3u-add') ||
+        url.contains('addonlatam') ||
+        url.contains('duckdns') ||
+        name.contains('latam');
   }
 
   Future<void> _resolveImdb() async {
@@ -180,15 +194,41 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       await controller.load();
       final addons = ref.read(addonsProvider).valueOrNull ?? [];
       final allStreams = <TorrentStream>[];
+      final grouped = <String, List<TorrentStream>>{
+        'torrentio': [],
+        'latam': [],
+        'otros': [],
+      };
       for (final addon in addons) {
         final streams = await ref
             .read(addonRepositoryProvider)
             .getStreams(addon: addon, imdbId: id, type: type);
         allStreams.addAll(streams);
+        final host = Uri.tryParse(addon.manifestUrl)?.host.toLowerCase() ?? '';
+        String cat;
+        if (host.contains('torrentio')) {
+          cat = 'torrentio';
+        } else if (host.contains('addonlatam') ||
+            host.contains('duckdns') ||
+            host.contains('roydr-m3u-add')) {
+          cat = 'latam';
+        } else {
+          // Fallback por contenido si el host no es reconocido
+          cat = 'otros';
+        }
+        // Si el host no se reconoce pero el stream parece latam por URL, corregir
+        for (final s in streams) {
+          if (cat == 'otros' && _isLatamStream(s)) {
+            grouped['latam']!.add(s);
+          } else {
+            grouped[cat]!.add(s);
+          }
+        }
       }
       if (!mounted) return;
       setState(() {
         _streamsByEpisode = {_activeEpisodeNumber ?? 0: allStreams};
+        _groupedBySource = {_activeEpisodeNumber ?? 0: grouped};
         _loadingStreams = false;
       });
     } catch (e) {
@@ -755,23 +795,78 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       );
     }
 
-    final sorted = [...streams]..sort((a, b) {
-        final sa = a.seeders ?? 0;
-        final sb = b.seeders ?? 0;
-        return sb.compareTo(sa);
-      });
+    // Agrupar por fuente para tabs Torrentio / Latam / Otros
+    final epKey = _activeEpisodeNumber ?? 0;
+    Map<String, List<TorrentStream>> grouped = _groupedBySource[epKey] ?? {};
+    if (grouped.isEmpty) {
+      // Fallback: clasificar on-the-fly si no hay agrupación previa
+      grouped = <String, List<TorrentStream>>{'torrentio': <TorrentStream>[], 'latam': <TorrentStream>[], 'otros': <TorrentStream>[]};
+      for (final s in streams) {
+        if (_isLatamStream(s)) {
+          grouped['latam']!.add(s);
+        } else if (s.infoHash != null && s.infoHash!.isNotEmpty) {
+          grouped['torrentio']!.add(s);
+        } else {
+          grouped['otros']!.add(s);
+        }
+      }
+    }
+    final torrentio = [...(grouped['torrentio'] ?? <TorrentStream>[])]..sort((a, b) => (b.seeders ?? 0).compareTo(a.seeders ?? 0));
+    final latam = [...(grouped['latam'] ?? <TorrentStream>[])]..sort((a, b) => (b.seeders ?? 0).compareTo(a.seeders ?? 0));
+    final otros = [...(grouped['otros'] ?? <TorrentStream>[])]..sort((a, b) => (b.seeders ?? 0).compareTo(a.seeders ?? 0));
 
-    return RefreshIndicator(
-      color: const Color(0xFF00A3FF),
-      backgroundColor: const Color(0xFF141414),
-      onRefresh: _refreshStreams,
-      child: ListView.builder(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
-        itemCount: sorted.length,
-        itemBuilder: (context, index) =>
-            _buildStreamTile(sorted[index]),
-      ),
+    Widget buildList(List<TorrentStream> list, String emptyMsg) {
+      if (list.isEmpty) {
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(emptyMsg, style: const TextStyle(color: Colors.white38), textAlign: TextAlign.center),
+          ),
+        );
+      }
+      return RefreshIndicator(
+        color: const Color(0xFF00A3FF),
+        backgroundColor: const Color(0xFF141414),
+        onRefresh: _refreshStreams,
+        child: ListView.builder(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+          itemCount: list.length,
+          itemBuilder: (context, index) => _buildStreamTile(list[index]),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        Material(
+          color: const Color(0xFF0A0A0A),
+          child: TabBar(
+            controller: _sourceTabController,
+            labelColor: const Color(0xFF00A3FF),
+            unselectedLabelColor: Colors.white54,
+            indicatorColor: const Color(0xFF00A3FF),
+            indicatorWeight: 2,
+            labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+            tabs: [
+              Tab(text: 'Torrentio (${torrentio.length})'),
+              Tab(text: 'Latam (${latam.length})'),
+              Tab(text: 'Otros (${otros.length})'),
+            ],
+          ),
+        ),
+        const Divider(height: 1, color: Colors.white10),
+        Expanded(
+          child: TabBarView(
+            controller: _sourceTabController,
+            children: [
+              buildList(torrentio, 'Sin enlaces de Torrentio.'),
+              buildList(latam, 'Sin enlaces de Latam.'),
+              buildList(otros, 'Sin enlaces en Otros.'),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
