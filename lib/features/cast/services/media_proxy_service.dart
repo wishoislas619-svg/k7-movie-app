@@ -54,26 +54,39 @@ class MediaProxyService {
     }
     final headerStr = headerLines.join('\\r\\n');
 
-    // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
-    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
-    // Si transcodeAudio=true (MKV 6ch para TV), convertir audio a AAC 2ch compatible
-    final audioCodec = transcodeAudio ? '-c:a aac -ac 2 -b:a 192k' : '-c:a copy';
-    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c:v copy $audioCodec -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    // FFmpeg: remux/transcode para TV (WVC/DLNA)
+    String cmd;
+    if (transcodeAudio) {
+      // MKV 6ch/EAC3 → MP4 AAC 2ch: transcodifica todo el archivo y pone moov al inicio
+      // para que la TV lo lea completo. Se espera a que termine antes de servir.
+      cmd = '-y -headers "$headerStr\\r\\n" -fflags +genpts -i "$url" -map 0 -c:v copy -c:a aac -ac 2 -b:a 192k -f mp4 -movflags +faststart "$outputPath"';
+    } else {
+      // Remux HLS → MP4 fragmentado para streaming progresivo
+      cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    }
     print('🎬 [FFMPEG] Starting stream $id: $cmd');
 
     _activeStreams[id] = _FfmpegStream(
       id: id,
       outputPath: outputPath,
+      transcodeAudio: transcodeAudio,
     );
 
     FFmpegKit.executeAsync(cmd, (session) async {
       final rc = await session.getReturnCode();
       final isOk = ReturnCode.isSuccess(rc);
-      print('🎬 [FFMPEG] Stream $id ended: rc=$rc success=$isOk');
+      final logs = await session.getLogsAsString();
+      print('🎬 [FFMPEG] Stream $id ended: rc=$rc success=$isOk logs=${logs?.substring(0, (logs.length > 500 ? 500 : logs.length))}');
       final entry = _activeStreams[id];
       if (entry != null) {
         entry.isComplete = true;
-        entry.completer.complete();
+        if (!entry.completer.isCompleted) entry.completer.complete();
+      }
+    }, (log) {
+      // Log progresivo para depurar por qué solo manda parte
+      final msg = log.getMessage();
+      if (msg.contains('error') || msg.contains('Error') || msg.contains('failed')) {
+        print('🎬 [FFMPEG] $id log: $msg');
       }
     });
 
@@ -89,12 +102,24 @@ class MediaProxyService {
       return;
     }
 
+    // Para transcodificación (MKV 6ch → MP4 2ch) esperar a que FFmpeg termine
+    // para enviar el archivo completo con Content-Length correcto y todos los fragmentos
+    if (entry.transcodeAudio && !entry.isComplete) {
+      print('🎬 [FFMPEG] Stream $id transcode: esperando a que termine para servir completo...');
+      try {
+        await entry.completer.future.timeout(const Duration(minutes: 5));
+      } catch (_) {
+        print('🎬 [FFMPEG] Stream $id timeout esperando transcode');
+      }
+    }
+
     final file = File(entry.outputPath);
     final rangeHeader = request.headers.value('range');
 
     try {
       // Responder inmediatamente al TV (el SetAVTransportURI espera respuesta HTTP
-      // rápida, no puede bloquear esperando a FFmpeg).
+      // rápida, no puede bloquear esperando a FFmpeg) — para remux progresivo sí,
+      // para transcode ya esperamos arriba.
       request.response.statusCode = 200;
       request.response.headers.set('Content-Type', 'video/mp4');
       request.response.headers.set('Accept-Ranges', 'bytes');
@@ -1169,8 +1194,9 @@ class _FfmpegStream {
   final String outputPath;
   final Completer<void> completer = Completer<void>();
   bool isComplete = false;
+  bool transcodeAudio = false;
 
-  _FfmpegStream({required this.id, required this.outputPath});
+  _FfmpegStream({required this.id, required this.outputPath, this.transcodeAudio = false});
 }
 
 
