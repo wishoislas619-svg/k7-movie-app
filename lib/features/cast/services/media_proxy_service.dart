@@ -8,7 +8,6 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
-import 'package:ffmpeg_kit_flutter_new_https_gpl/stream_information.dart';
 import 'package:path_provider/path_provider.dart';
 
 class MediaProxyService {
@@ -967,6 +966,38 @@ class MediaProxyService {
     final streamUrl = 'http://$host/ffstream/$id';
     print('🎬 [FFMPEG] fMP4 transcode (audio→AAC) URL: $streamUrl');
     return streamUrl;
+  }
+
+  /// Espera (hasta [timeout]) a que el stream FFmpeg haya escrito datos reales.
+  /// Evita pasar a un cliente externo (WVC/TV) una URL cuyo proceso FFmpeg
+  /// falló al inicio (respondería 200 pero con cuerpo vacío).
+  Future<bool> waitForStreamReady(
+    String ffstreamUrl, {
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    final String id;
+    try {
+      id = Uri.parse(ffstreamUrl).pathSegments.last;
+    } catch (_) {
+      return false;
+    }
+    final entry = _activeStreams[id];
+    if (entry == null) return false;
+
+    final file = File(entry.outputPath);
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        if (await file.length() >= 512 * 1024) return true;
+      } catch (_) {}
+      if (entry.isComplete) break;
+      await Future.delayed(const Duration(milliseconds: 400));
+    }
+    try {
+      return await file.length() > 0;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Códecs de audio que TODOS los receptores de cast (Chromecast, DLNA, Roku,

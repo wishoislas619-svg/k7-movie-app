@@ -1112,61 +1112,68 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         return;
       }
     } else {
-      // Direct http (Addon Latam) - Para WVC, algunos MKV con audio 6ch (EAC3/DTS)
-      // no se escuchan en TVs. Si es Latam/MKV, transcodificar audio a AAC 2ch vía FFmpeg.
-      final isLatamForWvc = _isLatamStream(stream);
-      final isMkv = (stream.url?.toLowerCase().contains('.mkv') ?? false) ||
-          stream.name.toLowerCase().contains('mkv') ||
-          stream.title.toLowerCase().contains('mkv');
-      if (isLatamForWvc || isMkv) {
-        // Mostrar diálogo de carga mientras FFmpeg arranca (similar a torrent)
-        final progressNotifier = ValueNotifier<String?>(null);
-        if (mounted) {
-          showDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (_) => AlertDialog(
-              backgroundColor: const Color(0xFF141414),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(color: Color(0xFF00A3FF)),
-                  const SizedBox(height: 16),
-                  const Text('Preparando stream para TV...', style: TextStyle(color: Colors.white)),
-                  const SizedBox(height: 8),
-                  ValueListenableBuilder<String?>(
-                    valueListenable: progressNotifier,
-                    builder: (_, msg, __) => Text(msg ?? 'Iniciando FFmpeg...', style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                  ),
-                ],
-              ),
-            ),
-          );
-        }
-        try {
-          await MediaProxyService().start();
-          final headers = <String, String>{
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Referer': Uri.parse(stream.url!).origin,
-            'Accept': '*/*',
-          };
-          progressNotifier.value = 'Transcodificando audio a AAC 2ch...';
-          url = await MediaProxyService().getFfmpegUrl(stream.url!, headers, useLocalhost: false, transcodeAudio: true);
-          if (mounted) Navigator.of(context, rootNavigator: true).pop();
-          // Mantener FFmpeg vivo mientras WVC reproduce (el proxy lo mantiene)
-        } catch (e) {
-          if (mounted) Navigator.of(context, rootNavigator: true).pop();
-          print('⚠️ [WVC] FFmpeg transcode fallo, usando URL directa: $e');
-          url = stream.url;
-        }
-      } else {
-        url = stream.url;
-      }
+      url = await _prepareWvcUrl(stream.url!);
     }
 
     final videoUrl = url;
     if (videoUrl == null || videoUrl.isEmpty) return;
     await _openInWebVideoCaster(videoUrl, stream.title);
+  }
+
+  Future<String> _prepareWvcUrl(String rawUrl) async {
+    final lower = rawUrl.toLowerCase();
+    final isHls = lower.contains('.m3u8') ||
+        lower.contains('.m3u') ||
+        lower.contains('playlist') ||
+        lower.contains('master');
+    // WVC reproduce HLS nativo; no tocamos esos.
+    if (isHls) return rawUrl;
+
+    const headers = <String, String>{
+      'User-Agent':
+          'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+      'Accept': '*/*',
+    };
+
+    try {
+      await MediaProxyService().start();
+
+      // Sondeo del códec de audio: si no es universal (AAC/MP3/Opus...), el
+      // receptor de la TV pierde el audio en el MKV directo de Addon Latam
+      // (AC3/DTS/TrueHD). Entonces remux a fMP4 con audio→AAC.
+      final codec = await MediaProxyService().probeAudioCodec(rawUrl, headers);
+      final safe = codec != null &&
+          MediaProxyService.castSafeAudioCodecs.contains(codec);
+      print('WVC_DBG: codec="$codec" safe=$safe');
+
+      if (!safe) {
+        final transcoded = await MediaProxyService().getTranscodedUrl(
+          rawUrl,
+          headers,
+          useLocalhost: true,
+        );
+        final ready = await MediaProxyService().waitForStreamReady(
+          transcoded,
+          timeout: const Duration(seconds: 25),
+        );
+        if (ready) {
+          print('WVC_DBG: usando transcode → $transcoded');
+          return transcoded;
+        }
+        print('WVC_DBG: FFmpeg no produjo datos, fallback a proxy');
+      }
+
+      final proxied = MediaProxyService().getProxiedUrl(
+        rawUrl,
+        headers,
+        useLocalhost: true,
+      );
+      print('WVC_DBG: usando proxy → $proxied');
+      return proxied;
+    } catch (e) {
+      print('WVC_DBG: error preparando URL, usando original: $e');
+      return rawUrl;
+    }
   }
 
   Future<void> _openInWebVideoCaster(String videoUrl, String title) async {
