@@ -95,8 +95,6 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       return;
     }
 
-    // direct_url solo local (SQLite) hasta que se aplique la migración en Supabase remoto.
-    // Si se envía a Supabase sin columna, PostgREST da PGRST204 cada 5s y satura logs.
     final row = {
       'user_id': userId,
       'media_id': history.mediaId,
@@ -113,6 +111,7 @@ class HistoryRepositorySupabaseImpl implements HistoryRepository {
       'cast_device_name': history.castDeviceName,
       'torrent_info_hash': history.torrentInfoHash,
       'torrent_file_idx': history.torrentFileIdx,
+      if (!_directUrlColumnMissing) 'direct_url': history.directUrl,
     };
 
     try {

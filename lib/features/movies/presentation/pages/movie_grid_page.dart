@@ -1486,6 +1486,22 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       }
       return;
     }
+    // Fallback para historial viejo de algo 5 sin directUrl: intentar re-resolver
+    if (!_isDirectHttpHistoryItem(item) &&
+        !_isTorrentHistoryItem(item) &&
+        (item.videoOptionId?.startsWith('tt') ?? false)) {
+      final fallback = await _resolveBestDirectHttpStream(item.videoOptionId!);
+      if (fallback != null && fallback.url != null && fallback.url!.isNotEmpty) {
+        // Crear item temporal con directUrl para reproducir
+        final tmp = item.copyWith(directUrl: fallback.url);
+        if (tmp.mediaType == 'movie') {
+          await _playDirectHttpMovieFromHistory(context, tmp, resume: resume);
+        } else {
+          await _playDirectHttpSeriesFromHistory(context, tmp, resume: resume);
+        }
+        return;
+      }
+    }
     if (_isTorrentHistoryItem(item)) {
       if (item.mediaType == 'movie') {
         await _playTorrentMovieFromHistory(context, item, resume: resume);
@@ -1505,9 +1521,17 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
         : Duration.zero;
 
     if (item.mediaType == 'movie') {
-      final allOptions = await ref
-          .read(movieRepositoryProvider)
-          .getVideoOptions(item.mediaId);
+      List<VideoOption> allOptions = [];
+      try {
+        allOptions = await ref
+            .read(movieRepositoryProvider)
+            .getVideoOptions(item.mediaId);
+      } catch (e) {
+        print('⚠️ [HISTORY] getVideoOptions fallo para mediaId=${item.mediaId}: $e -> _goToDetails');
+        if (!context.mounted) return;
+        _goToDetails(context, item);
+        return;
+      }
       if (allOptions.isEmpty) {
         if (!context.mounted) return;
         _goToDetails(context, item);
@@ -1616,6 +1640,24 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       fileIdx: item.torrentFileIdx,
       quality: 'Auto',
     );
+  }
+
+  /// Re-resuelve el mejor stream http directo (Addon Latam / algo 5) para el imdbId.
+  Future<TorrentStream?> _resolveBestDirectHttpStream(String imdbId) async {
+    final controller = ref.read(addonsProvider.notifier);
+    await controller.load();
+    final addons = ref.read(addonsProvider).valueOrNull ?? [];
+    for (final addon in addons) {
+      try {
+        final streams = await ref
+            .read(addonRepositoryProvider)
+            .getStreams(addon: addon, imdbId: imdbId, type: 'movie');
+        for (final s in streams) {
+          if (s.url != null && s.url!.isNotEmpty) return s;
+        }
+      } catch (_) {}
+    }
+    return null;
   }
 
   /// Re-resuelve el mejor stream de torrent (mayor seeders) para el imdbId.

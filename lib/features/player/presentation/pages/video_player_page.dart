@@ -3051,24 +3051,31 @@ if (widget.videoOptions.isNotEmpty) {
                               child: Stack(
                               alignment: Alignment.bottomCenter,
                               children: [
-                                InteractiveViewer(
-                                  transformationController: _transformController,
-                                  clipBehavior: Clip.none,
-                                  minScale: 0.8,
-                                  maxScale: 6.0,
-                                  onInteractionEnd: (details) {
-                                    // Sincronizar slider con el zoom de pellizco
-                                    final scale = _transformController.value.getMaxScaleOnAxis();
-                                    if ((scale - _videoScale).abs() > 0.05) {
-                                      setState(() => _videoScale = scale.clamp(0.8, 2.8));
-                                    }
-                                  },
-                                  child: _isInPipMode
-                                      ? const SizedBox.shrink()
-                                      : VideoPlayer(
-                                          _controller!,
-                                          key: _videoPlayerKey,
-                                        ),
+                                Transform.scale(
+                                  scale: _videoScale,
+                                  alignment: Alignment.center,
+                                  child: InteractiveViewer(
+                                    transformationController: _transformController,
+                                    clipBehavior: Clip.none,
+                                    minScale: 0.8,
+                                    maxScale: 6.0,
+                                    onInteractionEnd: (details) {
+                                      // Sincronizar slider con el zoom de pellizco
+                                      final scale = _transformController.value.getMaxScaleOnAxis();
+                                      if ((scale - 1.0).abs() > 0.05) {
+                                        // Mantener slider y pellizco separados: reset pellizco y aplicar al slider
+                                        final newScale = (_videoScale * scale).clamp(0.8, 3.0);
+                                        _transformController.value = Matrix4.identity();
+                                        setState(() => _videoScale = newScale);
+                                      }
+                                    },
+                                    child: _isInPipMode
+                                        ? const SizedBox.shrink()
+                                        : VideoPlayer(
+                                            _controller!,
+                                            key: _videoPlayerKey,
+                                          ),
+                                  ),
                                 ),
 
                                 // Subtitle Overlay (Manual Rendering)
@@ -4694,14 +4701,6 @@ if (widget.videoOptions.isNotEmpty) {
                         label: '${(_videoScale * 100).toInt()}%',
                         onChanged: (v) {
                           setState(() => _videoScale = v);
-                          // Escala centrada para que la imagen no se vaya a la esquina
-                          final size = MediaQuery.of(context).size;
-                          final cx = size.width / 2;
-                          final cy = size.height / 2;
-                          _transformController.value = Matrix4.identity()
-                            ..translate(cx, cy)
-                            ..scale(v)
-                            ..translate(-cx, -cy);
                         },
                       ),
                     ),
