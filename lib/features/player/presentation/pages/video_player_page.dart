@@ -192,6 +192,8 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   bool _isDraggingBrightness = false;
   Timer? _labelHideTimer;
   final GlobalKey _videoPlayerKey = GlobalKey();
+  double _videoScale = 1.0;
+  final TransformationController _transformController = TransformationController();
   bool _isInPipMode = false;
 
   bool _switchingToFloatingMode = false;
@@ -1975,9 +1977,17 @@ if (widget.videoOptions.isNotEmpty) {
           toCast: false, // Bypass para ExoPlayer
         );
       } else if (_effectiveAlgorithm == 5) {
-        // Algoritmo 5 (http directo / Addon Latam): directo para carga rápida.
-        // El proxy queda solo para Cast. isHls ya corregido para /stream/ con algo5.
-        effectiveUrl = videoUrl;
+        // Algoritmo 5 (http directo / Addon Latam): usar proxy local para
+        // que el seek (Range) se reenvíe correctamente con headers. El fix
+        // de Content-Disposition no-ASCII ya evita el crash del proxy.
+        effectiveUrl = MediaProxyService().getProxiedUrl(
+          videoUrl,
+          headers,
+          useLocalhost: true,
+          algorithm: _effectiveAlgorithm,
+          remux: false,
+          toCast: false,
+        );
       } else {
         effectiveUrl = MediaProxyService().getProxiedUrl(
           videoUrl,
@@ -2130,18 +2140,17 @@ if (widget.videoOptions.isNotEmpty) {
       }
 
       if (_controller != null) {
-        // Reintentar inicialización para streams de torrent y http directo (algo5) si hay timeout.
-        final bool _isRetryable = _isLibtorrentStream || _effectiveAlgorithm == 5;
+        // Reintentar inicialización para streams de torrent si hay timeout.
+        final bool _isLibRetry = _isLibtorrentStream;
         int _initAttempts = 0;
-        final int _maxInitAttempts = _isRetryable ? 2 : 1;
+        final int _maxInitAttempts = _isLibRetry ? 3 : 1;
         while (true) {
           try {
             // Watchdog: para archivos locales (torrent descargado a disco) el
             // demuxer de mpv puede quedarse colgado si el archivo está truncado
             // o con un codec no soportado → en vez de "Cargando video..." para
-            // siempre, lanzamos error. Algo 5 (http directo) a veces tarda más
-            // por el proxy/CDN.
-            final initTimeout = Duration(seconds: _effectiveAlgorithm == 5 ? 35 : 25);
+            // siempre, lanzamos error a los 25s.
+            const initTimeout = Duration(seconds: 25);
             await _controller!.initialize().timeout(initTimeout);
             // K7 FIX: tras crear el reproductor (mpv), re-aplicamos el volumen
             // software guardado. _initSettings corrió ANTES de existir _controller,
@@ -2718,6 +2727,7 @@ if (widget.videoOptions.isNotEmpty) {
       _controller?.dispose();
     }
     _webViewController = null;
+    _transformController.dispose();
 
     // Restore initial volume and brightness only if we are truly exiting the player
     if (!_isPushingNextEpisode) {
@@ -3029,44 +3039,30 @@ if (widget.videoOptions.isNotEmpty) {
                           ),
                         ),
 
-                      // Video Player — contain: toca borde sin recortar, LayoutBuilder para tamaño real disponible
+                      // Video Player — expand para tocar bordes (contain sin recortar)
                       if (_isAdVerified &&
                           _errorMessage == null &&
                           _controller != null &&
                           _controller!.value.isInitialized)
-                        Positioned.fill(
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              final vSize = _controller!.value.size;
-                              final vw = vSize.width > 0 ? vSize.width : 1920.0;
-                              final vh = vSize.height > 0 ? vSize.height : 1080.0;
-                              final availW = constraints.maxWidth > 0 ? constraints.maxWidth : MediaQuery.of(context).size.width;
-                              final availH = constraints.maxHeight > 0 ? constraints.maxHeight : MediaQuery.of(context).size.height;
-                              final scale = (vw > 0 && vh > 0)
-                                  ? (availW / vw < availH / vh ? availW / vw : availH / vh)
-                                  : 1.0;
-                              final scaledW = vw * scale;
-                              final scaledH = vh * scale;
-                              final touchesW = (scaledW - availW).abs() < 2;
-                              final touchesH = (scaledH - availH).abs() < 2;
-                              final touches = touchesW || touchesH ? "SÍ toca borde" : "NO toca borde (bandas 4 lados)";
-                              final bands = !touchesW && !touchesH ? "4 lados" : touchesW && touchesH ? "0 lados" : touchesW ? "2 lados vert" : "2 lados horiz";
-                              print(
-                                  '📐 [RESIZE] video=${vw.toInt()}x${vh.toInt()} aspect=${_controller!.value.aspectRatio.toStringAsFixed(3)} avail=${availW.toInt()}x${availH.toInt()} '
-                                  'scale=${scale.toStringAsFixed(3)} scaled=${scaledW.toInt()}x${scaledH.toInt()} $touches bands=$bands '
-                                  'fit=contain algo=$_effectiveAlgorithm constraints=$constraints');
-                              return FittedBox(
-                                fit: BoxFit.contain,
-                                child: SizedBox(
-                                  width: vw,
-                                  height: vh,
-                                  child: Stack(
+                        SizedBox.expand(
+                          child: Center(
+                            child: AspectRatio(
+                              aspectRatio: _controller!.value.aspectRatio,
+                              child: Stack(
                               alignment: Alignment.bottomCenter,
                               children: [
                                 InteractiveViewer(
+                                  transformationController: _transformController,
                                   clipBehavior: Clip.none,
-                                  minScale: 1.0,
+                                  minScale: 0.8,
                                   maxScale: 6.0,
+                                  onInteractionEnd: (details) {
+                                    // Sincronizar slider con el zoom de pellizco
+                                    final scale = _transformController.value.getMaxScaleOnAxis();
+                                    if ((scale - _videoScale).abs() > 0.05) {
+                                      setState(() => _videoScale = scale.clamp(0.8, 2.8));
+                                    }
+                                  },
                                   child: _isInPipMode
                                       ? const SizedBox.shrink()
                                       : VideoPlayer(
@@ -3114,10 +3110,8 @@ if (widget.videoOptions.isNotEmpty) {
                               ],
                             ),
                           ),
-                        );
-                      },
-                    ),
-                  ),
+                            ),
+                          ),
 
                       // The InAppWebView: Hidden by default, visible ONLY for subtitle scraping or if manually requested
                       Offstage(
@@ -4631,46 +4625,100 @@ if (widget.videoOptions.isNotEmpty) {
         bottom: false,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back, color: Colors.white),
-                onPressed: () => Navigator.pop(context),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  widget.movieName,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+              Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
                   ),
-                  overflow: TextOverflow.ellipsis,
-                ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      widget.movieName,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(
+                      Icons.picture_in_picture_alt,
+                      color: Colors.white,
+                    ),
+                    onPressed: () async {
+                      if (_controller == null || !_controller!.value.isInitialized)
+                        return;
+                      if (Platform.isAndroid) {
+                        try {
+                          SimplePip().enterPipMode(aspectRatio: (16, 9));
+                        } catch (_) {}
+                      }
+                    },
+                  ),
+                  IconButton(
+                    icon: Icon(
+                      _useProxy ? Icons.security : Icons.security_outlined,
+                      color: _useProxy ? const Color(0xFF00FF87) : Colors.white70,
+                    ),
+                    onPressed: _toggleProxy,
+                    tooltip: 'Modo Proxy (Burlar bloqueos)',
+                  ),
+                ],
               ),
-              IconButton(
-                icon: const Icon(
-                  Icons.picture_in_picture_alt,
-                  color: Colors.white,
-                ),
-                onPressed: () async {
-                  if (_controller == null || !_controller!.value.isInitialized)
-                    return;
-                  if (Platform.isAndroid) {
-                    try {
-                      SimplePip().enterPipMode(aspectRatio: (16, 9));
-                    } catch (_) {}
-                  }
-                },
-              ),
-              IconButton(
-                icon: Icon(
-                  _useProxy ? Icons.security : Icons.security_outlined,
-                  color: _useProxy ? const Color(0xFF00FF87) : Colors.white70,
-                ),
-                onPressed: _toggleProxy,
-                tooltip: 'Modo Proxy (Burlar bloqueos)',
+              const SizedBox(height: 6),
+              // Slider horizontal para tamaño de imagen (zoom)
+              Row(
+                children: [
+                  const Icon(Icons.zoom_out, color: Colors.white70, size: 18),
+                  Expanded(
+                    child: SliderTheme(
+                      data: SliderThemeData(
+                        trackHeight: 3,
+                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
+                        activeTrackColor: const Color(0xFF00A3FF),
+                        inactiveTrackColor: Colors.white24,
+                        thumbColor: const Color(0xFF00A3FF),
+                      ),
+                      child: Slider(
+                        value: _videoScale,
+                        min: 0.8,
+                        max: 2.8,
+                        divisions: 20,
+                        label: '${(_videoScale * 100).toInt()}%',
+                        onChanged: (v) {
+                          setState(() => _videoScale = v);
+                          _transformController.value = Matrix4.identity()..scale(v);
+                        },
+                      ),
+                    ),
+                  ),
+                  const Icon(Icons.zoom_in, color: Colors.white70, size: 18),
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: () {
+                      setState(() => _videoScale = 1.0);
+                      _transformController.value = Matrix4.identity();
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.white12,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '${(_videoScale * 100).toInt()}%',
+                        style: const TextStyle(color: Colors.white70, fontSize: 11),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
