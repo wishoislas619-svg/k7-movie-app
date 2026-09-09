@@ -3043,16 +3043,32 @@ if (widget.videoOptions.isNotEmpty) {
                           _controller != null &&
                           _controller!.value.isInitialized)
                         Positioned.fill(
-                          child: FittedBox(
-                            fit: BoxFit.contain,
-                            child: SizedBox(
-                              width: _controller!.value.size.width > 0
-                                  ? _controller!.value.size.width
-                                  : 1920,
-                              height: _controller!.value.size.height > 0
-                                  ? _controller!.value.size.height
-                                  : 1080,
-                              child: Stack(
+                          child: Builder(
+                            builder: (context) {
+                              final vSize = _controller!.value.size;
+                              final vw = vSize.width > 0 ? vSize.width : 1920.0;
+                              final vh = vSize.height > 0 ? vSize.height : 1080.0;
+                              final screen = MediaQuery.of(context).size;
+                              final scale = (vw > 0 && vh > 0)
+                                  ? (screen.width / vw < screen.height / vh
+                                      ? screen.width / vw
+                                      : screen.height / vh)
+                                  : 1.0;
+                              final scaledW = vw * scale;
+                              final scaledH = vh * scale;
+                              final touches = scaledW >= screen.width - 2 || scaledH >= screen.height - 2
+                                  ? "SÍ toca borde"
+                                  : "NO toca borde";
+                              print(
+                                  '📐 [RESIZE] video=${vw.toInt()}x${vh.toInt()} aspect=${_controller!.value.aspectRatio.toStringAsFixed(3)} screen=${screen.width.toInt()}x${screen.height.toInt()} '
+                                  'scale=${scale.toStringAsFixed(3)} scaled=${scaledW.toInt()}x${scaledH.toInt()} $touches '
+                                  'fit=contain algo=$_effectiveAlgorithm isDirect=${_currentOption.videoUrl.contains(".mp4") || _currentOption.videoUrl.contains(".m3u8")}');
+                              return FittedBox(
+                                fit: BoxFit.contain,
+                                child: SizedBox(
+                                  width: vw,
+                                  height: vh,
+                                  child: Stack(
                               alignment: Alignment.bottomCenter,
                               children: [
                                 InteractiveViewer(
@@ -3106,8 +3122,10 @@ if (widget.videoOptions.isNotEmpty) {
                               ],
                             ),
                           ),
-                            ),
-                          ),
+                        );
+                      },
+                    ),
+                  ),
 
                       // The InAppWebView: Hidden by default, visible ONLY for subtitle scraping or if manually requested
                       Offstage(
