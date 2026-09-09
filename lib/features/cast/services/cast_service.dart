@@ -617,13 +617,63 @@ class CastService extends ChangeNotifier {
         '  CAST: Forzando Proxy de RED para compatibilidad (Alg $effectiveAlgorithm / Localhost)',
       );
       await MediaProxyService().start();
-      finalUrl = MediaProxyService().getProxiedUrl(
-        effectiveUrl,
-        combinedHeaders,
-        useLocalhost: false,
-        toCast: true,
-        algorithm: effectiveAlgorithm,
-      );
+
+      // Addon Latam (Algoritmo 5): los enlaces directos suelen ser MKV con
+      // audio AC3/EAC3/DTS. El receptor de la TV/WVC no decodifica esos códecs
+      // y llega SIN AUDIO (en la app media_kit sí los decodifica). Sondeamos
+      // el códec con ffprobe y, si no es seguro, remuxamos a fMP4 con el audio
+      // convertido a AAC (vídeo se copia = sin pérdida de calidad).
+      if (effectiveAlgorithm == 5) {
+        final String? audioCodec =
+            await MediaProxyService().probeAudioCodec(
+          effectiveUrl,
+          combinedHeaders,
+        );
+        final bool safe = audioCodec != null &&
+            MediaProxyService.castSafeAudioCodecs.contains(audioCodec);
+        if (!safe) {
+          _log(
+            '🎛️ CAST: Audio "$audioCodec" no garantizado en TV → remux AAC vía FFmpeg',
+          );
+          try {
+            finalUrl = await MediaProxyService().getTranscodedUrl(
+              effectiveUrl,
+              combinedHeaders,
+            );
+            mediaType = dc.CastMediaType.mp4;
+            _log('🎬 CAST: Stream transcodificado (audio→AAC): $finalUrl');
+          } catch (e) {
+            _logErr('🎬 CAST: FFmpeg transcode falló, usando proxy directo: $e');
+            finalUrl = MediaProxyService().getProxiedUrl(
+              effectiveUrl,
+              combinedHeaders,
+              useLocalhost: false,
+              toCast: true,
+              algorithm: effectiveAlgorithm,
+            );
+          }
+        } else {
+          _log('🔊 CAST: Audio "$audioCodec" compatible → proxy directo');
+          finalUrl = MediaProxyService().getProxiedUrl(
+            effectiveUrl,
+            combinedHeaders,
+            useLocalhost: false,
+            toCast: true,
+            algorithm: effectiveAlgorithm,
+          );
+          // Normalizar tipo a mp4: el proxy sirve /proxy.mp4 (evita que URLs
+          // con "/live/" se etiqueten como HLS y el TV pida un manifiesto).
+          mediaType = dc.CastMediaType.mp4;
+        }
+      } else {
+        finalUrl = MediaProxyService().getProxiedUrl(
+          effectiveUrl,
+          combinedHeaders,
+          useLocalhost: false,
+          toCast: true,
+          algorithm: effectiveAlgorithm,
+        );
+      }
     }
     // 4. Fallback para DLNA estándar (MP4/MKV) que requiere cabeceras
     else if (isDlna && mediaType != dc.CastMediaType.hls && !isAlreadyProxied) {

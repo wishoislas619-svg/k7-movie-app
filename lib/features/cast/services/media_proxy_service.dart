@@ -6,7 +6,9 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/stream_information.dart';
 import 'package:path_provider/path_provider.dart';
 
 class MediaProxyService {
@@ -35,10 +37,13 @@ class MediaProxyService {
 
   /// Inicia FFmpeg para remuxear HLS → MKV progresivo.
   /// Retorna inmediatamente con el ID del stream (no espera a que FFmpeg produzca datos).
+  /// Si [transcodeAudio] es true, reconvierte el audio a AAC (y copia el vídeo)
+  /// para que receptores de cast que no soportan AC3/EAC3/DTS muestren audio.
   Future<String> startFfmpegStream(
     String url,
-    Map<String, String> headers,
-  ) async {
+    Map<String, String> headers, {
+    bool transcodeAudio = false,
+  }) async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final outDir = await _ensureStreamsDir();
     final outputPath = '$outDir/$id.mp4';
@@ -53,10 +58,15 @@ class MediaProxyService {
     }
     final headerStr = headerLines.join('\\r\\n');
 
-    // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
-    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
-    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
-    print('🎬 [FFMPEG] Starting stream $id: $cmd');
+    // FFmpeg: remux → MP4 fragmentado (streaming progresivo, soporte universal)
+    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe.
+    // Con transcodeAudio: -map solo vídeo+audio, vídeo se copia (no pierde calidad)
+    // y el audio se reconvierte a AAC 192k (codec universal en TVs/receptores).
+    final filters = transcodeAudio
+        ? '-map 0:v:0 -map 0:a:0 -c:v copy -c:a aac -b:a 192k'
+        : '-c copy';
+    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" $filters -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    print('🎬 [FFMPEG] Starting stream $id (transcodeAudio=$transcodeAudio): $cmd');
 
     _activeStreams[id] = _FfmpegStream(
       id: id,
@@ -939,6 +949,75 @@ class MediaProxyService {
     final streamUrl = 'http://$host/ffstream/$id';
     print('🎬 [FFMPEG] fMP4 stream URL: $streamUrl');
     return streamUrl;
+  }
+
+  /// Como [getFfmpegUrl] pero reconvirtiendo el audio a AAC (y copiando el
+  /// vídeo). Para cast de streams cuyo codec de audio (AC3/EAC3/DTS/TrueHD)
+  /// el receptor de la TV/WVC no decodifica y llega sin audio.
+  Future<String> getTranscodedUrl(
+    String url,
+    Map<String, String>? headers, {
+    bool useLocalhost = false,
+  }) async {
+    String host = (useLocalhost || _localIp.isEmpty)
+        ? '127.0.0.1:$_port'
+        : '$_localIp:$_port';
+
+    final id = await startFfmpegStream(url, headers ?? {}, transcodeAudio: true);
+    final streamUrl = 'http://$host/ffstream/$id';
+    print('🎬 [FFMPEG] fMP4 transcode (audio→AAC) URL: $streamUrl');
+    return streamUrl;
+  }
+
+  /// Códecs de audio que TODOS los receptores de cast (Chromecast, DLNA, Roku,
+  /// Android TV, WebVideoCaster) decodifican sin problema.
+  static const Set<String> castSafeAudioCodecs = {
+    'aac', 'mp3', 'mp2', 'opus', 'vorbis', 'flac', 'alac',
+    'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'pcm_mulaw', 'pcm_alaw', 'pcm_u8',
+  };
+
+  /// Sondea con ffprobe el códec de audio de un stream remoto (solo lee el
+  /// inicio, no descarga el archivo). Retorna el codec_name o null si falla.
+  Future<String?> probeAudioCodec(
+    String url,
+    Map<String, String> headers,
+  ) async {
+    try {
+      final hParts = <String>[];
+      for (final key in ['User-Agent', 'Referer', 'Cookie', 'Origin', 'Accept', 'Accept-Language']) {
+        final val = headers[key];
+        if (val != null && val.isNotEmpty) hParts.add('$key: $val');
+      }
+      final headerStr = hParts.join('\r\n');
+
+      final session = await FFprobeKit.getMediaInformationFromCommandArguments(
+        [
+          '-v', 'error',
+          '-hide_banner',
+          '-print_format', 'json',
+          '-show_streams',
+          if (headerStr.isNotEmpty) ...[
+            '-headers', headerStr,
+          ],
+          '-i', url,
+        ],
+        8,
+      );
+
+      final info = session.getMediaInformation();
+      if (info == null) return null;
+      for (final s in info.getStreams()) {
+        if (s.getType() == 'audio') {
+          final codec = s.getCodec()?.toLowerCase();
+          print('🎛️ [PROBE] Audio codec: $codec');
+          return (codec == null || codec.isEmpty) ? null : codec;
+        }
+      }
+      return null;
+    } catch (e) {
+      print('⚠️ [PROBE] Error sondeando codec: $e');
+      return null;
+    }
   }
 
   Future<void> _refreshLocalIp({String? targetIp}) async {
