@@ -3036,12 +3036,12 @@ if (widget.videoOptions.isNotEmpty) {
                           ),
                         ),
 
-                      // Video Player — contain: toca borde alto o ancho sin recortar, área máxima
+                      // Video Player — expand para tocar bordes (contain sin recortar)
                       if (_isAdVerified &&
                           _errorMessage == null &&
                           _controller != null &&
                           _controller!.value.isInitialized)
-                        Positioned.fill(
+                        SizedBox.expand(
                           child: Center(
                             child: AspectRatio(
                               aspectRatio: _controller!.value.aspectRatio,
