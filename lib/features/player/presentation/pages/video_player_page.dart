@@ -1974,10 +1974,17 @@ if (widget.videoOptions.isNotEmpty) {
           toCast: false, // Bypass para ExoPlayer
         );
       } else if (_effectiveAlgorithm == 5) {
-        // Algoritmo 5 (http directo / Addon Latam): reproducción directa de la
-        // URL original. El proxy local no debe tocar el stream: algunos CDNs
-        // envían cabeceras inválidas/no-ASCII (Content-Disposition) al proxy.
-        effectiveUrl = videoUrl;
+        // Algoritmo 5 (http directo / Addon Latam): usar proxy local para
+        // que el seek (Range) se reenvíe correctamente con headers. El fix
+        // de Content-Disposition no-ASCII ya evita el crash del proxy.
+        effectiveUrl = MediaProxyService().getProxiedUrl(
+          videoUrl,
+          headers,
+          useLocalhost: true,
+          algorithm: _effectiveAlgorithm,
+          remux: false,
+          toCast: false,
+        );
       } else {
         effectiveUrl = MediaProxyService().getProxiedUrl(
           videoUrl,
