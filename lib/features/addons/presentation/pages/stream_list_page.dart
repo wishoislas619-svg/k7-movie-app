@@ -1241,10 +1241,13 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       'Accept': '*/*',
     };
 
+    final displayName = widget.isSeries && _activeEpisodeNumber != null
+        ? '${widget.movieName} S${_currentSeasonNumber}E$_activeEpisodeNumber'
+        : widget.movieName;
     final task = DownloadTask(
       id: const Uuid().v4(),
       movieId: widget.tmdbId,
-      movieName: widget.movieName,
+      movieName: displayName,
       imagePath: widget.poster,
       videoUrl: url,
       resolution: stream.quality ?? 'Auto',
@@ -1252,10 +1255,21 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       createdAt: DateTime.now(),
       headers: headers,
       isSeries: widget.isSeries,
+      seasonNumber: widget.isSeries ? _currentSeasonNumber : null,
       episodeNumber: _activeEpisodeNumber,
     );
 
-    ref.read(downloadsListProvider.notifier).addDownload(task);
+    try {
+      ref.read(downloadsListProvider.notifier).addDownload(task);
+    } catch (e) {
+      print('❌ [DL_DIRECT] addDownload error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al iniciar descarga: $e')),
+        );
+      }
+      return;
+    }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
