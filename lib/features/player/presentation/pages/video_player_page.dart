@@ -2074,7 +2074,7 @@ if (widget.videoOptions.isNotEmpty) {
                 formatProbeUrl.contains('.m3u') ||
                 formatProbeUrl.contains('.js') ||
                 formatProbeUrl.contains('.txt') ||
-                formatProbeUrl.contains('/stream/') ||
+                (formatProbeUrl.contains('/stream/') && _effectiveAlgorithm != 5) ||
                 formatProbeUrl.contains('playlist') ||
                 formatProbeUrl.contains('master')) &&
             !isLibtorrentStream;
@@ -3036,15 +3036,17 @@ if (widget.videoOptions.isNotEmpty) {
                           ),
                         ),
 
-                      // Video Player
+                      // Video Player — BoxFit.contain para que el video toque bordes sin recortar
                       if (_isAdVerified &&
                           _errorMessage == null &&
                           _controller != null &&
                           _controller!.value.isInitialized)
-                        Center(
-                          child: AspectRatio(
-                            aspectRatio: _controller!.value.aspectRatio,
-                            child: Stack(
+                        Positioned.fill(
+                          child: FittedBox(
+                            fit: BoxFit.contain,
+                            child: AspectRatio(
+                              aspectRatio: _controller!.value.aspectRatio,
+                              child: Stack(
                               alignment: Alignment.bottomCenter,
                               children: [
                                 InteractiveViewer(
@@ -3098,7 +3100,8 @@ if (widget.videoOptions.isNotEmpty) {
                               ],
                             ),
                           ),
-                        ),
+                            ),
+                          ),
 
                       // The InAppWebView: Hidden by default, visible ONLY for subtitle scraping or if manually requested
                       Offstage(
