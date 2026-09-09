@@ -37,9 +37,8 @@ class MediaProxyService {
   /// Retorna inmediatamente con el ID del stream (no espera a que FFmpeg produzca datos).
   Future<String> startFfmpegStream(
     String url,
-    Map<String, String> headers, {
-    bool transcodeAudio = false,
-  }) async {
+    Map<String, String> headers,
+  ) async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final outDir = await _ensureStreamsDir();
     final outputPath = '$outDir/$id.mp4';
@@ -54,38 +53,24 @@ class MediaProxyService {
     }
     final headerStr = headerLines.join('\\r\\n');
 
-    // FFmpeg: remux/transcode para TV (WVC/DLNA) — streaming progresivo con todos los fragmentos
-    String cmd;
-    if (transcodeAudio) {
-      // MKV 6ch/EAC3 → MP4 AAC 2ch: fragmentado para enviar todos los fragmentos progresivamente
-      cmd = '-y -headers "$headerStr\\r\\n" -fflags +genpts -i "$url" -map 0:v:0? -map 0:a:0? -c:v copy -c:a aac -ac 2 -b:a 192k -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"';
-    } else {
-      // Remux HLS → MP4 fragmentado para streaming progresivo
-      cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
-    }
+    // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
+    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
+    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
     print('🎬 [FFMPEG] Starting stream $id: $cmd');
 
     _activeStreams[id] = _FfmpegStream(
       id: id,
       outputPath: outputPath,
-      transcodeAudio: transcodeAudio,
     );
 
     FFmpegKit.executeAsync(cmd, (session) async {
       final rc = await session.getReturnCode();
       final isOk = ReturnCode.isSuccess(rc);
-      final logs = await session.getLogsAsString();
-      print('🎬 [FFMPEG] Stream $id ended: rc=$rc success=$isOk logs=${logs?.substring(0, (logs.length > 500 ? 500 : logs.length))}');
+      print('🎬 [FFMPEG] Stream $id ended: rc=$rc success=$isOk');
       final entry = _activeStreams[id];
       if (entry != null) {
         entry.isComplete = true;
-        if (!entry.completer.isCompleted) entry.completer.complete();
-      }
-    }, (log) {
-      // Log progresivo para depurar por qué solo manda parte
-      final msg = log.getMessage();
-      if (msg.contains('error') || msg.contains('Error') || msg.contains('failed')) {
-        print('🎬 [FFMPEG] $id log: $msg');
+        entry.completer.complete();
       }
     });
 
@@ -106,8 +91,7 @@ class MediaProxyService {
 
     try {
       // Responder inmediatamente al TV (el SetAVTransportURI espera respuesta HTTP
-      // rápida, no puede bloquear esperando a FFmpeg) — para remux progresivo sí,
-      // para transcode ya esperamos arriba.
+      // rápida, no puede bloquear esperando a FFmpeg).
       request.response.statusCode = 200;
       request.response.headers.set('Content-Type', 'video/mp4');
       request.response.headers.set('Accept-Ranges', 'bytes');
@@ -613,9 +597,27 @@ class MediaProxyService {
     request.response.headers.set('Access-Control-Allow-Origin', '*');
     request.response.headers.set('Connection', 'keep-alive');
 
-    // Forzar video/MP2T — el proxy solo sirve segmentos de vídeo y algunas
-    // CDNs los entregan como image/png, lo que impide la reproducción en TVs.
-    request.response.headers.set('content-type', 'video/MP2T');
+    // Content-Type real. Forzar video/MP2T a ciegas rompe el audio en TVs/WVC:
+    // si el stream real es un MKV/MP4 (p.ej. Addon Latam -> video/x-matroska),
+    // el receptor hace demux MPEG-TS y no encuentra las pistas de audio ->
+    // llega SIN AUDIO en la TV mientras en la app (media_kit sniféa el
+    // contenido real) se escucha bien. Solo forzamos MP2T cuando el contenido
+    // es realmente MPEG-TS (los PNG envoltorios de TikTok se resuelven antes).
+    final lowerUrl = url.toLowerCase();
+    final bool isMpegTs =
+        upstreamContentType.contains('mp2t') ||
+        upstreamContentType.contains('video/mpeg') ||
+        lowerUrl.endsWith('.ts');
+    String realContentType = isMpegTs
+        ? 'video/MP2T'
+        : upstreamContentType.isNotEmpty
+            ? upstreamContentType
+            : (lowerUrl.endsWith('.mkv')
+                ? 'video/x-matroska'
+                : (lowerUrl.endsWith('.mp4') || lowerUrl.endsWith('.m4v')
+                    ? 'video/mp4'
+                    : 'video/MP2T'));
+    request.response.headers.set('content-type', realContentType);
     if (firstChunk != null) request.response.add(firstChunk);
     try {
       await request.response.addStream(stream);
@@ -928,13 +930,12 @@ class MediaProxyService {
     String url,
     Map<String, String>? headers, {
     bool useLocalhost = false,
-    bool transcodeAudio = false,
   }) async {
     String host = (useLocalhost || _localIp.isEmpty)
         ? '127.0.0.1:$_port'
         : '$_localIp:$_port';
 
-    final id = await startFfmpegStream(url, headers ?? {}, transcodeAudio: transcodeAudio);
+    final id = await startFfmpegStream(url, headers ?? {});
     final streamUrl = 'http://$host/ffstream/$id';
     print('🎬 [FFMPEG] fMP4 stream URL: $streamUrl');
     return streamUrl;
@@ -1182,9 +1183,8 @@ class _FfmpegStream {
   final String outputPath;
   final Completer<void> completer = Completer<void>();
   bool isComplete = false;
-  bool transcodeAudio = false;
 
-  _FfmpegStream({required this.id, required this.outputPath, this.transcodeAudio = false});
+  _FfmpegStream({required this.id, required this.outputPath});
 }
 
 
