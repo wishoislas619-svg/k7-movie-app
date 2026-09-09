@@ -54,11 +54,11 @@ class MediaProxyService {
     }
     final headerStr = headerLines.join('\\r\\n');
 
-    // FFmpeg: remux/transcode para TV (WVC/DLNA)
+    // FFmpeg: remux/transcode para TV (WVC/DLNA) — streaming progresivo con todos los fragmentos
     String cmd;
     if (transcodeAudio) {
-      // MKV 6ch/EAC3 → MP4 AAC 2ch: solo video y primer audio si existen, ignora subs/datos
-      cmd = '-y -headers "$headerStr\\r\\n" -fflags +genpts -i "$url" -map 0:v:0? -map 0:a:0? -c:v copy -c:a aac -ac 2 -b:a 192k -f mp4 -movflags +faststart "$outputPath"';
+      // MKV 6ch/EAC3 → MP4 AAC 2ch: fragmentado para enviar todos los fragmentos progresivamente
+      cmd = '-y -headers "$headerStr\\r\\n" -fflags +genpts -i "$url" -map 0:v:0? -map 0:a:0? -c:v copy -c:a aac -ac 2 -b:a 192k -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"';
     } else {
       // Remux HLS → MP4 fragmentado para streaming progresivo
       cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
@@ -99,17 +99,6 @@ class MediaProxyService {
       request.response.statusCode = 404;
       await request.response.close();
       return;
-    }
-
-    // Para transcodificación (MKV 6ch → MP4 2ch) esperar a que FFmpeg termine
-    // para enviar el archivo completo con Content-Length correcto y todos los fragmentos
-    if (entry.transcodeAudio && !entry.isComplete) {
-      print('🎬 [FFMPEG] Stream $id transcode: esperando a que termine para servir completo...');
-      try {
-        await entry.completer.future.timeout(const Duration(minutes: 5));
-      } catch (_) {
-        print('🎬 [FFMPEG] Stream $id timeout esperando transcode');
-      }
     }
 
     final file = File(entry.outputPath);
