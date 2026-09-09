@@ -3036,17 +3036,15 @@ if (widget.videoOptions.isNotEmpty) {
                           ),
                         ),
 
-                      // Video Player — BoxFit.contain para que el video toque bordes sin recortar
+                      // Video Player
                       if (_isAdVerified &&
                           _errorMessage == null &&
                           _controller != null &&
                           _controller!.value.isInitialized)
-                        Positioned.fill(
-                          child: FittedBox(
-                            fit: BoxFit.contain,
-                            child: AspectRatio(
-                              aspectRatio: _controller!.value.aspectRatio,
-                              child: Stack(
+                        Center(
+                          child: AspectRatio(
+                            aspectRatio: _controller!.value.aspectRatio,
+                            child: Stack(
                               alignment: Alignment.bottomCenter,
                               children: [
                                 InteractiveViewer(
@@ -3100,7 +3098,6 @@ if (widget.videoOptions.isNotEmpty) {
                               ],
                             ),
                           ),
-                            ),
                           ),
 
                       // The InAppWebView: Hidden by default, visible ONLY for subtitle scraping or if manually requested
