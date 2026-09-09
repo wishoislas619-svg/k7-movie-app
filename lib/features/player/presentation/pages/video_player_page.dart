@@ -3036,16 +3036,24 @@ if (widget.videoOptions.isNotEmpty) {
                           ),
                         ),
 
-                      // Video Player — expand para tocar bordes (contain sin recortar)
+                      // Video Player — contain: toca borde sin recortar, re-escala tras anuncio
                       if (_isAdVerified &&
                           _errorMessage == null &&
                           _controller != null &&
                           _controller!.value.isInitialized)
-                        SizedBox.expand(
-                          child: Center(
-                            child: AspectRatio(
-                              aspectRatio: _controller!.value.aspectRatio,
-                              child: Stack(
+                        Positioned.fill(
+                          child: FittedBox(
+                            fit: BoxFit.contain,
+                            child: SizedBox(
+                              width: _controller!.value.size.width > 0
+                                  ? _controller!.value.size.width
+                                  : 1920,
+                              height: _controller!.value.size.height > 0
+                                  ? _controller!.value.size.height
+                                  : 1080,
+                              child: AspectRatio(
+                                aspectRatio: _controller!.value.aspectRatio,
+                                child: Stack(
                               alignment: Alignment.bottomCenter,
                               children: [
                                 InteractiveViewer(
@@ -3099,6 +3107,7 @@ if (widget.videoOptions.isNotEmpty) {
                               ],
                             ),
                           ),
+                            ),
                             ),
                           ),
 
