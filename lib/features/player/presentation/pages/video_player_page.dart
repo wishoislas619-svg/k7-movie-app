@@ -3449,7 +3449,7 @@ if (widget.videoOptions.isNotEmpty) {
                               ],
                             ),
                           ),
-
+                        ),
                       // Error overlay — siempre encima del video
                       if (_errorMessage != null)
                         Positioned.fill(child: _buildErrorContent()),
