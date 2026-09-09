@@ -2138,17 +2138,18 @@ if (widget.videoOptions.isNotEmpty) {
       }
 
       if (_controller != null) {
-        // Reintentar inicialización para streams de torrent si hay timeout.
-        final bool _isLibRetry = _isLibtorrentStream;
+        // Reintentar inicialización para streams de torrent y http directo (algo5) si hay timeout.
+        final bool _isRetryable = _isLibtorrentStream || _effectiveAlgorithm == 5;
         int _initAttempts = 0;
-        final int _maxInitAttempts = _isLibRetry ? 3 : 1;
+        final int _maxInitAttempts = _isRetryable ? 2 : 1;
         while (true) {
           try {
             // Watchdog: para archivos locales (torrent descargado a disco) el
             // demuxer de mpv puede quedarse colgado si el archivo está truncado
             // o con un codec no soportado → en vez de "Cargando video..." para
-            // siempre, lanzamos error a los 25s.
-            const initTimeout = Duration(seconds: 25);
+            // siempre, lanzamos error. Algo 5 (http directo) a veces tarda más
+            // por el proxy/CDN.
+            final initTimeout = Duration(seconds: _effectiveAlgorithm == 5 ? 35 : 25);
             await _controller!.initialize().timeout(initTimeout);
             // K7 FIX: tras crear el reproductor (mpv), re-aplicamos el volumen
             // software guardado. _initSettings corrió ANTES de existir _controller,
