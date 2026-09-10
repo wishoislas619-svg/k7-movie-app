@@ -543,6 +543,23 @@ class DownloadRepository {
         return;
       }
       if (results.any((ok) => !ok)) {
+        // Si hay progreso parcial, dejar como pausado (reanudar conserva .part)
+        // para que el usuario pueda reanudar sin perder lo descargado al
+        // suspender la pantalla (los links firmados de liontv expiran rápido).
+        int doneBytes = 0;
+        for (int i = 0; i < chunks; i++) {
+          final p = File('$outputPath.part$i');
+          if (p.existsSync()) doneBytes += p.lengthSync();
+        }
+        if (doneBytes > 0) {
+          print('[CHUNKED] parcial $doneBytes/$totalBytes, pausando para resume');
+          _hlsCancelFlags.remove(task.id);
+          await WakelockPlus.disable();
+          await ForegroundService.stop();
+          onProgress(doneBytes / totalBytes, '');
+          onStatusChange(my.DownloadStatus.paused);
+          return;
+        }
         throw Exception('chunk failed');
       }
       // Combinar parts en archivo final
@@ -588,11 +605,23 @@ class DownloadRepository {
       await ForegroundService.stop();
     } catch (e) {
       print('[CHUNKED] error: $e');
-      // Dejar .part para resume en próximo resumeDownloadTask
+      // Dejar .part para resume; si hay bytes ya descargados pausar, si no error.
+      int doneBytes = 0;
+      try {
+        for (int i = 0; i < chunks; i++) {
+          final p = File('$outputPath.part$i');
+          if (p.existsSync()) doneBytes += p.lengthSync();
+        }
+      } catch (_) {}
       _hlsCancelFlags.remove(task.id);
       await WakelockPlus.disable();
       await ForegroundService.stop();
-      onStatusChange(my.DownloadStatus.error);
+      if (doneBytes > 0) {
+        onProgress(doneBytes / totalBytes, '');
+        onStatusChange(my.DownloadStatus.paused);
+      } else {
+        onStatusChange(my.DownloadStatus.error);
+      }
     }
   }
 
@@ -614,7 +643,7 @@ class DownloadRepository {
       return true;
     }
     int start = from + existing;
-    for (int attempt = 0; attempt < 5; attempt++) {
+    for (int attempt = 0; attempt < 8; attempt++) {
       if (_hlsCancelFlags[taskId] == true) return false;
       try {
         final reqHeaders = Map<String, String>.from(headers)
