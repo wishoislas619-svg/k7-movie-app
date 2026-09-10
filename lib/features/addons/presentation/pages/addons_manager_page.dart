@@ -61,9 +61,20 @@ class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
       _error = null;
     });
     try {
+      final trimmedUrl = manifestUrl.trim();
+      String defaultName = 'Addon';
+      if (trimmedUrl.contains('torrentio.strem.fun')) {
+        defaultName = 'Torrentio';
+      } else if (trimmedUrl.contains('addonlatampagina') ||
+          trimmedUrl.contains('duckdns')) {
+        defaultName = 'Addon Latam';
+      } else {
+        final host = Uri.tryParse(trimmedUrl)?.host;
+        if (host != null && host.isNotEmpty) defaultName = host;
+      }
       final name = _nameController.text.trim().isNotEmpty
           ? _nameController.text.trim()
-          : 'Torrentio';
+          : defaultName;
       await ref.read(addonsProvider.notifier).install(
             name: name,
             manifestUrl: manifestUrl.trim(),
@@ -85,7 +96,9 @@ class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
   @override
   Widget build(BuildContext context) {
     final addonsAsync = ref.watch(addonsProvider);
-    final hasAddons = addonsAsync.valueOrNull?.isNotEmpty ?? false;
+    final hasTorrentio = addonsAsync.valueOrNull
+            ?.any((a) => a.manifestUrl.contains('torrentio.strem.fun')) ??
+        false;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -107,7 +120,7 @@ class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
             accent: Colors.blueAccent,
           ),
           const SizedBox(height: 16),
-          if (!hasAddons)
+          if (!hasTorrentio)
             _buildInstallTorrentioCard()
           else
             _buildAlreadyInstalledCard(),
