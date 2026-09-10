@@ -12,8 +12,12 @@
 -->
 <network-security-config>
 
-  <!-- Configuración por defecto: solo HTTPS para todos los dominios públicos -->
-  <base-config cleartextTrafficPermitted="false">
+  <!-- Configuración por defecto: permitir HTTPS y también HTTP (cleartext).
+       Los addons (Addon Latam/otros) sirven los streams con http:// en hosts
+       públicos arbitrarios (p.ej. liontv.es, duckdns) y las descargas usan
+       background_downloader en socket nativo; bloquear cleartext cancela la
+       descarga de esos enlaces. -->
+  <base-config cleartextTrafficPermitted="true">
     <trust-anchors>
       <certificates src="system" />
     </trust-anchors>
