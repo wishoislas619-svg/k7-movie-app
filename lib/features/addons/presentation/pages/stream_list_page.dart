@@ -251,16 +251,15 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     final willUseTorrent =
         isTorrent && (stream.url == null || stream.url!.isEmpty);
     print('🎬 [STREAM_PLAY] stream.name=${stream.name} isTorrent=$isTorrent hasUrl=${stream.url != null && stream.url!.isNotEmpty} willUseTorrent=$willUseTorrent');
-    if (willUseTorrent) {
-      // Anuncio recompensado ANTES de empezar la descarga del torrent.
-      final adOk = await requireRewardedAdForTorrent(
-        context,
-        ref,
-        mediaId: widget.tmdbId,
-        mediaType: widget.isSeries ? 'series' : 'movie',
-      );
-      if (!adOk || !mounted) return;
-    }
+    // Anuncio recompensado ANTES de reproducir, tanto para torrents como para
+    // streams http directos (Addon Latam / otros): desbloquea la acción.
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: widget.tmdbId,
+      mediaType: widget.isSeries ? 'series' : 'movie',
+    );
+    if (!adOk || !mounted) return;
 
     if (directUrl == null || directUrl.isEmpty) {
       if (stream.infoHash == null || stream.infoHash!.isEmpty) {
@@ -349,7 +348,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           imagePath: widget.poster,
           extractionAlgorithm: algo,
           torrentDownloadProgress: torrentHandle,
-          skipAd: willUseTorrent,
+          skipAd: true,
           externalSubtitles: [
             for (final s in stream.subtitles)
               SubtitleInfo(language: s.language, url: s.url)
@@ -1055,18 +1054,20 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       return;
     }
 
+    // Anuncio recompensado ANTES de transmitir, tanto para torrents como para
+    // streams http directos (Addon Latam / otros): desbloquea la acción.
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: widget.tmdbId,
+      mediaType: widget.isSeries ? 'series' : 'movie',
+    );
+    if (!adOk || !mounted) return;
+
     String? url;
     TorrentStreamingHandle? handle;
 
     if (isTorrent) {
-      // Anuncio recompensado ANTES de empezar la descarga del torrent.
-      final adOk = await requireRewardedAdForTorrent(
-        context,
-        ref,
-        mediaId: widget.tmdbId,
-        mediaType: widget.isSeries ? 'series' : 'movie',
-      );
-      if (!adOk || !mounted) return;
       final progressNotifier = ValueNotifier<TorrentDownloadProgress?>(null);
       showDialog(
         context: context,

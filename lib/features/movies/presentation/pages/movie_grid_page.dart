@@ -1925,6 +1925,15 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       _goToDetails(context, item);
       return;
     }
+    // Anuncio recompensado ANTES de reproducir desde "Continuar viendo" para
+    // streams http directos (Addon Latam / otros), igual que con torrents.
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: item.mediaId,
+      mediaType: item.mediaType,
+    );
+    if (!adOk || !context.mounted) return;
     final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
     final option = VideoOption(
       id: item.videoOptionId ?? item.mediaId,
@@ -1961,6 +1970,15 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       _goToDetails(context, item);
       return;
     }
+    // Anuncio recompensado ANTES de reproducir desde "Continuar viendo" para
+    // streams http directos (Addon Latam / otros), igual que con torrents.
+    final adOk = await requireRewardedAdForTorrent(
+      context,
+      ref,
+      mediaId: item.mediaId,
+      mediaType: item.mediaType,
+    );
+    if (!adOk || !context.mounted) return;
     final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
     final chapterLabel = (item.subtitle != null && item.subtitle!.isNotEmpty)
         ? '${item.title} · ${item.subtitle}'
@@ -2236,6 +2254,15 @@ final totalDuration = item.totalDuration > 0
     required bool resume,
   }) async {
     if (_isDirectHttpHistoryItem(item)) {
+      // Anuncio recompensado ANTES de transmitir desde "Continuar viendo" para
+      // streams http directos (Addon Latam / otros), igual que con torrents.
+      final adOk = await requireRewardedAdForTorrent(
+        context,
+        ref,
+        mediaId: item.mediaId,
+        mediaType: item.mediaType,
+      );
+      if (!adOk || !context.mounted) return;
       final startPos = resume ? Duration(milliseconds: item.lastPosition) : Duration.zero;
       final totalDuration = item.totalDuration > 0 ? Duration(milliseconds: item.totalDuration) : null;
       // Direct http (Addon Latam / algo 5): CastButton con URL directa.
