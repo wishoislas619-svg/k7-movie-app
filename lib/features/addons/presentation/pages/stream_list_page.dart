@@ -1112,78 +1112,12 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         return;
       }
     } else {
-      url = await _prepareWvcUrl(stream.url!);
-      // Solo mantener vivo el servicio si la URL apunta a nuestro proxy local
-      // (transcode/remux); si WVC recibe la URL original/HLS no es necesario.
-      final servesFromProxy =
-          url.startsWith('http://127.0.0.1:${MediaProxyService().port}');
-      if (servesFromProxy) {
-        await ForegroundService.start(
-          title: 'Transmitiendo a Web Video Caster',
-          text: 'Preparando stream para la TV',
-        );
-      }
+      url = stream.url;
     }
 
     final videoUrl = url;
     if (videoUrl == null || videoUrl.isEmpty) return;
     await _openInWebVideoCaster(videoUrl, stream.title);
-  }
-
-  Future<String> _prepareWvcUrl(String rawUrl) async {
-    final lower = rawUrl.toLowerCase();
-    final isHls = lower.contains('.m3u8') ||
-        lower.contains('.m3u') ||
-        lower.contains('playlist') ||
-        lower.contains('master');
-    // WVC reproduce HLS nativo; no tocamos esos.
-    if (isHls) return rawUrl;
-
-    const headers = <String, String>{
-      'User-Agent':
-          'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
-      'Accept': '*/*',
-    };
-
-    try {
-      await MediaProxyService().start();
-
-      // Sondeo del códec de audio: si no es universal (AAC/MP3/Opus...), el
-      // receptor de la TV pierde el audio en el MKV directo de Addon Latam
-      // (AC3/DTS/TrueHD). Entonces remux a fMP4 con audio→AAC.
-      final codec = await MediaProxyService().probeAudioCodec(rawUrl, headers);
-      final safe = codec != null &&
-          MediaProxyService.castSafeAudioCodecs.contains(codec);
-      print('WVC_DBG: codec="$codec" safe=$safe');
-
-      if (!safe) {
-        final transcoded = await MediaProxyService().getTranscodedUrl(
-          rawUrl,
-          headers,
-          useLocalhost: true,
-        );
-        final ready = await MediaProxyService().waitForStreamReady(
-          transcoded,
-          timeout: const Duration(seconds: 25),
-        );
-        if (ready) {
-          print('WVC_DBG: usando transcode → $transcoded');
-          return transcoded;
-        }
-        print('WVC_DBG: FFmpeg no produjo datos, fallback a proxy');
-      }
-
-      final proxied = MediaProxyService().getProxiedUrl(
-        rawUrl,
-        headers,
-        useLocalhost: true,
-      );
-      print('WVC_DBG: usando proxy → $proxied');
-      return proxied;
-    } catch (e) {
-      print('WVC_DBG: error preparando URL, usando original: $e');
-      return rawUrl;
-    }
   }
 
   Future<void> _openInWebVideoCaster(String videoUrl, String title) async {

@@ -6,7 +6,6 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_https_gpl/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -36,13 +35,10 @@ class MediaProxyService {
 
   /// Inicia FFmpeg para remuxear HLS → MKV progresivo.
   /// Retorna inmediatamente con el ID del stream (no espera a que FFmpeg produzca datos).
-  /// Si [transcodeAudio] es true, reconvierte el audio a AAC (y copia el vídeo)
-  /// para que receptores de cast que no soportan AC3/EAC3/DTS muestren audio.
   Future<String> startFfmpegStream(
     String url,
-    Map<String, String> headers, {
-    bool transcodeAudio = false,
-  }) async {
+    Map<String, String> headers,
+  ) async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final outDir = await _ensureStreamsDir();
     final outputPath = '$outDir/$id.mp4';
@@ -57,21 +53,10 @@ class MediaProxyService {
     }
     final headerStr = headerLines.join('\\r\\n');
 
-    // FFmpeg: remux → MP4 fragmentado (streaming progresivo, soporte universal)
-    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe.
-    // Con transcodeAudio: -map solo vídeo+audio, vídeo se copia (no pierde calidad)
-    // y el audio se reconvierte a AAC 192k (codec universal en TVs/receptores).
-    final filters = transcodeAudio
-        ? '-map 0:v:0 -map 0:a:0 -c:v copy -c:a aac -b:a 192k'
-        : '-c copy';
-    // Input HTTP robusto: los servidores tipo "kill-link" (p.ej. liontv.es)
-    // cierran la conexión a mitad del archivo; sin esto FFmpeg termina rc=0
-    // y solo quedan unos segundos en el MP4. Con reconnect FFmpeg reabre la
-    // conexión (con Range) y continúa el remux, igual que hace mpv en la app.
-    final reconnect = '-rw_timeout 15000000 -reconnect 1 -reconnect_streamed 1 '
-        '-reconnect_on_network_error 1 -reconnect_at_eof 1 -reconnect_delay_max 10';
-    final cmd = '-y $reconnect -headers "$headerStr\\r\\n" -i "$url" $filters -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
-    print('🎬 [FFMPEG] Starting stream $id (transcodeAudio=$transcodeAudio): $cmd');
+    // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
+    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
+    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    print('🎬 [FFMPEG] Starting stream $id: $cmd');
 
     _activeStreams[id] = _FfmpegStream(
       id: id,
@@ -612,27 +597,9 @@ class MediaProxyService {
     request.response.headers.set('Access-Control-Allow-Origin', '*');
     request.response.headers.set('Connection', 'keep-alive');
 
-    // Content-Type real. Forzar video/MP2T a ciegas rompe el audio en TVs/WVC:
-    // si el stream real es un MKV/MP4 (p.ej. Addon Latam -> video/x-matroska),
-    // el receptor hace demux MPEG-TS y no encuentra las pistas de audio ->
-    // llega SIN AUDIO en la TV mientras en la app (media_kit sniféa el
-    // contenido real) se escucha bien. Solo forzamos MP2T cuando el contenido
-    // es realmente MPEG-TS (los PNG envoltorios de TikTok se resuelven antes).
-    final lowerUrl = url.toLowerCase();
-    final bool isMpegTs =
-        upstreamContentType.contains('mp2t') ||
-        upstreamContentType.contains('video/mpeg') ||
-        lowerUrl.endsWith('.ts');
-    String realContentType = isMpegTs
-        ? 'video/MP2T'
-        : upstreamContentType.isNotEmpty
-            ? upstreamContentType
-            : (lowerUrl.endsWith('.mkv')
-                ? 'video/x-matroska'
-                : (lowerUrl.endsWith('.mp4') || lowerUrl.endsWith('.m4v')
-                    ? 'video/mp4'
-                    : 'video/MP2T'));
-    request.response.headers.set('content-type', realContentType);
+    // Forzar video/MP2T — el proxy solo sirve segmentos de vídeo y algunas
+    // CDNs los entregan como image/png, lo que impide la reproducción en TVs.
+    request.response.headers.set('content-type', 'video/MP2T');
     if (firstChunk != null) request.response.add(firstChunk);
     try {
       await request.response.addStream(stream);
@@ -954,107 +921,6 @@ class MediaProxyService {
     final streamUrl = 'http://$host/ffstream/$id';
     print('🎬 [FFMPEG] fMP4 stream URL: $streamUrl');
     return streamUrl;
-  }
-
-  /// Como [getFfmpegUrl] pero reconvirtiendo el audio a AAC (y copiando el
-  /// vídeo). Para cast de streams cuyo codec de audio (AC3/EAC3/DTS/TrueHD)
-  /// el receptor de la TV/WVC no decodifica y llega sin audio.
-  Future<String> getTranscodedUrl(
-    String url,
-    Map<String, String>? headers, {
-    bool useLocalhost = false,
-  }) async {
-    String host = (useLocalhost || _localIp.isEmpty)
-        ? '127.0.0.1:$_port'
-        : '$_localIp:$_port';
-
-    final id = await startFfmpegStream(url, headers ?? {}, transcodeAudio: true);
-    final streamUrl = 'http://$host/ffstream/$id';
-    print('🎬 [FFMPEG] fMP4 transcode (audio→AAC) URL: $streamUrl');
-    return streamUrl;
-  }
-
-  /// Espera (hasta [timeout]) a que el stream FFmpeg haya escrito datos reales.
-  /// Evita pasar a un cliente externo (WVC/TV) una URL cuyo proceso FFmpeg
-  /// falló al inicio (respondería 200 pero con cuerpo vacío).
-  Future<bool> waitForStreamReady(
-    String ffstreamUrl, {
-    Duration timeout = const Duration(seconds: 20),
-  }) async {
-    final String id;
-    try {
-      id = Uri.parse(ffstreamUrl).pathSegments.last;
-    } catch (_) {
-      return false;
-    }
-    final entry = _activeStreams[id];
-    if (entry == null) return false;
-
-    final file = File(entry.outputPath);
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      try {
-        if (await file.length() >= 512 * 1024) return true;
-      } catch (_) {}
-      if (entry.isComplete) break;
-      await Future.delayed(const Duration(milliseconds: 400));
-    }
-    try {
-      return await file.length() > 0;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Códecs de audio que TODOS los receptores de cast (Chromecast, DLNA, Roku,
-  /// Android TV, WebVideoCaster) decodifican sin problema.
-  static const Set<String> castSafeAudioCodecs = {
-    'aac', 'mp3', 'mp2', 'opus', 'vorbis', 'flac', 'alac',
-    'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'pcm_mulaw', 'pcm_alaw', 'pcm_u8',
-  };
-
-  /// Sondea con ffprobe el códec de audio de un stream remoto (solo lee el
-  /// inicio, no descarga el archivo). Retorna el codec_name o null si falla.
-  Future<String?> probeAudioCodec(
-    String url,
-    Map<String, String> headers,
-  ) async {
-    try {
-      final hParts = <String>[];
-      for (final key in ['User-Agent', 'Referer', 'Cookie', 'Origin', 'Accept', 'Accept-Language']) {
-        final val = headers[key];
-        if (val != null && val.isNotEmpty) hParts.add('$key: $val');
-      }
-      final headerStr = hParts.join('\r\n');
-
-      final session = await FFprobeKit.getMediaInformationFromCommandArguments(
-        [
-          '-v', 'error',
-          '-hide_banner',
-          '-print_format', 'json',
-          '-show_streams',
-          if (headerStr.isNotEmpty) ...[
-            '-headers', headerStr,
-          ],
-          '-i', url,
-        ],
-        8,
-      );
-
-      final info = session.getMediaInformation();
-      if (info == null) return null;
-      for (final s in info.getStreams()) {
-        if (s.getType() == 'audio') {
-          final codec = s.getCodec()?.toLowerCase();
-          print('🎛️ [PROBE] Audio codec: $codec');
-          return (codec == null || codec.isEmpty) ? null : codec;
-        }
-      }
-      return null;
-    } catch (e) {
-      print('⚠️ [PROBE] Error sondeando codec: $e');
-      return null;
-    }
   }
 
   Future<void> _refreshLocalIp({String? targetIp}) async {
