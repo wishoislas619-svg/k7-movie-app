@@ -395,9 +395,71 @@ class DownloadRepository {
       displayName: task.movieName,
     );
 
+    // Streams http directos (Addon Latam/otros): el servidor suele ser lento y
+    // cortar la conexión a mitad de la descarga ("unexpected end of stream"),
+    // lo que reiniciaba la descarga completa. Si el servidor soporta rangos,
+    // usar descarga paralela por chunks (más rápido + solo reintenta el chunk
+    // caído). Si no lo soporta, el DownloadTask normal NO se usa cuando hay
+    // soporte de rangos, así que elegimos por sonda.
+    final parallelInfo = await _probeParallelCapable(
+      finalUrl,
+      headers: finalHeaders,
+    );
+    if (parallelInfo != null) {
+      print(
+        '[DL] Parallel download: size=${parallelInfo} chunks=4 url=$finalUrl',
+      );
+      final chunks = parallelInfo > 3 * 1024 * 1024 * 1024 ? 8 : 4;
+      final parallelTask = ParallelDownloadTask(
+        taskId: task.id,
+        url: finalUrl,
+        chunks: chunks,
+        headers: finalHeaders,
+        filename: fileName,
+        directory: 'downloads',
+        updates: Updates.statusAndProgress,
+        retries: 5,
+        baseDirectory: BaseDirectory.applicationDocuments,
+        displayName: task.movieName,
+      );
+      final enqueuedParallel = await FileDownloader().enqueue(parallelTask);
+      if (!enqueuedParallel) {
+        onStatusChange(my.DownloadStatus.error);
+      }
+      return;
+    }
+
     final enqueued = await FileDownloader().enqueue(downloadTask);
     if (!enqueued) {
       onStatusChange(my.DownloadStatus.error);
+    }
+  }
+
+  /// Sondea si el servidor soporta decargas por rangos (HTTP Range / 206).
+  /// Devuelve el tamaño total del contenido si el servidor responde 206 con
+  /// `Content-Range` y `Accept-Ranges: bytes`, o null si no lo soporta (en ese
+  /// caso se cae al DownloadTask de una sola conexión).
+  Future<int?> _probeParallelCapable(
+    String url, {
+    required Map<String, String> headers,
+  }) async {
+    try {
+      final probeHeaders = Map<String, String>.from(headers)
+        ..['Range'] = 'bytes=0-0';
+      final res = await http
+          .get(Uri.parse(url), headers: probeHeaders)
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode != 206) return null;
+      final contentRange = res.headers['content-range'];
+      if (contentRange == null || !contentRange.contains('/')) return null;
+      final size = int.tryParse(contentRange.split('/').last) ?? 0;
+      final acceptsRanges =
+          (res.headers['accept-ranges'] ?? '').toLowerCase() == 'bytes';
+      if (size < 10 * 1024 * 1024 || !acceptsRanges) return null;
+      return size;
+    } catch (e) {
+      print('[DL] Parallel probe failed ($e), usando descarga simple');
+      return null;
     }
   }
 
@@ -1088,9 +1150,13 @@ class DownloadRepository {
     }
 
     final tasks = await FileDownloader().allTasks();
-    final task =
-        tasks.where((t) => t.taskId == id).firstOrNull as DownloadTask?;
-    if (task != null) {
+    final task = tasks.where((t) => t.taskId == id).firstOrNull;
+    // ParallelDownloadTask no admite pause/resume; lo tratamos como cancelable.
+    if (task is ParallelDownloadTask) {
+      await FileDownloader().cancelTasksWithIds([id]);
+      return;
+    }
+    if (task is DownloadTask) {
       await FileDownloader().pause(task);
     }
   }
@@ -1126,9 +1192,18 @@ class DownloadRepository {
     }
 
     final tasks = await FileDownloader().allTasks();
-    final dlTask =
-        tasks.where((t) => t.taskId == task.id).firstOrNull as DownloadTask?;
-    if (dlTask != null) {
+    // ParallelDownloadTask no admite resume nativo; se re-enqueúa desde cero
+    // con el probe/fallback de enqueueDownload.
+    final dlTask = tasks.where((t) => t.taskId == task.id).firstOrNull;
+    if (dlTask is ParallelDownloadTask) {
+      await enqueueDownload(
+        task,
+        onProgress: onProgress,
+        onStatusChange: onStatusChange,
+      );
+      return;
+    }
+    if (dlTask is DownloadTask) {
       await FileDownloader().resume(dlTask);
       return;
     }
