@@ -13,8 +13,10 @@ class SmartSearchPage extends ConsumerStatefulWidget {
   ConsumerState<SmartSearchPage> createState() => _SmartSearchPageState();
 }
 
-class _SmartSearchPageState extends ConsumerState<SmartSearchPage> {
+class _SmartSearchPageState extends ConsumerState<SmartSearchPage>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _controller = TextEditingController();
+  late final TabController _tabController;
   Timer? _debounce;
   List<Map<String, dynamic>> _results = [];
   List<Map<String, dynamic>> _history = [];
@@ -26,12 +28,14 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage> {
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 2, vsync: this);
     _loadHistory();
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
+    _tabController.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -238,6 +242,52 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage> {
             style: TextStyle(color: Colors.white38)),
       );
     }
+    final movies =
+        _results.where((r) => r['mediaType'] == 'movie').toList();
+    final series =
+        _results.where((r) => r['mediaType'] == 'series').toList();
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF141414),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: TabBar(
+            controller: _tabController,
+            indicatorColor: const Color(0xFF00A3FF),
+            indicatorSize: TabBarIndicatorSize.tab,
+            labelColor: const Color(0xFF00A3FF),
+            unselectedLabelColor: Colors.white54,
+            labelStyle: const TextStyle(
+                fontWeight: FontWeight.bold, fontSize: 13),
+            tabs: [
+              Tab(text: 'Películas (${movies.length})'),
+              Tab(text: 'Series (${series.length})'),
+            ],
+          ),
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _tabController,
+            children: [
+              _resultsGrid(movies),
+              _resultsGrid(series),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _resultsGrid(List<Map<String, dynamic>> items) {
+    if (items.isEmpty) {
+      return const Center(
+        child: Text('Sin resultados para esta categoría.',
+            style: TextStyle(color: Colors.white38)),
+      );
+    }
     return GridView.builder(
       padding: const EdgeInsets.all(16),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -246,9 +296,9 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage> {
         crossAxisSpacing: 10,
         mainAxisSpacing: 10,
       ),
-      itemCount: _results.length,
+      itemCount: items.length,
       itemBuilder: (context, index) {
-        final movie = _results[index];
+        final movie = items[index];
         return _MovieCard(movie: movie, onTap: () => _openResult(movie));
       },
     );
