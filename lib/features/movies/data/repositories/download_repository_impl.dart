@@ -26,6 +26,8 @@ class DownloadRepository {
   final SqliteService _sqliteService;
   final Map<String, _DownloadProgressInfo> _progressInfos = {};
   final Map<String, bool> _hlsCancelFlags = {};
+  final Map<String, int> _autoResumeAttempts = {};
+  static const int _maxAutoResume = 3;
 
   // Ya no usamos una constante, consultamos StorageService dinámicamente.
 
@@ -552,12 +554,13 @@ class DownloadRepository {
           if (p.existsSync()) doneBytes += p.lengthSync();
         }
         if (doneBytes > 0) {
-          print('[CHUNKED] parcial $doneBytes/$totalBytes, pausando para resume');
+          print('[CHUNKED] parcial $doneBytes/$totalBytes, pausando para auto-resume');
           _hlsCancelFlags.remove(task.id);
           await WakelockPlus.disable();
           await ForegroundService.stop();
           onProgress(doneBytes / totalBytes, '');
           onStatusChange(my.DownloadStatus.paused);
+          _scheduleAutoResume(task, fileName, headers, totalBytes, onProgress, onStatusChange);
           return;
         }
         throw Exception('chunk failed');
@@ -600,6 +603,7 @@ class DownloadRepository {
         speed: '',
       );
       onProgress(1.0, '');
+      _autoResumeAttempts.remove(task.id);
       onStatusChange(my.DownloadStatus.completed, savePath: pPath);
       await WakelockPlus.disable();
       await ForegroundService.stop();
@@ -619,10 +623,64 @@ class DownloadRepository {
       if (doneBytes > 0) {
         onProgress(doneBytes / totalBytes, '');
         onStatusChange(my.DownloadStatus.paused);
+        _scheduleAutoResume(task, fileName, headers, totalBytes, onProgress, onStatusChange);
       } else {
         onStatusChange(my.DownloadStatus.error);
       }
     }
+  }
+
+  void _scheduleAutoResume(
+    my.DownloadTask task,
+    String fileName,
+    Map<String, String> headers,
+    int totalBytes,
+    Function(double, String) onProgress,
+    Function(my.DownloadStatus, {String? savePath}) onStatusChange,
+  ) {
+    final attempts = _autoResumeAttempts[task.id] ?? 0;
+    if (attempts >= _maxAutoResume) {
+      print('[CHUNKED] auto-resume límite alcanzado para ${task.id}');
+      _autoResumeAttempts.remove(task.id);
+      return;
+    }
+    _autoResumeAttempts[task.id] = attempts + 1;
+    final delay = Duration(seconds: 4 * (attempts + 1));
+    print('[CHUNKED] auto-resume ${attempts + 1}/$_maxAutoResume en ${delay.inSeconds}s para ${task.id}');
+    Future.delayed(delay, () async {
+      if (_hlsCancelFlags[task.id] == true) {
+        print('[CHUNKED] auto-resume cancelado (usuario pausó)');
+        _autoResumeAttempts.remove(task.id);
+        return;
+      }
+      // Verificar que la tarea siga existiendo y esté pausada
+      final dbTask = await getDownloadById(task.id);
+      if (dbTask == null || dbTask.status != my.DownloadStatus.paused) {
+        _autoResumeAttempts.remove(task.id);
+        return;
+      }
+      // Solo auto-reanudar si hay .part (descarga chunked real)
+      if (!await _hasChunkedParts(dbTask)) {
+        _autoResumeAttempts.remove(task.id);
+        return;
+      }
+      print('[CHUNKED] auto-reanudando ${task.id}');
+      await updateDownloadTask(dbTask.copyWith(status: my.DownloadStatus.downloading));
+      onStatusChange(my.DownloadStatus.downloading);
+      _downloadChunkedHttp(
+        task: dbTask,
+        fileName: fileName,
+        headers: headers,
+        totalBytes: totalBytes,
+        onProgress: onProgress,
+        onStatusChange: (s, {savePath}) {
+          if (s == my.DownloadStatus.completed || s == my.DownloadStatus.error) {
+            _autoResumeAttempts.remove(task.id);
+          }
+          onStatusChange(s, savePath: savePath);
+        },
+      );
+    });
   }
 
   Future<bool> _downloadSingleChunk({
