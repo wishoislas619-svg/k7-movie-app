@@ -1,8 +1,10 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:math';
+
 import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'dart:math';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
@@ -396,36 +398,27 @@ class DownloadRepository {
     );
 
     // Streams http directos (Addon Latam/otros): el servidor suele ser lento y
-    // cortar la conexión a mitad de la descarga ("unexpected end of stream"),
-    // lo que reiniciaba la descarga completa. Si el servidor soporta rangos,
-    // usar descarga paralela por chunks (más rápido + solo reintenta el chunk
-    // caído). Si no lo soporta, el DownloadTask normal NO se usa cuando hay
-    // soporte de rangos, así que elegimos por sonda.
-    final parallelInfo = await _probeParallelCapable(
+    // cortar la conexión a mitad ("unexpected end of stream" al 3%) reiniciando
+    // desde 0 con DownloadTask de una sola conexión. El ParallelDownloadTask
+    // nativo exige `Accept-Ranges: bytes` que estos CDN no envían aunque sí
+    // responden 206, así que usamos un descargador chunked propio en Dart:
+    // sonda 206 + Content-Range y descarga en N rangos paralelos con resume
+    // por .part (solo reintenta el chunk caído, no toda la película).
+    final chunkedSize = await _probeChunkedSize(
       finalUrl,
       headers: finalHeaders,
     );
-    if (parallelInfo != null) {
-      print(
-        '[DL] Parallel download: size=${parallelInfo} chunks=4 url=$finalUrl',
-      );
-      final chunks = parallelInfo > 3 * 1024 * 1024 * 1024 ? 8 : 4;
-      final parallelTask = ParallelDownloadTask(
-        taskId: task.id,
-        url: finalUrl,
-        chunks: chunks,
+    if (chunkedSize != null && chunkedSize >= 5 * 1024 * 1024) {
+      print('[DL] Chunked Dart download: size=$chunkedSize url=$finalUrl');
+      // No encolar DownloadTask nativo; el chunked maneja su propio estado.
+      _downloadChunkedHttp(
+        task: task.copyWith(videoUrl: finalUrl),
+        fileName: fileName,
         headers: finalHeaders,
-        filename: fileName,
-        directory: 'downloads',
-        updates: Updates.statusAndProgress,
-        retries: 5,
-        baseDirectory: BaseDirectory.applicationDocuments,
-        displayName: task.movieName,
+        totalBytes: chunkedSize,
+        onProgress: onProgress,
+        onStatusChange: onStatusChange,
       );
-      final enqueuedParallel = await FileDownloader().enqueue(parallelTask);
-      if (!enqueuedParallel) {
-        onStatusChange(my.DownloadStatus.error);
-      }
       return;
     }
 
@@ -435,32 +428,245 @@ class DownloadRepository {
     }
   }
 
-  /// Sondea si el servidor soporta decargas por rangos (HTTP Range / 206).
-  /// Devuelve el tamaño total del contenido si el servidor responde 206 con
-  /// `Content-Range` y `Accept-Ranges: bytes`, o null si no lo soporta (en ese
-  /// caso se cae al DownloadTask de una sola conexión).
-  Future<int?> _probeParallelCapable(
+  /// Sonda ligera para descarga chunked: basta con 206 + Content-Range con
+  /// tamaño total. No exigimos `Accept-Ranges: bytes` porque liontv.es y
+  /// 23.153.217.158 responden 206 pero omiten esa cabecera.
+  Future<int?> _probeChunkedSize(
     String url, {
     required Map<String, String> headers,
   }) async {
     try {
       final probeHeaders = Map<String, String>.from(headers)
-        ..['Range'] = 'bytes=0-0';
+        ..['Range'] = 'bytes=0-0'
+        ..putIfAbsent('Accept', () => '*/*')
+        ..putIfAbsent('Accept-Language', () => 'es-ES,es;q=0.9,en;q=0.8')
+        ..putIfAbsent('Connection', () => 'keep-alive');
       final res = await http
           .get(Uri.parse(url), headers: probeHeaders)
           .timeout(const Duration(seconds: 10));
-      if (res.statusCode != 206) return null;
+      if (res.statusCode != 206) {
+        // Algunos CDN responden 200 con Content-Length en HEAD/Range ignorado.
+        // Intentar HEAD como fallback para tamaño.
+        try {
+          final headRes = await http
+              .head(Uri.parse(url), headers: headers)
+              .timeout(const Duration(seconds: 8));
+          final cl = headRes.headers['content-length'];
+          final size = cl != null ? int.tryParse(cl) : null;
+          if (size != null && size >= 5 * 1024 * 1024) return size;
+        } catch (_) {}
+        return null;
+      }
       final contentRange = res.headers['content-range'];
       if (contentRange == null || !contentRange.contains('/')) return null;
       final size = int.tryParse(contentRange.split('/').last) ?? 0;
-      final acceptsRanges =
-          (res.headers['accept-ranges'] ?? '').toLowerCase() == 'bytes';
-      if (size < 10 * 1024 * 1024 || !acceptsRanges) return null;
+      if (size < 5 * 1024 * 1024) return null;
       return size;
     } catch (e) {
-      print('[DL] Parallel probe failed ($e), usando descarga simple');
+      print('[DL] Chunked probe failed ($e), usando descarga simple');
       return null;
     }
+  }
+
+  /// Descarga http directa en N chunks paralelos con Range y resume por .part.
+  /// Mucho más rápida y no reinicia al 3% si un chunk cae (solo ese reintenta).
+  Future<void> _downloadChunkedHttp({
+    required my.DownloadTask task,
+    required String fileName,
+    required Map<String, String> headers,
+    required int totalBytes,
+    required Function(double, String) onProgress,
+    required Function(my.DownloadStatus, {String? savePath}) onStatusChange,
+  }) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final downloadsDir = Directory('${directory.path}/downloads');
+    if (!await downloadsDir.exists()) await downloadsDir.create(recursive: true);
+    final outputPath = '${downloadsDir.path}/$fileName';
+    final chunks = totalBytes > 3 * 1024 * 1024 * 1024 ? 8 : 4;
+    final chunkSize = (totalBytes / chunks).ceil();
+    _hlsCancelFlags[task.id] = false;
+    final startTime = DateTime.now();
+    int lastNotifiedProgress = -1;
+
+    void notifyProgress() {
+      // Suma de .part existentes + output parcial
+      int done = 0;
+      for (int i = 0; i < chunks; i++) {
+        final p = File('$outputPath.part$i');
+        if (p.existsSync()) done += p.lengthSync();
+      }
+      final progress = (done / totalBytes).clamp(0.0, 1.0);
+      final elapsed = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
+      final speed = elapsed > 0 ? (done / 1024 / 1024 / elapsed) : 0.0;
+      final speedStr = speed > 0 ? '${speed.toStringAsFixed(2)} MB/s' : '';
+      final pct = (progress * 100).toInt();
+      if (pct != lastNotifiedProgress || pct % 2 == 0) {
+        lastNotifiedProgress = pct;
+        NotificationService.showDownloadNotification(
+          id: task.id.hashCode & 0x7fffffff,
+          title: task.movieName,
+          progress: pct,
+          speed: speedStr,
+        );
+      }
+      onProgress(progress, speedStr);
+    }
+
+    try {
+      await WakelockPlus.enable();
+      await ForegroundService.start(title: 'Descargando', text: task.movieName);
+      // Lanzar chunks en paralelo, cada uno con reintentos y resume.
+      final futures = <Future<bool>>[];
+      for (int i = 0; i < chunks; i++) {
+        final from = i * chunkSize;
+        final to = min(from + chunkSize - 1, totalBytes - 1);
+        futures.add(_downloadSingleChunk(
+          url: task.videoUrl,
+          headers: headers,
+          from: from,
+          to: to,
+          partPath: '$outputPath.part$i',
+          taskId: task.id,
+          onChunkProgress: notifyProgress,
+        ));
+      }
+      // Poll de progreso mientras los chunks corren.
+      Timer? poll;
+      poll = Timer.periodic(const Duration(milliseconds: 800), (_) => notifyProgress());
+      final results = await Future.wait(futures);
+      poll.cancel();
+      if (_hlsCancelFlags[task.id] == true) {
+        _hlsCancelFlags.remove(task.id);
+        await WakelockPlus.disable();
+        await ForegroundService.stop();
+        onStatusChange(my.DownloadStatus.paused);
+        return;
+      }
+      if (results.any((ok) => !ok)) {
+        throw Exception('chunk failed');
+      }
+      // Combinar parts en archivo final
+      final out = await File(outputPath).open(mode: FileMode.write);
+      for (int i = 0; i < chunks; i++) {
+        final part = File('$outputPath.part$i');
+        if (!await part.exists()) throw Exception('part $i missing');
+        final bytes = await part.readAsBytes();
+        await out.writeFrom(bytes);
+        await part.delete();
+      }
+      await out.close();
+      _hlsCancelFlags.remove(task.id);
+      final f = File(outputPath);
+      if (!await f.exists() || await f.length() < 5 * 1024 * 1024) {
+        throw Exception('final file too small');
+      }
+      // Validación ligera y copia a almacenamiento público igual que HLS
+      await updateDownloadTask(task.copyWith(savePath: outputPath, originalFilename: fileName));
+      String pPath = outputPath;
+      if (!AppConstants.secureSave && Platform.isAndroid) {
+        try {
+          final pubDir = Directory('/storage/emulated/0/Download/K7-MOVIE');
+          if (!await pubDir.exists()) await pubDir.create();
+          final publicFile = await File(outputPath).copy('${pubDir.path}/$fileName');
+          pPath = publicFile.path;
+          await File(outputPath).delete();
+        } catch (e) {
+          print('[CHUNKED] Error copiando a público: $e');
+        }
+      }
+      await updateDownloadTask(task.copyWith(savePath: pPath, originalFilename: pPath.split('/').last));
+      await _updateTaskMediaInfo(task, pPath);
+      NotificationService.showDownloadNotification(
+        id: task.id.hashCode & 0x7fffffff,
+        title: task.movieName,
+        progress: 100,
+        speed: '',
+      );
+      onProgress(1.0, '');
+      onStatusChange(my.DownloadStatus.completed, savePath: pPath);
+      await WakelockPlus.disable();
+      await ForegroundService.stop();
+    } catch (e) {
+      print('[CHUNKED] error: $e');
+      // Dejar .part para resume en próximo resumeDownloadTask
+      _hlsCancelFlags.remove(task.id);
+      await WakelockPlus.disable();
+      await ForegroundService.stop();
+      onStatusChange(my.DownloadStatus.error);
+    }
+  }
+
+  Future<bool> _downloadSingleChunk({
+    required String url,
+    required Map<String, String> headers,
+    required int from,
+    required int to,
+    required String partPath,
+    required String taskId,
+    required Function() onChunkProgress,
+  }) async {
+    final partFile = File(partPath);
+    int existing = 0;
+    if (await partFile.exists()) existing = await partFile.length();
+    final totalNeeded = to - from + 1;
+    if (existing >= totalNeeded) {
+      onChunkProgress();
+      return true;
+    }
+    int start = from + existing;
+    for (int attempt = 0; attempt < 5; attempt++) {
+      if (_hlsCancelFlags[taskId] == true) return false;
+      try {
+        final reqHeaders = Map<String, String>.from(headers)
+          ..['Range'] = 'bytes=$start-$to'
+          ..putIfAbsent('Accept', () => '*/*')
+          ..putIfAbsent('Connection', () => 'keep-alive');
+        final req = http.Request('GET', Uri.parse(url));
+        req.headers.addAll(reqHeaders);
+        final client = http.Client();
+        final streamed = await client.send(req).timeout(const Duration(seconds: 20));
+        if (streamed.statusCode != 206 && streamed.statusCode != 200) {
+          client.close();
+          await Future.delayed(Duration(milliseconds: 400 * (attempt + 1)));
+          continue;
+        }
+        // Si el servidor ignoró Range y mandó 200, no sirve para chunk
+        if (streamed.statusCode == 200 && start != from) {
+          client.close();
+          return false;
+        }
+        final sink = partFile.openWrite(mode: FileMode.append);
+        int received = 0;
+        await for (final chunk in streamed.stream) {
+          if (_hlsCancelFlags[taskId] == true) {
+            await sink.close();
+            client.close();
+            return false;
+          }
+          sink.add(chunk);
+          received += chunk.length;
+          // Notificar cada ~256KB para no saturar
+          if (received % (256 * 1024) < chunk.length) onChunkProgress();
+        }
+        await sink.close();
+        client.close();
+        // Verificar tamaño del part
+        final finalLen = await partFile.length();
+        if (finalLen >= totalNeeded) {
+          onChunkProgress();
+          return true;
+        }
+        // Incompleto pero sin error: reintentar desde donde quedó
+        start = from + finalLen;
+        await Future.delayed(const Duration(milliseconds: 300));
+      } catch (e) {
+        print('[CHUNKED] chunk $partPath attempt $attempt error: $e');
+        await Future.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+        // Recalcular start desde lo ya escrito en disco (resume real)
+        if (await partFile.exists()) start = from + await partFile.length();
+      }
+    }
+    return false;
   }
 
   Future<void> _downloadHlsAsTs({
@@ -1142,8 +1348,10 @@ class DownloadRepository {
     final rows = await db.query('downloads', where: 'id = ?', whereArgs: [id]);
     if (rows.isNotEmpty) {
       final task = my.DownloadTask.fromMap(rows.first);
-      if (task.videoUrl.contains('.m3u8') ||
-          (task.savePath?.endsWith('.ts') ?? false)) {
+      final isHls = task.videoUrl.contains('.m3u8') ||
+          (task.savePath?.endsWith('.ts') ?? false);
+      final isChunked = !isHls && await _hasChunkedParts(task);
+      if (isHls || isChunked) {
         _hlsCancelFlags[id] = true;
         return;
       }
@@ -1161,6 +1369,23 @@ class DownloadRepository {
     }
   }
 
+  Future<bool> _hasChunkedParts(my.DownloadTask task) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final base = _buildSafeFileBase(task);
+      // Buscar cualquier .part* del chunked
+      final downloadsDir = Directory('${dir.path}/downloads');
+      if (!await downloadsDir.exists()) return false;
+      final files = await downloadsDir.list().toList();
+      for (final e in files) {
+        if (e is File && e.path.contains(base) && e.path.contains('.part')) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
   Future<void> resumeDownloadTask(
     my.DownloadTask task, {
     required Function(double, String) onProgress,
@@ -1169,6 +1394,35 @@ class DownloadRepository {
     final isHls =
         task.videoUrl.contains('.m3u8') ||
         (task.savePath?.endsWith('.ts') ?? false);
+    final isChunkedResume = !isHls && await _hasChunkedParts(task);
+    if (isChunkedResume) {
+      // Re-lanzar chunked Dart (resume por .part existentes)
+      await updateDownloadTask(task.copyWith(status: my.DownloadStatus.downloading));
+      // Re-probar tamaño y relanzar chunked (reusa .part)
+      var headers = task.headers != null ? Map<String, String>.from(task.headers!) : <String, String>{};
+      if (headers.isEmpty) {
+        headers['User-Agent'] =
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+        headers['Referer'] = task.videoUrl.split('/').take(3).join('/');
+      }
+      final size = await _probeChunkedSize(task.videoUrl, headers: headers);
+      if (size != null) {
+        final baseName = _buildSafeFileBase(task);
+        final rawExt = task.videoUrl.split('?').first.split('/').last.split('.').last.toLowerCase();
+        const validExts = {'mp4', 'mkv', 'avi', 'mov', 'webm', 'ts', 'm3u8', 'txt', 'flv', 'wmv', 'mpd'};
+        var ext = validExts.contains(rawExt) ? rawExt : 'mp4';
+        final fileName = '$baseName.$ext';
+        _downloadChunkedHttp(
+          task: task,
+          fileName: fileName,
+          headers: headers,
+          totalBytes: size,
+          onProgress: onProgress,
+          onStatusChange: onStatusChange,
+        );
+        return;
+      }
+    }
     if (isHls) {
       final headers =
           task.headers ??
