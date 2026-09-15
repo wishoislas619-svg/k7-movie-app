@@ -140,6 +140,10 @@ class ProgressiveFileProxy {
       final waitTarget = openEnded ? start : end;
       final ok = await _waitForBytes(entry, waitTarget);
       if (!ok) {
+        if (entry.fatal) {
+          print('[PG] 504: rango $start- más allá de lo descargado y la '
+              'descarga está FATAL (link expirado?).');
+        }
         request.response.statusCode = HttpStatus.gatewayTimeout;
         await request.response.close();
         return;
@@ -318,13 +322,25 @@ class ProgressiveFileProxy {
   }
 
   Future<void> _fetchLoop(_PgEntry entry) async {
+    entry.fetchStartedAt ??= DateTime.now();
     try {
       while (!entry.done && !entry.fatal && !entry.dead) {
         final ok = await _fetchOnce(entry);
-        if (ok) break;
+        if (ok) {
+          final mb = (await entry.localSize()) / 1048576;
+          final secs = DateTime.now()
+              .difference(entry.fetchStartedAt!)
+              .inSeconds;
+          print('[PG] Descarga completa: ${mb.toStringAsFixed(1)} MB '
+              'en ${secs}s (${entry.url})');
+          break;
+        }
         entry.failures++;
         if (entry.failures >= 4) {
           entry.fatal = true;
+          print('[PG] FATAL tras ${entry.failures} intentos '
+              '(${entry.url}). Los rangos más allá de lo descargado '
+              'devolverán 504.');
           break;
         }
         await Future.delayed(const Duration(seconds: 2));
@@ -358,6 +374,17 @@ class ProgressiveFileProxy {
 
       final res = await client.send(req).timeout(const Duration(seconds: 30));
       if (res.statusCode != 200 && res.statusCode != 206) {
+        if (res.statusCode == 401 || res.statusCode == 403) {
+          // Token del enlace muerto (p.ej. `st=` de Dropbox expirado):
+          // reintentar es inútil, marcar fatal de inmediato para que el
+          // reproductor lo vea rápido en vez de colgarse reintentando.
+          entry.fatal = true;
+          print('[PG] FATAL: origen responde ${res.statusCode} '
+              '(link expirado?) (${entry.url})');
+        } else {
+          print('[PG] Intento fallido (${entry.failures + 1}): '
+              'status=${res.statusCode} (${entry.url})');
+        }
         return false;
       }
       if (res.statusCode == 200 && from > 0) {
@@ -411,7 +438,9 @@ class ProgressiveFileProxy {
       }
       // Incompleto y sin error explícito: el origen cortó; reintentar resume.
       return false;
-    } catch (_) {
+    } catch (e) {
+      print('[PG] Intento fallido (${entry.failures + 1}): $e '
+          '(${entry.url})');
       return false;
     } finally {
       client.close();
@@ -551,6 +580,7 @@ class _PgEntry {
   bool fatal = false;
   bool dead = false;
   int failures = 0;
+  DateTime? fetchStartedAt;
   // Cola del archivo (índice) traída por adelantado.
   bool tailFetching = false;
   bool tailReady = false;
