@@ -78,12 +78,12 @@ class MediaProxyService {
     // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
     // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe.
     // Transcode: -fflags +genpts reconstruye los pts de video desde cero y
-    // -vsync cfr los emite constantes; el AUDIO también se re-encodea
-    // (-c:a aac -async 1) porque su framing/timeline suele venir roto en
-    // estos archivos y copiarlo (-c:a copy) arrastraba el "Error decoding
-    // audio" tras cada seek. Sin esto ExoPlayer dropeaba el 100% del video.
+    // -fps_mode cfr los emite constantes; el AUDIO también se re-encodea
+    // (-c:a aac + aresample async) porque su framing/timeline suele venir
+    // roto en estos archivos. Sintaxis moderna FFmpeg 7 (-async/-vsync ya no
+    // existen y mataban la sesión con rc=1 al instante).
     final cmd = transcodeVideo
-        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-fflags +genpts -i "$url" -map 0:v:0 -map 0:a? -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 -vsync cfr -c:a aac -b:a 128k -async 1 -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
+        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-fflags +genpts -i "$url" -map 0:v:0 -map 0:a? -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 -fps_mode cfr -c:a aac -b:a 128k -af aresample=async=1 -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
         : fixMp4
             ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-i "$url" -map 0:v:0 -map 0:a? -c copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
             : '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
@@ -98,6 +98,15 @@ class MediaProxyService {
       final rc = await session.getReturnCode();
       final isOk = ReturnCode.isSuccess(rc);
       print('🎬 [FFMPEG] Stream $id ended: rc=$rc success=$isOk');
+      if (!isOk) {
+        // Causa real (flag inválido, input ilegible...): sin esto solo se ve rc=1.
+        try {
+          final trace = await session.getFailStackTrace();
+          final str = trace?.toString() ?? '';
+          print('🎬 [FFMPEG] Fail trace $id: '
+              '${str.length > 2000 ? str.substring(str.length - 2000) : str}');
+        } catch (_) {}
+      }
       final entry = _activeStreams[id];
       if (entry != null) {
         entry.isComplete = true;

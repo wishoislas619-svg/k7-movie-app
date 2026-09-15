@@ -351,7 +351,9 @@ class ProgressiveFileProxy {
 
   /// Trae la cola del archivo (índice moov). El planificador la pide primero
   /// y luego con backoff; NUNCA en paralelo con otra petición (una sola
-  /// conexión al origen a la vez).
+  /// conexión al origen a la vez). Con RESUME: continúa donde quedó en vez
+  /// de reiniciar (en orígenes con pausas, reiniciar de 0 la dejaba
+  /// incompleta para siempre).
   Future<bool> _fetchTailOnce(
     _PgEntry entry, {
     Duration sendTimeout = const Duration(seconds: 30),
@@ -362,17 +364,39 @@ class ProgressiveFileProxy {
       if (entry.dead) return false;
       if (total == null || total <= _kTailSize) return false;
       final tailStart = total - _kTailSize;
+      int have = 0;
+      try {
+        have = await entry.tailFile.length();
+      } catch (_) {}
+      if (have >= _kTailSize) {
+        entry.tailSize = _kTailSize;
+        entry.tailReady = true;
+        return true;
+      }
       final client = http.Client();
       try {
         final req = http.Request('GET', Uri.parse(entry.url));
         req.headers['User-Agent'] =
             'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
         req.headers['Accept'] = '*/*';
-        req.headers['Range'] = 'bytes=$tailStart-';
+        req.headers['Range'] = 'bytes=${tailStart + have}-';
         req.followRedirects = true;
         final res = await client.send(req).timeout(sendTimeout);
-        if (res.statusCode != HttpStatus.partialContent) return false;
-        final sink = entry.tailFile.openWrite(mode: FileMode.write);
+        if (res.statusCode != HttpStatus.partialContent) {
+          // 200 a un rango de cola: el origen ignora rangos; no se puede
+          // armar sidecar (y no se toca el parcial existente).
+          return false;
+        }
+        // Verificar que el tramo es el pedido (si no, el sidecar mezclaría).
+        final cr = res.headers['content-range'] ?? '';
+        final m = RegExp(r'bytes\s+(\d+)-').firstMatch(cr);
+        final crStart = m != null ? int.tryParse(m.group(1) ?? '') : null;
+        if (crStart != null && crStart != tailStart + have) {
+          print('[PG] Cola con offset inesperado, se descarta intento');
+          return false;
+        }
+        final sink = entry.tailFile.openWrite(
+            mode: have > 0 ? FileMode.append : FileMode.write);
         try {
           await for (final data in res.stream.timeout(stallTimeout,
               onTimeout: (s) =>
@@ -392,6 +416,7 @@ class ProgressiveFileProxy {
               'seeks lejanos habilitados');
           return true;
         }
+        print('[PG] Cola parcial: $got/$_kTailSize bytes, continúa luego');
         return false;
       } finally {
         client.close();
