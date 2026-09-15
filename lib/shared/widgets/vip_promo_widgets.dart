@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:movie_app/core/services/vip_promo_service.dart';
+import 'package:movie_app/features/auth/presentation/providers/auth_provider.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -91,8 +93,7 @@ class _VipStarButtonState extends State<VipStarButton>
   }
 }
 
-Future<void> showVipPromoDialog(BuildContext context) async {
-  final config = await VipPromoService.loadConfig();
+Future<void> showVipPromoDialog(BuildContext context) async {  final config = await VipPromoService.loadConfig();
   if (!context.mounted) return;
 
   await showDialog(
@@ -120,6 +121,9 @@ class VipPromoDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final phone = VipPromoService.normalizePhone(config.whatsappNumber);
+    // En horizontal la altura disponible es pequeña: limitar y permitir
+    // desplazamiento en vez de desbordar (RenderFlex overflow).
+    final maxH = MediaQuery.of(context).size.height * 0.85;
     return Dialog(
       backgroundColor: Colors.transparent,
       insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
@@ -128,10 +132,11 @@ class VipPromoDialog extends StatelessWidget {
         borderWidth: 1.6,
         backgroundColor: const Color(0xFF101010),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 430),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
-            child: Column(
+          constraints: BoxConstraints(maxWidth: 430, maxHeight: maxH),
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
+              child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -217,7 +222,78 @@ class VipPromoDialog extends StatelessWidget {
             ),
           ),
         ),
+        ),
       ),
+    );
+  }
+}
+
+/// Título K7 compartido de las pantallas principales. Si el usuario es VIP,
+/// las siglas llevan fondo negro con borde tornasol animado; si no,
+/// degradado fijo.
+class K7AppBarTitle extends ConsumerWidget {
+  final String title;
+  final List<Color> gradientColors;
+
+  const K7AppBarTitle({
+    super.key,
+    required this.title,
+    this.gradientColors = const [Color(0xFF00A3FF), Color(0xFFD400FF)],
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final role = ref.watch(authStateProvider)?.role ?? 'user';
+    final isVip = role.toLowerCase() == 'uservip';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (isVip)
+          EnergyFlowBorder(
+            borderRadius: 4,
+            borderWidth: 1.4,
+            backgroundColor: Colors.black,
+            padding: const EdgeInsets.all(4),
+            child: const Text(
+              'K7',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+                color: Colors.white,
+              ),
+            ),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: gradientColors),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: const Text(
+              'K7',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              letterSpacing: 2,
+              fontWeight: FontWeight.normal,
+              fontSize: 16,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

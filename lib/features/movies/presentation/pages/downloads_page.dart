@@ -14,6 +14,7 @@ import 'package:movie_app/features/movies/presentation/widgets/cast_button_overl
 import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:movie_app/core/constants/app_constants.dart';
+import 'package:movie_app/shared/widgets/vip_promo_widgets.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -70,10 +71,16 @@ class _DownloadsPageState extends ConsumerState<DownloadsPage> {
       length: 3,
       child: Scaffold(
         backgroundColor: Colors.black,
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          title: const Text('MIS DESCARGAS', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            centerTitle: false,
+          title: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              K7AppBarTitle(title: 'MIS DESCARGAS'),
+            ],
+          ),
           bottom: const TabBar(
             indicatorColor: Color(0xFF00A3FF),
             labelColor: Colors.white,

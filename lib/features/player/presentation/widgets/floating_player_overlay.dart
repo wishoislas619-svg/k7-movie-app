@@ -45,11 +45,15 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
   }
 
   void _initSettings() async {
-    _volume = await VolumeController.instance.getVolume();
+    // NOTA: no se toca el volumen del sistema al abrir el flotante.
+    // Se respeta el nivel del dispositivo; el reproductor queda en neutro.
+    _volume = (await VolumeController.instance.getVolume()).clamp(0.0, 2.0);
     try {
       _brightness = await ScreenBrightness().current;
     } catch (_) {}
-    await _applyVolumeBoost(_volume);
+    try {
+      widget.controller.setVolume(1.0);
+    } catch (_) {}
     if (mounted) setState(() {});
   }
 
@@ -70,13 +74,19 @@ class _FloatingPlayerOverlayState extends State<FloatingPlayerOverlay> {
   }
 
   Future<void> _applyVolumeBoost(double targetVolume) async {
+    // Solo se llama desde gestos manuales: volumen software neutro (1.0),
+    // nivel 0..1 al sistema y boost >1 al enhancer nativo.
     final clamped = targetVolume.clamp(0.0, 2.0);
     final baseVolume = clamped <= 1.0 ? clamped : 1.0;
-    widget.controller.setVolume(baseVolume);
+    try {
+      widget.controller.setVolume(1.0);
+    } catch (_) {}
     await VolumeController.instance.setVolume(baseVolume);
     if (Platform.isAndroid) {
       try {
-        await _audioBoostChannel.invokeMethod('setBoost', {'boost': clamped});
+        await _audioBoostChannel.invokeMethod('setBoost', {
+          'boost': clamped <= 1.0 ? 1.0 : clamped,
+        });
       } catch (_) {}
     }
   }

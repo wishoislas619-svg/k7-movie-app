@@ -62,8 +62,193 @@ class TmdbService {
     return [];
   }
 
-  static Future<List<Map<String, dynamic>>> searchSeries(String query) async {
+  /// Estrenos de cine: en cartelera (MX), ordenados por popularidad.
+  static Future<List<Map<String, dynamic>>> getNowPlayingMovies(
+      {int limit = 20}) async {
     try {
+      final out = <Map<String, dynamic>>[];
+      for (var page = 1; page <= 2 && out.length < limit; page++) {
+        final uri = Uri.parse(
+          '$_baseUrl/movie/now_playing?api_key=$_apiKey&language=es-MX&region=MX&page=$page',
+        );
+        final response = await http.get(uri);
+        if (response.statusCode != 200) break;
+        final data = json.decode(response.body);
+        final results = (data['results'] as List<dynamic>? ?? []);
+        for (final r in results) {
+          final map = r as Map<String, dynamic>;
+          if (map['poster_path'] == null) continue;
+          out.add({
+            'tmdbId': map['id'],
+            'name': map['title'],
+            'image':
+                'https://image.tmdb.org/t/p/w500${map['poster_path']}',
+            'backdrop':
+                'https://image.tmdb.org/t/p/original${map['backdrop_path'] ?? ''}',
+            'year':
+                ((map['release_date'] as String?) ?? '').split('-').first,
+            'rating': (map['vote_average'] as num?)?.toDouble() ?? 0.0,
+            'overview': map['overview'] ?? '',
+            'popularity': (map['popularity'] as num?)?.toDouble() ?? 0.0,
+            'mediaType': 'movie',
+          });
+          if (out.length >= limit * 2) break;
+        }
+      }
+      out.sort((a, b) =>
+          (b['popularity'] as double).compareTo(a['popularity'] as double));
+      return out.take(limit).toList();
+    } catch (e) {
+      print('TMDB NowPlaying Error: $e');
+    }
+    return [];
+  }
+
+  /// Estrenos de series: al aire (MX), ordenadas por popularidad.
+  static Future<List<Map<String, dynamic>>> getOnAirSeries(
+      {int limit = 20}) async {
+    try {
+      final out = <Map<String, dynamic>>[];
+      for (var page = 1; page <= 2 && out.length < limit * 2; page++) {
+        final uri = Uri.parse(
+          '$_baseUrl/tv/on_the_air?api_key=$_apiKey&language=es-MX&page=$page',
+        );
+        final response = await http.get(uri);
+        if (response.statusCode != 200) break;
+        final data = json.decode(response.body);
+        final results = (data['results'] as List<dynamic>? ?? []);
+        for (final r in results) {
+          final map = r as Map<String, dynamic>;
+          if (map['poster_path'] == null) continue;
+          out.add({
+            'tmdbId': map['id'],
+            'name': map['name'],
+            'image':
+                'https://image.tmdb.org/t/p/w500${map['poster_path']}',
+            'backdrop':
+                'https://image.tmdb.org/t/p/original${map['backdrop_path'] ?? ''}',
+            'year':
+                ((map['first_air_date'] as String?) ?? '').split('-').first,
+            'rating': (map['vote_average'] as num?)?.toDouble() ?? 0.0,
+            'overview': map['overview'] ?? '',
+            'popularity': (map['popularity'] as num?)?.toDouble() ?? 0.0,
+            'mediaType': 'series',
+          });
+          if (out.length >= limit * 2) break;
+        }
+      }
+      out.sort((a, b) =>
+          (b['popularity'] as double).compareTo(a['popularity'] as double));
+      return out.take(limit).toList();
+    } catch (e) {
+      print('TMDB OnTheAir Error: $e');
+    }
+    return [];
+  }
+
+  /// Fetcher genérico de listados TMDB con el mapa que usa la app.
+  static Future<List<Map<String, dynamic>>> _fetchTmdbList({
+    required String path,
+    required Map<String, String> params,
+    required bool isSeries,
+    int limit = 20,
+    bool sortByPopularity = false,
+  }) async {
+    try {
+      final out = <Map<String, dynamic>>[];
+      for (var page = 1; page <= 2 && out.length < limit * 2; page++) {
+        final uri = Uri.parse('$_baseUrl$path').replace(queryParameters: {
+          'api_key': _apiKey,
+          'language': 'es-MX',
+          ...params,
+          'page': '$page',
+        });
+        final response = await http.get(uri);
+        if (response.statusCode != 200) break;
+        final data = json.decode(response.body);
+        final results = (data['results'] as List<dynamic>? ?? []);
+        for (final r in results) {
+          final map = r as Map<String, dynamic>;
+          if (map['poster_path'] == null) continue;
+          out.add({
+            'tmdbId': map['id'],
+            'name': isSeries ? map['name'] : map['title'],
+            'image':
+                'https://image.tmdb.org/t/p/w500${map['poster_path']}',
+            'backdrop':
+                'https://image.tmdb.org/t/p/original${map['backdrop_path'] ?? ''}',
+            'year': (((isSeries
+                            ? map['first_air_date']
+                            : map['release_date']) as String?) ??
+                        '')
+                    .split('-')
+                    .first,
+            'rating': (map['vote_average'] as num?)?.toDouble() ?? 0.0,
+            'overview': map['overview'] ?? '',
+            'popularity': (map['popularity'] as num?)?.toDouble() ?? 0.0,
+            'mediaType': isSeries ? 'series' : 'movie',
+          });
+          if (out.length >= limit * 2) break;
+        }
+      }
+      if (sortByPopularity) {
+        out.sort((a, b) => (b['popularity'] as double)
+            .compareTo(a['popularity'] as double));
+      }
+      return out.take(limit).toList();
+    } catch (e) {
+      print('TMDB List Error ($path): $e');
+    }
+    return [];
+  }
+
+  /// Mejor valoradas por la crítica.
+  static Future<List<Map<String, dynamic>>> getTopRatedMovies(
+          {int limit = 20}) =>
+      _fetchTmdbList(
+          path: '/movie/top_rated', params: {}, isSeries: false, limit: limit);
+
+  static Future<List<Map<String, dynamic>>> getTopRatedSeries(
+          {int limit = 20}) =>
+      _fetchTmdbList(
+          path: '/tv/top_rated', params: {}, isSeries: true, limit: limit);
+
+  /// Clásicas por género (estrenadas hasta 2000, con votos mínimos).
+  static Future<List<Map<String, dynamic>>> getClassicMoviesByGenre(
+    String genreId, {
+    int limit = 20,
+  }) =>
+      _fetchTmdbList(
+        path: '/discover/movie',
+        params: {
+          'with_genres': genreId,
+          'sort_by': 'vote_average.desc',
+          'vote_count.gte': '200',
+          'primary_release_date.lte': '2000-12-31',
+          'include_adult': 'false',
+        },
+        isSeries: false,
+        limit: limit,
+      );
+
+  static Future<List<Map<String, dynamic>>> getClassicSeriesByGenre(
+    String genreId, {
+    int limit = 20,
+  }) =>
+      _fetchTmdbList(
+        path: '/discover/tv',
+        params: {
+          'with_genres': genreId,
+          'sort_by': 'vote_average.desc',
+          'vote_count.gte': '100',
+          'first_air_date.lte': '2000-12-31',
+          'include_adult': 'false',
+        },
+        isSeries: true,
+        limit: limit,
+      );
+
+  static Future<List<Map<String, dynamic>>> searchSeries(String query) async {    try {
       final uri = Uri.parse(
         '$_baseUrl/search/tv?api_key=$_apiKey&language=es-MX&query=${Uri.encodeQueryComponent(query)}&include_adult=false',
       );

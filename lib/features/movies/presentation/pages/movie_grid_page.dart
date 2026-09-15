@@ -35,6 +35,8 @@ import 'package:movie_app/shared/widgets/tv_focus_wrapper.dart';
 import 'package:movie_app/shared/utils/responsive_layout.dart';
 import 'package:movie_app/shared/widgets/vip_promo_widgets.dart';
 import 'package:movie_app/core/services/vip_promo_service.dart';
+import 'package:movie_app/core/services/tmdb_service.dart';
+import 'package:movie_app/core/services/storage_service.dart';
 import 'package:movie_app/features/addons/presentation/pages/addons_manager_page.dart';
 import 'package:movie_app/features/addons/presentation/pages/smart_search_page.dart';
 import 'package:movie_app/features/addons/presentation/pages/stream_list_page.dart';
@@ -50,9 +52,28 @@ class MovieGridPage extends ConsumerStatefulWidget {
   ConsumerState<MovieGridPage> createState() => _MovieGridPageState();
 }
 
-class _MovieGridPageState extends ConsumerState<MovieGridPage> {
+class _MovieGridPageState extends ConsumerState<MovieGridPage>
+    with SingleTickerProviderStateMixin {
   final PageController _carouselController = PageController();
   final PageController _pageController = PageController();
+  late final AnimationController _navController;
+
+  Future<void> _loadSmartSections() async {
+    final results = await Future.wait([
+      TmdbService.getNowPlayingMovies(),
+      TmdbService.getTopRatedMovies(),
+      TmdbService.getClassicMoviesByGenre('28'),
+      TmdbService.getClassicMoviesByGenre('27'),
+    ]);
+    if (mounted) {
+      setState(() {
+        _premieres = results[0];
+        _topRated = results[1];
+        _actionClassics = results[2];
+        _horrorClassics = results[3];
+      });
+    }
+  }
   int _currentCarouselPage = 0;
   int _currentTabIndex = 0;
   String? _selectedCategoryFilter;
@@ -67,15 +88,26 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   // mostrando un diálogo zumbante y lance "Unhandled Exception: Torrent
   // desaparecido" en el _waitForMetadata de la primera espera.
   final Set<String> _pendingTorrentInit = {};
+  // Secciones inteligentes TMDB (van directo a enlaces, no a detalles).
+  List<Map<String, dynamic>> _premieres = [];
+  List<Map<String, dynamic>> _topRated = [];
+  List<Map<String, dynamic>> _actionClassics = [];
+  List<Map<String, dynamic>> _horrorClassics = [];
 
   @override
   void initState() {
     super.initState();
     // No necesitamos retrasar aquí, el build se encargará cuando los datos lleguen
+    _loadSmartSections();
+    _navController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 8),
+    )..repeat();
   }
 
   @override
   void dispose() {
+    _navController.dispose();
     _searchDebounce?.cancel();
     _searchController.dispose();
     _carouselController.dispose();
@@ -146,7 +178,9 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
 
         return categoriesAsync.when(
           data: (categories) {
-            return Stack(
+            return Scaffold(
+              backgroundColor: Colors.black,
+              body: Stack(
               children: [
                 RefreshIndicator(
                   onRefresh: () async {
@@ -154,6 +188,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                     await ref
                         .read(categoriesProvider.notifier)
                         .loadCategories();
+                    await _loadSmartSections();
                   },
                   color: const Color(0xFF00A3FF),
                   backgroundColor: const Color(0xFF1A1A1A),
@@ -295,6 +330,29 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                       error: (_, __) =>
                                           const SizedBox.shrink(),
                                     ),
+                                if (_selectedCategoryFilter == null &&
+                                    !_isSearching) ...[
+                                  if (_premieres.isNotEmpty)
+                                    _buildSmartSection(
+                                      title: 'RECIÉN ESTRENADAS',
+                                      items: _premieres,
+                                    ),
+                                  if (_topRated.isNotEmpty)
+                                    _buildSmartSection(
+                                      title: 'MEJOR VALORADAS',
+                                      items: _topRated,
+                                    ),
+                                  if (_actionClassics.isNotEmpty)
+                                    _buildSmartSection(
+                                      title: 'CLÁSICAS DE ACCIÓN',
+                                      items: _actionClassics,
+                                    ),
+                                  if (_horrorClassics.isNotEmpty)
+                                    _buildSmartSection(
+                                      title: 'CLÁSICAS DE TERROR',
+                                      items: _horrorClassics,
+                                    ),
+                                ],
                                 _buildMovieSection(
                                   context,
                                   'RECIÉN AGREGADAS',
@@ -305,6 +363,10 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                       (a, b) =>
                                           b.createdAt.compareTo(a.createdAt),
                                     ),
+                                  category: Category(
+                                    id: 'recent',
+                                    name: 'Recién agregadas',
+                                  ),
                                 ),
                               ],
                               ...categories.map((cat) {
@@ -327,6 +389,8 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                   ),
                 ),
               ],
+              ),
+              endDrawer: _buildOptionsDrawer(categories),
             );
           },
           loading: () => const Center(
@@ -354,105 +418,18 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
       backgroundColor: Colors.black.withOpacity(0.5),
       floating: true,
       elevation: 0,
+      centerTitle: false,
       flexibleSpace: const SafeArea(
         child: SizedBox.shrink(),
       ),
-      title: Row(
+      title: const Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Consumer(
-            builder: (context, ref, _) {
-              final role = ref.watch(authStateProvider)?.role ?? 'user';
-              return VipStarButton(role: role);
-            },
-          ),
-          const SizedBox(width: 8),
-          const Flexible(
-            child: Text(
-              'MOVIE',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                letterSpacing: 2,
-                fontWeight: FontWeight.normal,
-                fontSize: 16,
-                color: Colors.white,
-              ),
-            ),
-          ),
+          K7AppBarTitle(title: 'MOVIES'),
         ],
       ),
       actions: [
-        DropdownButtonHideUnderline(
-          child: DropdownButton<String?>(
-            value: _selectedCategoryFilter,
-            dropdownColor: const Color(0xFF121212),
-            icon: const Icon(Icons.filter_list, color: Color(0xFF00A3FF)),
-            selectedItemBuilder: (BuildContext context) {
-              return [
-                const SizedBox(
-                  width: 52,
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: Text(
-                      "Todas",
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Colors.white),
-                    ),
-                  ),
-                ),
-                ...categories.map(
-                  (c) => SizedBox(
-                    width: 52,
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: Text(
-                        c.name,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                    ),
-                  ),
-                ),
-              ];
-            },
-            items: [
-              const DropdownMenuItem(
-                value: null,
-                child: Text("Todas", style: TextStyle(color: Colors.white)),
-              ),
-              ...categories.map(
-                (c) => DropdownMenuItem(
-                  value: c.id,
-                  child: Text(
-                    c.name,
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                ),
-              ),
-            ],
-            onChanged: (val) => setState(() => _selectedCategoryFilter = val),
-          ),
-        ),
-        IconButton(
-          icon: Icon(
-            _isSearching ? Icons.search_off : Icons.search,
-            color: Colors.white70,
-          ),
-          onPressed: () => setState(() => _isSearching = !_isSearching),
-        ),
-        IconButton(
-          icon: const Icon(Icons.extension, color: Color(0xFF00A3FF)),
-          tooltip: 'Addons',
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const AddonsManagerPage(),
-              ),
-            );
-          },
-        ),
+        // A la izquierda: buscador inteligente. El resto vive en el menú ⋮.
         IconButton(
           icon: const Icon(Icons.travel_explore, color: Color(0xFF00A3FF)),
           tooltip: 'Búsqueda inteligente',
@@ -465,7 +442,172 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
             );
           },
         ),
+        Builder(
+          builder: (ctx) => IconButton(
+            icon: const Icon(Icons.more_vert, color: Colors.white70),
+            tooltip: 'Opciones',
+            onPressed: () => Scaffold.of(ctx).openEndDrawer(),
+          ),
+        ),
       ],
+    );
+  }
+
+  /// Drawer lateral derecho: filtro de categorías, addons y buscador.
+  Widget _buildOptionsDrawer(List<Category> categories) {
+    return Drawer(
+      backgroundColor: const Color(0xFF0A0A0A),
+      // Drawer ancho (casi toda la pantalla) para que el desplegable
+      // de categorías tenga el doble de espacio.
+      width: MediaQuery.of(context).size.width * 0.88,
+      child: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(12),
+          children: [
+            const Text(
+              'OPCIONES',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 2,
+                fontSize: 15,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Filtros y accesos',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Categoría',
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            EnergyFlowBorder(
+              borderRadius: 12,
+              borderWidth: 1.2,
+              backgroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String?>(
+                  value: _selectedCategoryFilter,
+                  isExpanded: true,
+                  dropdownColor: Colors.black,
+                  borderRadius: BorderRadius.circular(14),
+                  icon: const Icon(
+                    Icons.filter_list,
+                    color: Color(0xFF00A3FF),
+                  ),
+                  menuMaxHeight: 320,
+                  itemHeight: 64,
+                  selectedItemBuilder: (BuildContext context) {
+                    return [
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Todas',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: Colors.white),
+                        ),
+                      ),
+                      ...categories.map(
+                        (c) => Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            c.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ];
+                  },
+                  items: [
+                    const DropdownMenuItem(
+                      value: null,
+                      child: Text(
+                        'Todas',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                    ...categories.map(
+                      (c) => DropdownMenuItem(
+                        value: c.id,
+                        child: Text(
+                          c.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ],
+                  onChanged: (val) =>
+                      setState(() => _selectedCategoryFilter = val),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading:
+                  const Icon(Icons.extension, color: Color(0xFF00A3FF)),
+              title: const Text(
+                'Configurar addons',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AddonsManagerPage(),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.search, color: Colors.white70),
+              title: const Text(
+                'Buscar películas',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                setState(() => _isSearching = true);
+              },
+            ),
+            Consumer(
+              builder: (context, ref, _) {
+                final role =
+                    ref.watch(authStateProvider)?.role ?? 'user';
+                final isVip = role.toLowerCase() == 'uservip';
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: VipStarButton(role: role),
+                  title: Text(
+                    isVip ? 'VIP activo' : 'Hazte VIP',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  onTap: () {
+                    // Cerrar el drawer y abrir el modal con el contexto del
+                    // State (el del drawer muere con el pop y el modal, que
+                    // carga su config con await, ya no abriría).
+                    Navigator.pop(context);
+                    showVipPromoDialog(this.context);
+                  },
+                );
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -590,7 +732,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'TRENDING NOW',
+                          'EN TENDENCIA',
                           style: TextStyle(
                             color: Color(0xFF00E5FF),
                             fontWeight: FontWeight.bold,
@@ -672,20 +814,6 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 12),
-                            Container(
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: IconButton(
-                                icon: const Icon(
-                                  Icons.add,
-                                  color: Colors.white,
-                                ),
-                                onPressed: () {},
-                              ),
-                            ),
                           ],
                         ),
                       ],
@@ -697,6 +825,141 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
           ),
         ),
       ),
+    );
+  }
+
+  /// Abre un título inteligente directo en la pantalla de enlaces
+  /// torrent/addon (solo estas secciones se saltan los detalles).
+  Future<void> _openSmartItem(Map<String, dynamic> m) async {
+    StorageService.saveSearchEntry(m);
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StreamListPage(
+          movieName: m['name'] as String? ?? 'Película',
+          poster: m['image'] as String? ?? '',
+          year: m['year'] as String?,
+          tmdbId: '${m['tmdbId']}',
+          isSeries: false,
+        ),
+      ),
+    );
+  }
+
+  /// Sección inteligente TMDB (top 20). Póster con borde tornasol animado;
+  /// al tocar va directo a enlaces.
+  Widget _buildSmartSection({
+    required String title,
+    required List<Map<String, dynamic>> items,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 4,
+            bottom: 8,
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 3,
+                height: 18,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                  ),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.5,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 210,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: items.length,
+            itemBuilder: (context, index) {
+              final m = items[index];
+              final image = m['image'] as String? ?? '';
+              final name = m['name'] as String? ?? '';
+              return GestureDetector(
+                onTap: () => _openSmartItem(m),
+                child: Container(
+                  width: 120,
+                  margin: const EdgeInsets.only(right: 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      EnergyFlowBorder(
+                        borderRadius: 12,
+                        borderWidth: 1.2,
+                        backgroundColor: const Color(0xFF1A1A1A),
+                        child: SizedBox(
+                          height: 150,
+                          width: double.infinity,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: image.isEmpty
+                                ? const Center(
+                                    child: Icon(
+                                      Icons.movie_outlined,
+                                      color: Colors.white24,
+                                      size: 32,
+                                    ),
+                                  )
+                                : Image.network(
+                                    image,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) =>
+                                        const Center(
+                                      child: Icon(
+                                        Icons.broken_image_outlined,
+                                        color: Colors.white24,
+                                        size: 32,
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          height: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 4),
+      ],
     );
   }
 
@@ -1061,51 +1324,97 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage> {
   }
 
   Widget _buildBottomNav() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.9),
-        border: const Border(
-          top: BorderSide(color: Colors.white10, width: 0.5),
+    return Consumer(
+      builder: (context, ref, _) {
+        final role = ref.watch(authStateProvider)?.role ?? 'user';
+        final isVip = role.toLowerCase() == 'uservip';
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.9),
+            border: const Border(
+              top: BorderSide(color: Colors.white10, width: 0.5),
+            ),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Row(
+              children: [
+                _navItem(isVip, 0, Icons.movie_creation_outlined, 'PELÍCULAS'),
+                _navItem(isVip, 1, Icons.live_tv_outlined, 'SERIES'),
+                _navItem(isVip, 2, Icons.tv_outlined, 'TV VIVO'),
+                _navItem(isVip, 3, Icons.download_rounded, 'DESCARGAS'),
+                _navItem(isVip, 4, Icons.person_outline, 'PERFIL'),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Item del nav inferior. Si es VIP, el seleccionado lleva gradiente
+  /// tornasol animado y el resto azul visible; si no, blanco como siempre.
+  Widget _navItem(bool isVip, int index, IconData icon, String label) {
+    final selected = _currentTabIndex == index;
+    final baseColor = selected
+        ? Colors.white
+        : (isVip ? const Color(0xFF00A3FF) : Colors.white38);
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          icon,
+          size: 24,
+          color: baseColor,
         ),
-      ),
-      child: BottomNavigationBar(
-        currentIndex: _currentTabIndex,
-        onTap: (index) {
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            color: baseColor,
+          ),
+        ),
+      ],
+    );
+    final Widget inner = (isVip && selected)
+        ? AnimatedBuilder(
+            animation: _navController,
+            builder: (_, child) {
+              final c1 = HSVColor.fromAHSV(
+                1,
+                (_navController.value * 360) % 360,
+                .9,
+                1,
+              ).toColor();
+              final c2 = HSVColor.fromAHSV(
+                1,
+                ((_navController.value * 360) + 95) % 360,
+                .8,
+                1,
+              ).toColor();
+              return ShaderMask(
+                shaderCallback: (bounds) =>
+                    LinearGradient(colors: [c1, c2]).createShader(bounds),
+                child: child,
+              );
+            },
+            child: content,
+          )
+        : content;
+    return Expanded(
+      child: InkWell(
+        onTap: () {
           _pageController.animateToPage(
             index,
             duration: const Duration(milliseconds: 300),
             curve: Curves.easeInOut,
           );
         },
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        type: BottomNavigationBarType.fixed,
-        selectedItemColor: Colors.white,
-        unselectedItemColor: Colors.white38,
-        selectedFontSize: 10,
-        unselectedFontSize: 10,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.movie_creation_outlined),
-            label: 'PELÍCULAS',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.live_tv_outlined),
-            label: 'SERIES',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.tv_outlined),
-            label: 'TV VIVO',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.download_rounded),
-            label: 'DESCARGAS',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.person_outline),
-            label: 'PERFIL',
-          ),
-        ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: inner,
+        ),
       ),
     );
   }

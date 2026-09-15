@@ -2,7 +2,12 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:video_player/video_player.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
+import 'package:uuid/uuid.dart';
+import 'dart:convert';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
@@ -33,21 +38,97 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
   static const _audioBoostChannel = MethodChannel(
     'com.luis.movieapp/audio_boost',
   );
-  VideoPlayerController? _controller;
+  Player? _player;
+  VideoController? _videoController;
   final ScrollController _scrollController = ScrollController();
   late int _currentIndex;
   bool _showControls = true;
   bool _isLoading = true;
+  String? _errorMessage;
   Timer? _adTimer;
   static const int adIntervalMinutes = 30;
 
   double _volume = 0.5;
   double _brightness = 0.5;
+  // Calidad elegida: 'auto' (mínima, la que siempre funciona), 'mid' o
+  // 'high'. Se conserva al zappear. El cambio REABRE el stream (un cambio
+  // en caliente rompe la línea de tiempo y congela el video).
+  String _quality = 'auto';
+  Timer? _stallTimer;
+  int _completedReopens = 0;
   bool _showVolumeLabel = false;
   bool _showBrightnessLabel = false;
   bool _isDraggingVolume = false;
   bool _isDraggingBrightness = false;
   Timer? _labelHideTimer;
+
+  // Pluto TV: mecanismo copiado de las apps open-source que sí lo
+  // reproducen (p.ej. plugin PlutoTV Enigma2): sesión fresca vía API
+  // oficial en cada reproducción + User-Agent Mozilla/5.0. Guardar URLs
+  // con jwt en DB no sirve: mueren en el servidor (playlist vacía).
+  static const _plutoBootUrl = 'https://boot.pluto.tv/v4/start';
+  static const _plutoAppVersion =
+      '8.0.0-111b2b9dc00bd0bea9030b30662159ed9e7c8bc6';
+  static const _plutoHeaders = {
+    'origin': 'https://pluto.tv',
+    'referer': 'https://pluto.tv/',
+    'accept': '*/*',
+    'user-agent':
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  };
+
+  bool _isPluto(String url) {
+    final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+    return host.contains('pluto.tv');
+  }
+
+  /// Token fresco de Pluto vía API oficial (copiado de las apps open-source
+  /// que sí lo reproducen). Null si falla.
+  Future<String?> _plutoBootToken() async {
+    try {
+      final params = {
+        'appName': 'web',
+        'appVersion': _plutoAppVersion,
+        'deviceVersion': '122.0.0',
+        'deviceModel': 'web',
+        'deviceMake': 'chrome',
+        'deviceType': 'web',
+        'clientID': const Uuid().v4(),
+        'clientModelNumber': '1.0.0',
+        'serverSideAds': 'false',
+        'drmCapabilities': 'widevine:L3',
+        'blockingMode': '',
+      };
+      final bootRes = await http
+          .get(
+            Uri.parse(_plutoBootUrl).replace(queryParameters: params),
+            headers: _plutoHeaders,
+          )
+          .timeout(const Duration(seconds: 10));
+      if (bootRes.statusCode != 200) return null;
+      final token =
+          (jsonDecode(bootRes.body) as Map)['sessionToken'] as String?;
+      return (token == null || token.isEmpty) ? null : token;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String? _plutoChannelId(String url) =>
+      RegExp(r'/channel/([0-9a-f]{24})').firstMatch(url)?.group(1);
+
+  /// URL del master sintético (una variante + audio) servido por el proxy
+  /// local, con sesión fresca. Null si algo falla (se usa el master
+  /// guardado proxiado como antes).
+  Future<String?> _plutoSyntheticUrl(String url) async {
+    final id = _plutoChannelId(url);
+    if (id == null) return null;
+    final token = await _plutoBootToken();
+    if (token == null) return null;
+    print('🔄 [TV] Sesión Pluto nueva para el canal $id (calidad $_quality)');
+    return MediaProxyService()
+        .getPlutoUrl(id, token, quality: _quality);
+  }
 
   @override
   void initState() {
@@ -56,6 +137,51 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge); // Controls are initially shown
     _initSettings();
     _currentIndex = widget.initialIndex;
+    // Reproductor mpv directo (media_kit): NO se usa VideoPlayerController
+    // porque su initialize() exige duration > 0 y los vivos reportan 0
+    // (se quedaba colgado para siempre en todos los canales en vivo).
+    _player = Player();
+    _videoController = VideoController(_player!);
+    // Telemetría del motor mpv (permanece en el código): sin esto los fallos
+    // de apertura son invisibles (el log solo muestra ruido del decodificador).
+    _player!.stream.error.listen((e) {
+      if (e.isNotEmpty) print('🎬 [TV][MPV-ERROR] $e');
+    });
+    _player!.stream.tracks.listen((t) {
+      print('🎬 [TV] tracks video=${t.video.length} '
+          'audio=${t.audio.length} sub=${t.subtitle.length}');
+    });
+    _player!.stream.buffering.listen((b) {
+      print('🎬 [TV] buffering=$b');
+      // Watchdog anti-congelado: si lleva 60s buferizando sin un solo
+      // respiro, se reabre solo (equivale a salir y volver al canal).
+      if (!mounted) return;
+      if (b) {
+        _stallTimer?.cancel();
+        _stallTimer = Timer(const Duration(seconds: 60), () {
+          if (!mounted) return;
+          print('🎬 [TV] 60s buferizando: reabriendo solo');
+          _initializePlayer(widget.channels[_currentIndex]['stream_url']);
+        });
+      } else {
+        _stallTimer?.cancel();
+      }
+    });
+    // Un vivo no debería terminar nunca: si mpv lo da por completado,
+    // se reabre solo (máx 2 veces seguidas para no entrar en bucle).
+    _player!.stream.completed.listen((c) {
+      if (!c || !mounted) return;
+      if (_completedReopens >= 2) return;
+      _completedReopens++;
+      print('🎬 [TV] fin inesperado: reabriendo solo');
+      _initializePlayer(widget.channels[_currentIndex]['stream_url']);
+    });
+    _player!.stream.playing.listen((p) {
+      print('🎬 [TV] playing=$p');
+    });
+    _player!.stream.videoParams.listen((v) {
+      print('🎬 [TV] video=${v.dw}x${v.dh}');
+    });
     _initializePlayer(widget.channels[_currentIndex]['stream_url']);
     _startAdTimer();
     
@@ -79,18 +205,18 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
 
   void _triggerPeriodicAd() {
     // Pause player while ad shows
-    _controller?.pause();
+    _player?.pause();
     
     AdService.showRewardedAd(
       ticketId: "tv_periodic_reward",
       onAdWatched: (_) {
         // Resume playback
-        _controller?.play();
+        _player?.play();
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Gracias por ver el anuncio. Puedes seguir disfrutando de la TV.")));
       },
       onAdFailed: (error) {
         // If ad fails (no coverage), we let them continue but notify
-        _controller?.play();
+        _player?.play();
       },
       onAdDismissedIncomplete: () {
         // User didn't watch - kick out
@@ -113,21 +239,26 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
 
   void _initSettings() async {
     try {
-      // Intentar cargar valores persistidos primero
-      final storedVol = await StorageService.getStoredVolume();
+      // NOTA: el volumen del sistema NO se toca al abrir un canal.
+      // Se respeta el nivel que ya tenga el dispositivo y el reproductor
+      // arranca en neutro (software a 1.0). Solo los gestos manuales
+      // cambian el volumen del sistema.
       final storedBright = await StorageService.getStoredBrightness();
-      
-      final vol = storedVol ?? await VolumeController.instance.getVolume();
+
+      final vol = await VolumeController.instance.getVolume();
       final bright = storedBright ?? await ScreenBrightness().current;
-      
+
       if (mounted) {
         setState(() {
-          _volume = vol;
+          _volume = vol.clamp(0.0, 3.0);
           _brightness = bright;
         });
-        
-        // Aplicar los valores cargados
-        await _applyVolumeBoost(_volume);
+
+        // Aplicar SOLO el volumen software/booster, sin tocar el sistema.
+        // mpv usa escala 0..100 (100 = neutro).
+        try {
+          _player?.setVolume(100.0);
+        } catch (_) {}
         ScreenBrightness().setScreenBrightness(_brightness);
       }
     } catch (_) {}
@@ -137,39 +268,89 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
     final clamped = targetVolume.clamp(0.0, 3.0);
     final baseVolume = clamped <= 1.0 ? clamped : 1.0;
 
-    _controller?.setVolume(baseVolume);
+    // Volumen software neutro: el nivel 0..1 lo controla el sistema.
+    // mpv usa escala 0..100 (100 = neutro).
+    try {
+      _player?.setVolume(100.0);
+    } catch (_) {}
     await VolumeController.instance.setVolume(baseVolume);
 
     if (Platform.isAndroid) {
       try {
-        await _audioBoostChannel.invokeMethod('setBoost', {'boost': clamped});
+        await _audioBoostChannel.invokeMethod('setBoost', {
+          'boost': clamped <= 1.0 ? 1.0 : clamped,
+        });
       } catch (_) {}
     }
   }
 
   Future<void> _initializePlayer(String url) async {
-    setState(() => _isLoading = true);
-    
-    String effectiveUrl = url;
+    final player = _player;
+    if (player == null) return;
+    // Nueva apertura: se reinicia el conteo de auto-recuperaciones y el
+    // watchdog (la calidad elegida por el usuario se conserva al zappear).
+    _stallTimer?.cancel();
+    _completedReopens = 0;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    final isPluto = _isPluto(url);
+    // Todo por el proxy local. En Pluto se usa el master sintético (una
+    // variante + audio, sesión fresca): mpv se atraganta con el master
+    // original multi-rendimiento.
     await MediaProxyService().start();
-    
-    // Proxiamos la URL para el reproductor interno
-    effectiveUrl = MediaProxyService().getProxiedUrl(url, {}, useLocalhost: true);
-    
-    if (_controller != null) {
-      final oldController = _controller;
-      _controller = null; 
-      await oldController!.dispose();
+    // TV en vivo: lógica TV separada del Algo 1 de pelis/series.
+    String effectiveUrl = MediaProxyService()
+        .getProxiedUrl(url, {}, useLocalhost: true, liveTv: true);
+    if (isPluto) {
+      effectiveUrl = await _plutoSyntheticUrl(url) ?? effectiveUrl;
     }
-    
-    _controller = VideoPlayerController.networkUrl(Uri.parse(effectiveUrl));
+
     try {
-      await _controller!.initialize();
-      _controller!.play();
+      // Sin subtítulos en TV en vivo: la cadena de subtítulos (playlist +
+      // segmentos vtt) puede enredar la apertura del vivo en mpv y no hay
+      // selector de subtítulos en esta pantalla.
+      try {
+        await player.setSubtitleTrack(SubtitleTrack.no());
+      } catch (_) {}
+      // Calidad automática al abrir cada canal (el usuario puede fijar otra
+      // desde el selector; mpv conservaría la anterior si no se resetea).
+      try {
+        await player.setVideoTrack(VideoTrack.auto());
+      } catch (_) {}
+      // mpv abre el vivo sin exigir duración (VideoPlayerController se
+      // quedaba colgado porque espera duration > 0 y los vivos dan 0).
+      await player
+          .open(Media(effectiveUrl))
+          .timeout(const Duration(seconds: 45));
+      // Volumen software neutro: respetar el volumen del sistema sin
+      // subidas automáticas. Re-aplicar boost solo si el usuario lo activó.
+      try {
+        await player.setVolume(100.0);
+      } catch (_) {}
+      if (_volume > 1.0 && Platform.isAndroid) {
+        try {
+          await _audioBoostChannel.invokeMethod('setBoost', {
+            'boost': _volume.clamp(0.0, 3.0),
+          });
+        } catch (_) {}
+      }
+      await player.play();
+      // Apertura sana: el watchdog parte de cero (no debe matar una
+      // apertura lenta pero sana que aún está buferizando lo inicial).
+      _stallTimer?.cancel();
       if (mounted) setState(() => _isLoading = false);
     } catch (e) {
       debugPrint("Error loading channel: $e");
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage =
+              'No se pudo reproducir este canal. Revisa tu conexión o prueba con otro canal.';
+        });
+      }
     }
   }
 
@@ -214,6 +395,144 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
           const SnackBar(content: Text("Debes ver el anuncio completo para cambiar de canal."))
         );
       }
+    );
+  }
+
+  /// Abre el canal en una app externa (VLC): escape si el motor interno
+  /// no logra con un origen concreto. En Pluto usa el master sintético
+  /// (sesión fresca) igual que el reproductor interno.
+  Future<void> _openExternal() async {
+    final stored = widget.channels[_currentIndex]['stream_url']?.toString();
+    if (stored == null || stored.isEmpty) return;
+    try {
+      await _player?.pause();
+      var url = stored;
+      if (_isPluto(stored)) {
+        url = await _plutoSyntheticUrl(stored) ?? stored;
+      }
+      final ok = await launchUrl(
+        Uri.parse(url),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No se pudo abrir en otra app')),
+        );
+        await _player?.play();
+      }
+    } catch (_) {
+      if (mounted) await _player?.play();
+    }
+  }
+
+  /// Etiqueta de la calidad actual para el tooltip del botón.
+  String get _qualityLabel {
+    switch (_quality) {
+      case 'high':
+        return 'Alta';
+      case 'mid':
+        return 'Media';
+      default:
+        return 'Auto';
+    }
+  }
+
+  /// Tramos de calidad: el cambio REABRE el stream en ese tramo (un cambio
+  /// en caliente entre variantes rompe la línea de tiempo y congela el
+  /// video con PTS negativos).
+  List<({String id, String label, String hint})> _qualityOptions() => const [
+        (id: 'auto', label: 'Automática', hint: 'La que siempre funciona'),
+        (id: 'mid', label: 'Media', hint: 'Equilibrio'),
+        (id: 'high', label: 'Alta', hint: 'Mejor imagen si la red lo permite'),
+      ];
+
+  /// Hoja inferior para que el usuario elija la calidad que quiera.
+  Future<void> _showQualitySheet() async {
+    final options = _qualityOptions();
+    if (!mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => SafeArea(
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFF141414),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(ctx).size.height * 0.85,
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: SingleChildScrollView(
+              child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Center(
+                child: Text(
+                  'Calidad de video',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              for (final o in options)
+                Builder(builder: (_) {
+                  final selected = o.id == _quality;
+                  return ListTile(
+                    dense: true,
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 8),
+                    leading: Icon(
+                      o.id == 'auto'
+                          ? Icons.auto_awesome_outlined
+                          : Icons.high_quality_outlined,
+                      color: selected
+                          ? const Color(0xFF00A3FF)
+                          : Colors.white54,
+                    ),
+                    title: Text(
+                      o.label,
+                      style: TextStyle(
+                        color:
+                            selected ? Colors.white : Colors.white70,
+                        fontWeight: selected
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ),
+                    subtitle: Text(
+                      o.hint,
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 12),
+                    ),
+                    trailing: selected
+                        ? const Icon(Icons.check,
+                            color: Color(0xFF00A3FF))
+                        : null,
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      if (o.id == _quality) return;
+                      // Reabre en ese tramo con línea de tiempo limpia
+                      // (cambiar en caliente congela el video).
+                      print('🎬 [TV] calidad elegida: ${o.label}');
+                      setState(() => _quality = o.id);
+                      _initializePlayer(
+                          widget.channels[_currentIndex]['stream_url']);
+                    },
+                  );
+                }),
+            ],
+          ),
+          ),
+        ),
+      ),
+      ),
     );
   }
 
@@ -268,10 +587,12 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
     WakelockPlus.disable();
     _labelHideTimer?.cancel();
     _adTimer?.cancel();
+    _stallTimer?.cancel();
     if (Platform.isAndroid) {
       _audioBoostChannel.invokeMethod('releaseBoost');
     }
-    _controller?.dispose();
+    _player?.dispose();
+    _videoController = null;
     _scrollController.dispose();
     VolumeController.instance.showSystemUI = true;
     VolumeController.instance.removeListener();
@@ -309,14 +630,11 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
         behavior: HitTestBehavior.opaque,
         child: Stack(
           children: [
-            // Creador del Video
+            // Reproductor de video (mpv directo, sin puerta de duración)
             Positioned.fill(
               child: Center(
-                child: _controller != null && _controller!.value.isInitialized
-                    ? AspectRatio(
-                        aspectRatio: _controller!.value.aspectRatio,
-                        child: VideoPlayer(_controller!),
-                      )
+                child: _videoController != null
+                    ? Video(controller: _videoController!)
                     : const SizedBox(),
               ),
             ),
@@ -324,6 +642,37 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
             if (_isLoading)
               const Center(
                 child: CircularProgressIndicator(color: Color(0xFF00A3FF)),
+              ),
+
+            // Error al cargar el canal (origen caído, sin conexión, etc.)
+            if (!_isLoading && _errorMessage != null)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.tv_off_rounded,
+                          color: Colors.white24, size: 56),
+                      const SizedBox(height: 16),
+                      Text(
+                        _errorMessage!,
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 14),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 20),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF00A3FF)),
+                        onPressed: () => _initializePlayer(
+                            widget.channels[_currentIndex]['stream_url']),
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Reintentar'),
+                      ),
+                    ],
+                  ),
+                ),
               ),
 
             // Indicadores Hapticos de Volumen y Brillo
@@ -425,12 +774,27 @@ class _TvPlayerPageState extends ConsumerState<TvPlayerPage> {
                             ),
                             CastButton(
                               videoUrl: MediaProxyService().getProxiedUrl(
-                                widget.channels[_currentIndex]['stream_url'], 
-                                {}, 
-                                useLocalhost: false
+                                widget.channels[_currentIndex]['stream_url'],
+                                {},
+                                useLocalhost: false,
+                                // Cast de canal en vivo: lógica TV separada.
+                                liveTv: true,
                               ),
                               title: channelName,
                               imageUrl: channelLogo,
+                            ),
+                            IconButton(
+                              tooltip: 'Abrir en otra app (VLC)',
+                              icon: const Icon(Icons.open_in_new_rounded,
+                                  color: Colors.white70),
+                              onPressed: _openExternal,
+                            ),
+                            IconButton(
+                              tooltip: 'Calidad: $_qualityLabel',
+                              icon: const Icon(
+                                  Icons.high_quality_outlined,
+                                  color: Colors.white70),
+                              onPressed: _showQualitySheet,
                             ),
                             const SizedBox(width: 20),
                           ],

@@ -153,6 +153,8 @@ class MediaProxyService {
   HttpServer? _server;
   int _port = 0;
   String _localIp = '';
+  static const String _kBrowserUserAgent =
+      'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
   final Map<String, _A3Entry> _a3Registry = {};
   final Map<String, String> _localFileRegistry = {}; // fileId → filePath
   final Map<String, String> _manifestCache = {}; // url → body
@@ -255,6 +257,8 @@ class MediaProxyService {
           _handleLocalFileRequest(request);
         } else if (request.uri.path.startsWith('/proxy')) {
           _handleProxyRequest(request);
+        } else if (request.uri.path.startsWith('/pluto/')) {
+          _handlePlutoRequest(request);
         } else if (request.uri.path.startsWith('/a3/')) {
           _handleA3Request(request);
         } else if (request.uri.path.startsWith('/ffstream/')) {
@@ -271,6 +275,158 @@ class MediaProxyService {
     }
   }
 
+  // --- PLUTO TV: MASTER SINTÉTICO (una variante + audio, sin reescritura) ---
+  // mpv se atraganta con el master original (5 variantes + audio y
+  // subtítulos separados): lo abre, pide playlists y nunca los segmentos.
+  // Se le sirve un master mínimo con la variante más liviana y el audio;
+  // segmentos/claves/audio van DIRECTOS (no necesitan jwt ni reescritura).
+  String getPlutoUrl(String channelId, String token,
+      {String quality = 'auto'}) {
+    final host = '127.0.0.1:$_port';
+    final q = Uri(queryParameters: {'jwt': token, 'bw': quality}).query;
+    return 'http://$host/pluto/$channelId?$q';
+  }
+
+  Future<void> _handlePlutoRequest(HttpRequest request) async {
+    final requestId = DateTime.now().millisecondsSinceEpoch
+        .toString()
+        .substring(7);
+    try {
+      final segs = request.uri.pathSegments;
+      if (segs.length < 2 || segs[0] != 'pluto') {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+        return;
+      }
+      final channelId = segs[1];
+      final token = request.uri.queryParameters['jwt'] ?? '';
+      if (channelId.isEmpty || token.isEmpty) {
+        request.response.statusCode = HttpStatus.badRequest;
+        await request.response.close();
+        return;
+      }
+      print('📺 [PLUTO][$requestId] Master sintético para $channelId');
+      final client = http.Client();
+      try {
+        final masterUri = Uri.parse(
+          'https://cfd-v4-service-channel-stitcher-use1-1.prd.pluto.tv'
+          '/v2/stitch/hls/channel/$channelId/master.m3u8'
+          '?jwt=$token&masterJWTPassthrough=true',
+        );
+        final mres = await client
+            .get(masterUri, headers: {
+              'User-Agent': _kBrowserUserAgent,
+              'Accept': '*/*',
+            })
+            .timeout(const Duration(seconds: 15));
+        if (mres.statusCode != 200) {
+          throw 'master ${mres.statusCode}';
+        }
+        final lines =
+            mres.body.split('\n').map((e) => e.trim()).toList();
+
+        String withJwt(String raw) {
+          var u = masterUri.resolve(raw);
+          if (u.host.contains('pluto.tv') &&
+              !u.queryParameters.containsKey('jwt')) {
+            final q = Map<String, String>.from(u.queryParameters)
+              ..['jwt'] = token;
+            u = u.replace(queryParameters: q);
+          }
+          return u.toString();
+        }
+
+        // Todas las variantes ordenadas (escalera de calidad para que mpv
+        // adapte solo: empieza abajo y sube a HD si la red lo permite).
+        final variants = <({int bw, String uri})>[];
+        for (var i = 0; i < lines.length; i++) {
+          final m = RegExp(r'#EXT-X-STREAM-INF:[^\n]*BANDWIDTH=(\d+)')
+              .firstMatch(lines[i]);
+          if (m == null) continue;
+          final bw = int.tryParse(m.group(1) ?? '');
+          if (bw == null) continue;
+          String? uri;
+          for (var j = i + 1; j < lines.length; j++) {
+            if (lines[j].isEmpty) continue;
+            if (lines[j].startsWith('#')) break;
+            uri = lines[j];
+            break;
+          }
+          if (uri == null) continue;
+          variants.add((bw: bw, uri: uri));
+        }
+        if (variants.isEmpty) throw 'sin variantes';
+        variants.sort((a, b) => a.bw.compareTo(b.bw));
+
+        // Audio: el marcado DEFAULT=YES, si no el primero.
+        String? audioUri;
+        final audioMatches = RegExp(
+          r'#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*URI="([^"]+)"',
+        ).allMatches(mres.body);
+        for (final m in audioMatches) {
+          audioUri ??= m.group(1);
+          if (m.group(0)!.contains('DEFAULT=YES')) {
+            audioUri = m.group(1);
+            break;
+          }
+        }
+
+        // UNA sola variante: el ABR entre variantes en un vivo con AES y
+        // discontinuidades rompe la línea de tiempo (PTS negativos) y el
+        // video se queda soltando frames para siempre. 'high' = máxima,
+        // 'mid' = intermedia, resto = mínima (defecto seguro).
+        final q = (request.uri.queryParameters['bw'] ?? 'low').toLowerCase();
+        final pick = q == 'high'
+            ? variants.last
+            : q == 'mid'
+                ? variants[variants.length ~/ 2]
+                : variants.first;
+        final varUrl = withJwt(pick.uri);
+        final out = StringBuffer()..writeln('#EXTM3U');
+        if (audioUri != null) {
+          out.writeln(
+              '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Audio",DEFAULT=YES,AUTOSELECT=YES,URI="${withJwt(audioUri)}"');
+          out.writeln(
+              '#EXT-X-STREAM-INF:BANDWIDTH=${pick.bw},AUDIO="audio"');
+        } else {
+          out.writeln('#EXT-X-STREAM-INF:BANDWIDTH=${pick.bw}');
+        }
+        out.writeln(varUrl);
+
+        // Verificación: la variante trae segmentos de verdad. Si viene
+        // vacía (sesión muerta), fallar rápido en vez de buferizar eterno.
+        final vres = await client
+            .get(Uri.parse(varUrl), headers: {
+              'User-Agent': _kBrowserUserAgent,
+              'Accept': '*/*',
+            })
+            .timeout(const Duration(seconds: 15));
+        final vSegs = vres.statusCode == 200
+            ? RegExp(r'^#EXTINF', multiLine: true)
+                .allMatches(vres.body)
+                .length
+            : 0;
+        print('📺 [PLUTO][$requestId] q=$q bw=${pick.bw} segs=$vSegs '
+            'audio=${audioUri != null}');
+        if (vSegs == 0) throw 'variante sin segmentos';
+
+        request.response.headers.contentType = ContentType.parse(
+          'application/vnd.apple.mpegurl',
+        );
+        request.response.add(utf8.encode(out.toString()));
+        await request.response.close();
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      print('❌ [PLUTO][$requestId] Error: $e');
+      try {
+        request.response.statusCode = HttpStatus.badGateway;
+        await request.response.close();
+      } catch (_) {}
+    }
+  }
+
   // --- LÓGICA DE PROXY (ALGO 1: FRAGMENTOS) ---
   Future<void> _handleProxyRequest(HttpRequest request) async {
     final encodedUrl = request.uri.queryParameters['url'];
@@ -280,6 +436,9 @@ class MediaProxyService {
     final algoParam = request.uri.queryParameters['a'];
     final remuxParam = request.uri.queryParameters['remux'] == '1';
     final posParam = request.uri.queryParameters['pos'];
+    // TV en vivo usa lógica separada; pelis/series usan el Algo 1 intacto
+    // del commit e048125 (análisis inteligente).
+    final isLiveTv = request.uri.queryParameters['livetv'] == '1';
     int? pos = int.tryParse(posParam ?? '');
 
     if (encodedUrl == null) {
@@ -298,6 +457,12 @@ class MediaProxyService {
     final requestId = DateTime.now().millisecondsSinceEpoch
         .toString()
         .substring(7);
+    // Log de entrada SIN query (puede llevar tokens JWT): permite ver en el
+    // log qué petición se quedó colgada si luego no aparece su "Response Status".
+    final _loggedUri = Uri.tryParse(url);
+    print('➡️ [PROXY][$requestId] ${request.method} '
+        '${_loggedUri?.host ?? '?'}${_loggedUri?.path ?? ''} '
+        '${request.headers.value('range') ?? ''}');
     final Map<String, String> headers = {};
 
     // Cabeceras proxiadas (extraídas del navegador por el extractor).
@@ -330,24 +495,52 @@ class MediaProxyService {
 
     // Refrescar cookies desde el WebView (usa el mismo almacén de cookies que
     // Chrome/WebView del dispositivo, manteniendo la sesión activa).
-    try {
-      final webCookies = await CookieManager.instance().getCookies(
-        url: WebUri(url),
-      );
-      if (webCookies.isNotEmpty) {
-        final webCookieStr =
-            webCookies.map((c) => '${c.name}=${c.value}').join('; ');
-        final existing = headers['Cookie'] ?? '';
-        headers['Cookie'] =
-            existing.isEmpty ? webCookieStr : '$existing; $webCookieStr';
-        print('🍪 [PROXY][$requestId] Refreshed ${webCookies.length} cookies from WebView');
+    if (isLiveTv) {
+      // TV: con timeout. Si el WebView está destruido el await podría no
+      // volver nunca y colgar la petición (el reproductor se quedaría
+      // esperando).
+      try {
+        final webCookies = await CookieManager.instance()
+            .getCookies(url: WebUri(url))
+            .timeout(const Duration(seconds: 5), onTimeout: () => []);
+        if (webCookies.isNotEmpty) {
+          final webCookieStr =
+              webCookies.map((c) => '${c.name}=${c.value}').join('; ');
+          final existing = headers['Cookie'] ?? '';
+          headers['Cookie'] =
+              existing.isEmpty ? webCookieStr : '$existing; $webCookieStr';
+          print('🍪 [PROXY][$requestId] Refreshed ${webCookies.length} cookies from WebView');
+        }
+      } catch (_) {
+        // CookieManager puede fallar si no hay WebView activo, ignorar
       }
-    } catch (_) {
-      // CookieManager puede fallar si no hay WebView activo, ignorar
+    } else {
+      // ALGO 1 (e048125): sin timeout.
+      try {
+        final webCookies = await CookieManager.instance().getCookies(
+          url: WebUri(url),
+        );
+        if (webCookies.isNotEmpty) {
+          final webCookieStr =
+              webCookies.map((c) => '${c.name}=${c.value}').join('; ');
+          final existing = headers['Cookie'] ?? '';
+          headers['Cookie'] =
+              existing.isEmpty ? webCookieStr : '$existing; $webCookieStr';
+          print('🍪 [PROXY][$requestId] Refreshed ${webCookies.length} cookies from WebView');
+        }
+      } catch (_) {
+        // CookieManager puede fallar si no hay WebView activo, ignorar
+      }
     }
 
     // Añadir cabeceras típicas de navegador que faltan (el Dart HTTP client no las
     // envía por defecto, y algunos CDNs las requieren para servir segmentos reales).
+    // TV: además inyecta User-Agent de navegador (algunos orígenes/WAFs de
+    // canales devuelven 403/504 con el UA de Dart). Se usa putIfAbsent para
+    // no pisar las cabeceras reales del extractor.
+    if (isLiveTv) {
+      headers.putIfAbsent('User-Agent', () => _kBrowserUserAgent);
+    }
     headers.putIfAbsent('Accept', () => '*/*');
     headers.putIfAbsent('Accept-Language', () => 'es-ES,es;q=0.9,en;q=0.8');
     headers.putIfAbsent('Sec-Fetch-Dest', () => 'empty');
@@ -372,7 +565,14 @@ class MediaProxyService {
       headers.forEach((k, v) => proxyRequest.headers[k] = v);
       proxyRequest.followRedirects = true;
 
-      final streamedResponse = await client.send(proxyRequest);
+      // TV: con timeout. Sin esto, un origen colgado cuelga la petición
+      // para siempre y el reproductor se queda esperando (initialize sin
+      // fin). ALGO 1: espera sin límite como en e048125.
+      final streamedResponse = isLiveTv
+          ? await client
+              .send(proxyRequest)
+              .timeout(const Duration(seconds: 15))
+          : await client.send(proxyRequest);
       final upstreamContentType =
           (streamedResponse.headers['content-type'] ?? '').toLowerCase();
 
@@ -391,7 +591,30 @@ class MediaProxyService {
           upstreamContentType.contains('apple.mpegurl') ||
           url.contains('.m3u8');
 
-      if (isHls) {
+      if (isLiveTv &&
+          isHls &&
+          streamedResponse.statusCode == HttpStatus.partialContent) {
+        // SOLO TV: un 206 (contenido parcial por Range) NO se puede
+        // reescribir: los rangos de bytes se refieren al cuerpo original y
+        // reescribirlo lo corrompería (además el fragmento puede ni ser
+        // UTF-8 válido). Se canaliza tal cual, preservando content-type y
+        // rango. En Algo 1 (pelis/series) un 206 se lee y reescribe como
+        // siempre, para que los segmentos queden proxiados con sus cookies.
+        print('⚠️ [PROXY][$requestId] Playlist con Range (206): se reenvía sin reescribir.');
+        _serveStream(
+          request,
+          streamedResponse,
+          null,
+          streamedResponse.stream,
+          algoParam,
+          url,
+          upstreamContentType,
+          client,
+          requestId,
+          remux: remuxParam,
+          preserveContentType: true,
+        );
+      } else if (isHls) {
         String? fullBody;
         final cacheKey = url + (headers.toString());
         final now = DateTime.now();
@@ -405,13 +628,43 @@ class MediaProxyService {
         }
 
         if (fullBody == null) {
-          fullBody = await streamedResponse.stream.bytesToString();
+          if (isLiveTv) {
+            // TV: leer bytes primero. Si el cuerpo no es texto válido (p.ej.
+            // un fragmento binario), decodificarlo lanzaría FormatException y
+            // tumbaría la petición. En ese caso se reenvía tal cual.
+            final rawBytes = await streamedResponse.stream.toBytes();
+            try {
+              fullBody = utf8.decode(rawBytes);
+            } catch (_) {
+              print('⚠️ [PROXY][$requestId] Cuerpo no UTF-8 '
+                  '(${rawBytes.length} bytes). Se reenvía sin reescribir.');
+              await _forwardBodyAsIs(
+                  request, streamedResponse, rawBytes, client);
+              return;
+            }
+          } else {
+            // ALGO 1 (e048125).
+            fullBody = await streamedResponse.stream.bytesToString();
+          }
           _manifestCache[cacheKey] = fullBody;
           _manifestCacheTime[cacheKey] = now;
         }
 
         final requestHost =
             request.headers.value(HttpHeaders.hostHeader) ?? '$_localIp:$_port';
+        // SOLO TV: si el origen devolvió un error o algo que NO es una
+        // playlist (p.ej. un JSON de error cuando el canal está caído), NO
+        // intentar reescribirlo como m3u8: Uri.resolve lanzaría
+        // FormatException y el reproductor recibiría un 504 sin información.
+        // Se reenvía tal cual. En Algo 1 todo cuerpo HLS se reescribe.
+        final okStatus = streamedResponse.statusCode >= 200 &&
+            streamedResponse.statusCode < 300;
+        if (isLiveTv && (!okStatus || !fullBody.contains('#EXTM3U'))) {
+          print('⚠️ [PROXY][$requestId] El origen no devolvió playlist válida '
+              '(status=${streamedResponse.statusCode}, ${fullBody.length} bytes). Se reenvía sin reescribir.');
+          await _forwardBodyAsIs(
+              request, streamedResponse, utf8.encode(fullBody), client);
+        } else {
         final rewrittenBody = _rewriteM3u8(
           fullBody,
           url,
@@ -420,14 +673,23 @@ class MediaProxyService {
           algorithm: int.tryParse(algoParam ?? ''),
           remux: remuxParam,
           startPos: (pos != null && pos > 0) ? pos.toDouble() : null,
+          liveTv: isLiveTv,
         );
 
         request.response.headers.contentType = ContentType.parse(
           'application/vnd.apple.mpegurl',
         );
+        // Diagnóstico: cuántos segmentos lleva la playlist que verá el
+        // reproductor (0 = ventana vacía/sesión muerta → buffering eterno).
+        final segCount =
+            RegExp(r'^#EXTINF', multiLine: true).allMatches(rewrittenBody).length;
+        print('📝 [PROXY][$requestId] playlist '
+            '${Uri.tryParse(url)?.host ?? '?'} segs=$segCount '
+            'live=${!rewrittenBody.contains('#EXT-X-ENDLIST')}');
         request.response.add(utf8.encode(rewrittenBody));
         await request.response.close();
         client.close();
+        }
       } else {
         _serveStream(
           request,
@@ -527,6 +789,32 @@ class MediaProxyService {
     return data;
   }
 
+  /// Reenvía una respuesta del origen tal cual (status + content-type +
+  /// content-range + cuerpo), sin reescribir. Cierra el cliente al terminar.
+  Future<void> _forwardBodyAsIs(
+    HttpRequest request,
+    http.StreamedResponse upstream,
+    List<int> body,
+    http.Client client,
+  ) async {
+    request.response.statusCode = upstream.statusCode;
+    final ct = upstream.headers['content-type'];
+    if (ct != null && ct.isNotEmpty) {
+      try {
+        request.response.headers.contentType = ContentType.parse(ct);
+      } catch (_) {}
+    }
+    final cr = upstream.headers['content-range'];
+    if (cr != null && cr.isNotEmpty) {
+      try {
+        request.response.headers.set('content-range', cr);
+      } catch (_) {}
+    }
+    request.response.add(body);
+    await request.response.close();
+    client.close();
+  }
+
   void _serveStream(
     HttpRequest request,
     http.StreamedResponse response,
@@ -538,6 +826,7 @@ class MediaProxyService {
     http.Client client,
     String requestId, {
     bool remux = false,
+    bool preserveContentType = false,
   }) async {
     // Detectar respuesta PNG (TikTok envuelve TS real en contenedor PNG)
     if (upstreamContentType.contains('image/png')) {
@@ -599,7 +888,11 @@ class MediaProxyService {
 
     // Forzar video/MP2T — el proxy solo sirve segmentos de vídeo y algunas
     // CDNs los entregan como image/png, lo que impide la reproducción en TVs.
-    request.response.headers.set('content-type', 'video/MP2T');
+    // (salvo passthrough de rangos, donde se conserva el content-type origen
+    // ya copiado arriba junto con content-range).
+    if (!preserveContentType) {
+      request.response.headers.set('content-type', 'video/MP2T');
+    }
     if (firstChunk != null) request.response.add(firstChunk);
     try {
       await request.response.addStream(stream);
@@ -621,13 +914,45 @@ class MediaProxyService {
     int? algorithm,
     bool remux = false,
     double? startPos,
+    // TV en vivo: detección de vivo, herencia de jwt y tolerancia a URIs
+    // inválidas. En false (pelis/series) el reescrito es el Algo 1 exacto
+    // de e048125.
+    bool liveTv = false,
   }) {
     final baseUri = Uri.parse(baseUriStr);
     final baseQuery = baseUri.query; // preservar para segmentos (CDN token)
+    // SOLO TV (Pluto): las variantes hijas exigen `jwt` y el master no
+    // siempre lo propaga (masterJWTPassthrough no basta en use1-1): sin él
+    // dan 401 "JWT verification fails" y el reproductor nunca pide
+    // segmentos. Si la URL base lo trae y la hija (.m3u8) no, se hereda. A
+    // segmentos y claves no se les toca (sirven sin jwt).
+    final baseJwt = liveTv ? baseUri.queryParameters['jwt'] ?? '' : '';
+    Uri inheritJwt(Uri uri) {
+      if (baseJwt.isEmpty ||
+          !uri.toString().contains('.m3u8') ||
+          uri.queryParameters.containsKey('jwt')) {
+        return uri;
+      }
+      final q = Map<String, String>.from(uri.queryParameters)
+        ..['jwt'] = baseJwt;
+      return uri.replace(queryParameters: q);
+    }
     final lines = body.split('\n');
     final rewrittenLines = <String>[];
     bool hasEndList = false;
     final isMasterPlaylist = body.contains('#EXT-X-STREAM-INF');
+    // SOLO TV: una playlist de medios SIN #EXT-X-ENDLIST y con marcadores
+    // de vivo (ventana deslizante: PROGRAM-DATE-TIME, DISCONTINUITY-SEQUENCE
+    // o MEDIA-SEQUENCE avanzado) es un LIVE. Inyectarle ENDLIST o
+    // PLAYLIST-TYPE:VOD haría que el reproductor la tratara como un VOD
+    // finito: reproduce la ventana inicial y se detiene (EOS). En ese caso
+    // no se inyecta nada. En Algo 1 siempre se inyectan (VOD de pelis/series).
+    final bool looksLive = liveTv &&
+        !isMasterPlaylist &&
+        !body.contains('#EXT-X-ENDLIST') &&
+        (body.contains('#EXT-X-PROGRAM-DATE-TIME') ||
+            body.contains('#EXT-X-DISCONTINUITY-SEQUENCE') ||
+            RegExp(r'#EXT-X-MEDIA-SEQUENCE:\s*[1-9]').hasMatch(body));
     final bool shouldSkip = startPos != null && startPos > 0 && !isMasterPlaylist;
     double cumulativeDuration = 0;
     double? pendingExtinf;
@@ -651,6 +976,7 @@ class MediaProxyService {
         }
 
         if (trimmedLine.startsWith('#EXT-X-TARGETDURATION') &&
+            !looksLive &&
             !body.contains('#EXT-X-PLAYLIST-TYPE')) {
           rewrittenLines.add(trimmedLine);
           rewrittenLines.add('#EXT-X-PLAYLIST-TYPE:VOD');
@@ -662,16 +988,30 @@ class MediaProxyService {
         ).firstMatch(trimmedLine);
         if (uriMatch != null) {
           final internalUrl = uriMatch.group(1)!;
-          var absoluteUri = baseUri.resolve(internalUrl);
+          Uri absoluteUri;
+          if (liveTv) {
+            try {
+              absoluteUri = baseUri.resolve(internalUrl);
+            } catch (_) {
+              // URI no válida (p.ej. cuerpo de error del origen): conservarla.
+              rewrittenLines.add(trimmedLine);
+              continue;
+            }
+          } else {
+            // ALGO 1 (e048125).
+            absoluteUri = baseUri.resolve(internalUrl);
+          }
           if (baseQuery.isNotEmpty && absoluteUri.query.isEmpty) {
             absoluteUri = absoluteUri.replace(query: baseQuery);
           }
+          if (liveTv) absoluteUri = inheritJwt(absoluteUri);
           final proxiedUrl = _buildProxiedUrl(
             absoluteUri.toString(),
             headers,
             requestHost,
             algorithm: algorithm,
             remux: remux,
+            liveTv: liveTv,
           );
           rewrittenLines.add(trimmedLine.replaceFirst(internalUrl, proxiedUrl));
         } else {
@@ -701,10 +1041,24 @@ class MediaProxyService {
           pendingExtinf = null;
         }
 
-        var absoluteUri = baseUri.resolve(trimmedLine);
+        Uri absoluteUri;
+        if (liveTv) {
+          try {
+            absoluteUri = baseUri.resolve(trimmedLine);
+          } catch (_) {
+            // Línea no válida como URI (p.ej. cuerpo de error del origen):
+            // conservarla en vez de romper todo el manifiesto.
+            rewrittenLines.add(trimmedLine);
+            continue;
+          }
+        } else {
+          // ALGO 1 (e048125).
+          absoluteUri = baseUri.resolve(trimmedLine);
+        }
         if (baseQuery.isNotEmpty && absoluteUri.query.isEmpty) {
           absoluteUri = absoluteUri.replace(query: baseQuery);
         }
+        if (liveTv) absoluteUri = inheritJwt(absoluteUri);
         final proxiedUrl = _buildProxiedUrl(
           absoluteUri.toString(),
           headers,
@@ -712,11 +1066,22 @@ class MediaProxyService {
           algorithm: algorithm,
           remux: remux,
           extensionOverride: isMasterPlaylist ? null : '.ts',
+          liveTv: liveTv,
         );
         rewrittenLines.add(proxiedUrl);
       }
     }
-    if (!hasEndList && !body.contains('#EXT-X-STREAM-INF')) {
+    // ENDLIST solo para VOD que lo omitió: en vivos TV (ventana deslizante
+    // o eventos en curso) inyectarlo detendría la reproducción al agotar la
+    // ventana inicial. En Algo 1 (pelis/series) se inyecta siempre como en
+    // e048125.
+    final bool shouldInjectEndlist = liveTv
+        ? (!hasEndList &&
+            !looksLive &&
+            !body.contains('#EXT-X-STREAM-INF') &&
+            !body.contains('#EXT-X-PLAYLIST-TYPE:EVENT'))
+        : (!hasEndList && !body.contains('#EXT-X-STREAM-INF'));
+    if (shouldInjectEndlist) {
       rewrittenLines.add('#EXT-X-ENDLIST');
     }
     return rewrittenLines.join('\n');
@@ -729,6 +1094,9 @@ class MediaProxyService {
     int? algorithm,
     bool remux = false,
     String? extensionOverride,
+    // Marca de TV en vivo: se propaga a los segmentos reescritos para que
+    // usen la lógica TV en vez del Algo 1 (análisis inteligente).
+    bool liveTv = false,
   }) {
     final bUrl = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
     String? bHeaders;
@@ -762,6 +1130,7 @@ class MediaProxyService {
     if (bHeaders != null) proxyUrl += '&h=$bHeaders';
     if (algorithm != null) proxyUrl += '&a=$algorithm';
     if (remux) proxyUrl += '&remux=1';
+    if (liveTv) proxyUrl += '&livetv=1';
 
     return proxyUrl;
   }
@@ -881,6 +1250,10 @@ class MediaProxyService {
     bool remux = false,
     bool toCast = false,
     int? pos,
+    // TV en vivo: usa la lógica TV separada (timeouts, UA navegador,
+    // passthrough 206, sin ENDLIST/VOD en vivos). Por defecto (pelis/series)
+    // se usa el Algo 1 intacto del commit e048125.
+    bool liveTv = false,
   }) {
     if (algorithm == 3 && !toCast) {
       // Para reproducción local en algoritmo 3, devolvemos la URL original.
@@ -898,6 +1271,7 @@ class MediaProxyService {
       host,
       algorithm: algorithm,
       remux: remux,
+      liveTv: liveTv,
     );
     if (pos != null && pos > 0) {
       proxyUrl += '&pos=$pos';

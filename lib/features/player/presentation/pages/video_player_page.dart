@@ -184,7 +184,6 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   bool _isLocked = false;
   double _volume = 0.5;
   double _brightness = 0.5;
-  double? _initialVolume;
   double? _initialBrightness;
   bool _showVolumeLabel = false;
   bool _showBrightnessLabel = false;
@@ -299,7 +298,6 @@ List<SubtitleInfo> _internalSubtitles = [];
     WakelockPlus.enable();
     _setupTorrentProgress();
 
-    _initialVolume = widget.initialVolume;
     _initialBrightness = widget.initialBrightness;
 if (widget.videoOptions.isNotEmpty) {
       _currentOption = widget.videoOptions.first;
@@ -1890,13 +1888,14 @@ if (widget.videoOptions.isNotEmpty) {
       // Hide system volume UI
       VolumeController.instance.showSystemUI = false;
 
-      // Intentar cargar valores persistidos primero
-      final storedVol = await StorageService.getStoredVolume();
+      // NOTA: el volumen del sistema NO se toca al abrir un video.
+      // Se respeta el nivel que ya tenga el dispositivo y el reproductor
+      // arranca en neutro (software a 1.0). Solo los gestos manuales
+      // (deslizar vertical / slider) cambian el volumen del sistema.
       final storedBright = await StorageService.getStoredBrightness();
 
       // Si no hay persistidos, usar los del sistema o los pasados por widget
       final vol =
-          storedVol ??
           widget.initialVolume ??
           await VolumeController.instance.getVolume();
       final bright =
@@ -1906,20 +1905,13 @@ if (widget.videoOptions.isNotEmpty) {
 
       if (mounted) {
         setState(() {
-          _volume = vol;
+          _volume = vol.clamp(0.0, 3.0);
           _brightness = bright;
-          _initialVolume ??= vol;
           _initialBrightness ??= bright;
         });
 
-        // Aplicar los valores cargados
-        // K7 FIX: si el volumen guardado quedó en ~0 (mute), nunca se escucha
-        // nada. Aseguramos un nivel base audible para que el audio suene.
-        if (_volume < 0.08) {
-          _volume = 0.6;
-          print('🔊 [VOL] Volumen guardado en $_volume → subido a 0.6 (anti-mute)');
-        }
-        await _applyVolumeBoost(_volume);
+        // Aplicar SOLO el volumen software/booster, sin tocar el sistema.
+        _setPlayerSoftwareVolume(_volume);
         ScreenBrightness().setScreenBrightness(_brightness);
       }
     } catch (_) {}
@@ -2618,14 +2610,19 @@ if (widget.videoOptions.isNotEmpty) {
   /// [_applyVolumeBoost]) como el botón físico del dispositivo (para que el
   /// cambio de volumen del sistema se refleje en el reproductor al instante).
   void _setPlayerSoftwareVolume(double targetVolume) {
-    final clamped = targetVolume.clamp(0.0, 3.0);
-    final baseVolume = clamped <= 1.0 ? clamped : 1.0;
-
-    _controller?.setVolume(baseVolume);
+    // Volumen software neutro (1.0): el nivel 0..1 lo controla el volumen
+    // del SISTEMA y el boost >1 el LoudnessEnhancer nativo. No se toca
+    // el volumen del sistema aquí (evita subidas automáticas de volumen).
+    try {
+      _controller?.setVolume(1.0);
+    } catch (_) {}
 
     if (Platform.isAndroid) {
       try {
-        _audioBoostChannel.invokeMethod('setBoost', {'boost': clamped});
+        final clamped = targetVolume.clamp(0.0, 3.0);
+        _audioBoostChannel.invokeMethod('setBoost', {
+          'boost': clamped <= 1.0 ? 1.0 : clamped,
+        });
       } catch (_) {}
     }
   }
@@ -2729,11 +2726,10 @@ if (widget.videoOptions.isNotEmpty) {
     _webViewController = null;
     _transformController.dispose();
 
-    // Restore initial volume and brightness only if we are truly exiting the player
+    // Restore initial brightness only if we are truly exiting the player.
+    // NOTA: el volumen del sistema NO se restaura: se deja como lo haya
+    // dejado el usuario (restaurarlo provocaba cambios automáticos).
     if (!_isPushingNextEpisode) {
-      if (_initialVolume != null) {
-        VolumeController.instance.setVolume(_initialVolume!);
-      }
       if (_initialBrightness != null) {
         ScreenBrightness().setScreenBrightness(_initialBrightness!);
       }
@@ -6013,14 +6009,6 @@ if (widget.videoOptions.isNotEmpty) {
     final selected = tracks.where((t) => t.isSelected).firstOrNull;
     final target = selected ?? tracks.first;
     await _controller!.selectAudioTrack(target.id);
-
-    // Reasegurar que el volumen software no quedó en 0 (silencio por mute).
-    if (_volume <= 0.0) {
-      _volume = 1.0;
-      try {
-        await _controller!.setVolume(1.0);
-      } catch (_) {}
-    }
 
     print('🎵 [AUTO_AUDIO] ${tracks.length} pista(s) detectadas. '
         '[sel=${target.language ?? target.label}] (id=${target.id}, codec=${target.codec}, ch=${target.channelCount}lb)');

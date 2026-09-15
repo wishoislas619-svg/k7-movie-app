@@ -7,6 +7,12 @@ import '../../domain/entities/series.dart';
 import '../../domain/entities/series_category.dart';
 import 'series_details_page.dart';
 import '../../../../shared/widgets/energy_flow_border.dart';
+import '../../../../shared/widgets/vip_promo_widgets.dart';
+import 'package:movie_app/features/addons/presentation/pages/addons_manager_page.dart';
+import 'package:movie_app/features/addons/presentation/pages/smart_search_page.dart';
+import 'package:movie_app/features/addons/presentation/pages/stream_list_page.dart';
+import 'package:movie_app/core/services/tmdb_service.dart';
+import 'package:movie_app/core/services/storage_service.dart';
 import 'series_category_page.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 import '../../../../shared/widgets/tv_focus_wrapper.dart';
@@ -27,6 +33,34 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
   String _searchQuery = "";
   final TextEditingController _searchController = TextEditingController();
   Timer? _searchDebounce;
+  // Secciones inteligentes TMDB (van directo a enlaces, no a detalles).
+  List<Map<String, dynamic>> _premieres = [];
+  List<Map<String, dynamic>> _topRated = [];
+  List<Map<String, dynamic>> _actionClassics = [];
+  List<Map<String, dynamic>> _horrorClassics = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSmartSections();
+  }
+
+  Future<void> _loadSmartSections() async {
+    final results = await Future.wait([
+      TmdbService.getOnAirSeries(),
+      TmdbService.getTopRatedSeries(),
+      TmdbService.getClassicSeriesByGenre('10759'),
+      TmdbService.getClassicSeriesByGenre('9648'),
+    ]);
+    if (mounted) {
+      setState(() {
+        _premieres = results[0];
+        _topRated = results[1];
+        _actionClassics = results[2];
+        _horrorClassics = results[3];
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -44,6 +78,27 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
     return Scaffold(
       resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
+      endDrawer: Consumer(
+        builder: (context, ref, _) {
+          final cats = ref.watch(seriesCategoriesProvider);
+          return cats.when(
+            data: (categories) => _buildOptionsDrawer(categories),
+            loading: () => const Drawer(
+              backgroundColor: Color(0xFF0A0A0A),
+              child: Center(
+                child: CircularProgressIndicator(color: Color(0xFFD400FF)),
+              ),
+            ),
+            error: (e, _) => Drawer(
+              backgroundColor: const Color(0xFF0A0A0A),
+              child: Center(
+                child: Text('Error: $e',
+                    style: const TextStyle(color: Colors.white)),
+              ),
+            ),
+          );
+        },
+      ),
       body: seriesAsync.when(
         data: (allSeries) {
           // Filtering logic
@@ -67,6 +122,7 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                 onRefresh: () async {
                   await ref.read(seriesListProvider.notifier).loadSeries();
                   await ref.read(seriesCategoriesProvider.notifier).loadCategories();
+                  await _loadSmartSections();
                 },
                 color: const Color(0xFF00A3FF),
                 backgroundColor: const Color(0xFF1A1A1A),
@@ -148,11 +204,35 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                           padding: const EdgeInsets.only(top: 0, bottom: 10),
                           sliver: SliverList(
                             delegate: SliverChildListDelegate([
+                              if (_selectedCategoryFilter == null &&
+                                  !_isSearching) ...[
+                                if (_premieres.isNotEmpty)
+                                  _buildSmartSection(
+                                    title: 'RECIÉN ESTRENADAS',
+                                    items: _premieres,
+                                  ),
+                                if (_topRated.isNotEmpty)
+                                  _buildSmartSection(
+                                    title: 'MEJOR VALORADAS',
+                                    items: _topRated,
+                                  ),
+                                if (_actionClassics.isNotEmpty)
+                                  _buildSmartSection(
+                                    title: 'CLÁSICAS DE ACCIÓN',
+                                    items: _actionClassics,
+                                  ),
+                                if (_horrorClassics.isNotEmpty)
+                                  _buildSmartSection(
+                                    title: 'CLÁSICAS DE TERROR',
+                                    items: _horrorClassics,
+                                  ),
+                              ],
                               if (filteredSeries.isNotEmpty) ...[
                                 _buildSeriesSection(
                                   context, 
                                   'RECIÉN AGREGADAS', 
                                   filteredSeries.where((s) => true).toList()..sort((a,b) => b.createdAt.compareTo(a.createdAt)),
+                                  category: SeriesCategory(id: 'recent', name: 'Recién agregadas'),
                                 ),
                               ],
                               ...categories.map((cat) {
@@ -188,56 +268,172 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
       backgroundColor: Colors.black.withOpacity(0.5),
       floating: true,
       elevation: 0,
-      title: Row(
+      title: const Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [Color(0xFF4A90FF), Color(0xFFBC00FF)]),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: const Text('K7', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+          K7AppBarTitle(
+            title: 'SERIES',
+            gradientColors: [Color(0xFF4A90FF), Color(0xFFBC00FF)],
           ),
-          const SizedBox(width: 8),
-          const Text('SERIES', style: TextStyle(letterSpacing: 2, fontWeight: FontWeight.normal, fontSize: 16, color: Colors.white)),
         ],
       ),
       actions: [
-        DropdownButtonHideUnderline(
-          child: DropdownButton<String?>(
-            value: _selectedCategoryFilter,
-            dropdownColor: const Color(0xFF121212),
-            icon: const Icon(Icons.filter_list, color: Color(0xFFD400FF)),
-            selectedItemBuilder: (BuildContext context) {
-              return [
-                const SizedBox(
-                  width: 80,
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: Text("Todas", overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.white)),
-                  ),
-                ),
-                ...categories.map((c) => SizedBox(
-                  width: 80,
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: Text(c.name, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
-                  ),
-                )),
-              ];
-            },
-            items: [
-              const DropdownMenuItem(value: null, child: Text("Todas", style: TextStyle(color: Colors.white))),
-              ...categories.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name, style: const TextStyle(color: Colors.white)))),
-            ],
-            onChanged: (val) => setState(() => _selectedCategoryFilter = val),
+        // A la izquierda: buscador inteligente. El resto vive en el menú ⋮.
+        IconButton(
+          icon: const Icon(Icons.travel_explore, color: Color(0xFFD400FF)),
+          tooltip: 'Búsqueda inteligente',
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const SmartSearchPage(),
+              ),
+            );
+          },
+        ),
+        Builder(
+          builder: (ctx) => IconButton(
+            icon: const Icon(Icons.more_vert, color: Colors.white70),
+            tooltip: 'Opciones',
+            onPressed: () => Scaffold.of(ctx).openEndDrawer(),
           ),
         ),
-        IconButton(
-          icon: Icon(_isSearching ? Icons.search_off : Icons.search, color: Colors.white70), 
-          onPressed: () => setState(() => _isSearching = !_isSearching)
-        ),
       ],
+    );
+  }
+
+  /// Drawer lateral derecho: filtro de categorías, addons y buscador.
+  Widget _buildOptionsDrawer(List<SeriesCategory> categories) {
+    return Drawer(
+      backgroundColor: const Color(0xFF0A0A0A),
+      // Drawer ancho (casi toda la pantalla) para que el desplegable
+      // de categorías tenga el doble de espacio.
+      width: MediaQuery.of(context).size.width * 0.88,
+      child: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(12),
+          children: [
+            const Text(
+              'OPCIONES',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 2,
+                fontSize: 15,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Filtros y accesos',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Categoría',
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            EnergyFlowBorder(
+              borderRadius: 12,
+              borderWidth: 1.2,
+              backgroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String?>(
+                  value: _selectedCategoryFilter,
+                  isExpanded: true,
+                  dropdownColor: Colors.black,
+                  borderRadius: BorderRadius.circular(14),
+                  icon: const Icon(
+                    Icons.filter_list,
+                    color: Color(0xFFD400FF),
+                  ),
+                  menuMaxHeight: 320,
+                  itemHeight: 64,
+                  selectedItemBuilder: (BuildContext context) {
+                    return [
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Todas',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: Colors.white),
+                        ),
+                      ),
+                      ...categories.map(
+                        (c) => Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            c.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ];
+                  },
+                  items: [
+                    const DropdownMenuItem(
+                      value: null,
+                      child: Text(
+                        'Todas',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                    ...categories.map(
+                      (c) => DropdownMenuItem(
+                        value: c.id,
+                        child: Text(
+                          c.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  ],
+                  onChanged: (val) =>
+                      setState(() => _selectedCategoryFilter = val),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading:
+                  const Icon(Icons.extension, color: Color(0xFFD400FF)),
+              title: const Text(
+                'Configurar addons',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AddonsManagerPage(),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.search, color: Colors.white70),
+              title: const Text(
+                'Buscar series',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                setState(() => _isSearching = true);
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -326,7 +522,7 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'TRENDING NOW',
+                        'EN TENDENCIA',
                         style: TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold, letterSpacing: 1.2, fontSize: 11),
                       ),
                       const SizedBox(height: 8),
@@ -378,25 +574,6 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                               ),
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Container(
-                            height: 48,
-                            width: 48,
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: Colors.white.withOpacity(0.1)),
-                            ),
-                            child: IconButton(
-                              icon: const Icon(Icons.info_outline, color: Colors.white),
-                              onPressed: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
-                                );
-                              },
-                            ),
-                          ),
                         ],
                       ),
                     ],
@@ -408,6 +585,141 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
         ),
       ),
     ),
+    );
+  }
+
+  /// Abre un título inteligente directo en la pantalla de enlaces
+  /// torrent/addon (solo estas secciones se saltan los detalles).
+  Future<void> _openSmartItem(Map<String, dynamic> s) async {
+    StorageService.saveSearchEntry(s);
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StreamListPage(
+          movieName: s['name'] as String? ?? 'Serie',
+          poster: s['image'] as String? ?? '',
+          year: s['year'] as String?,
+          tmdbId: '${s['tmdbId']}',
+          isSeries: true,
+        ),
+      ),
+    );
+  }
+
+  /// Sección inteligente TMDB (top 20). Póster con borde tornasol animado;
+  /// al tocar va directo a enlaces.
+  Widget _buildSmartSection({
+    required String title,
+    required List<Map<String, dynamic>> items,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(
+            left: 20,
+            right: 10,
+            top: 4,
+            bottom: 8,
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 4,
+                height: 16,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(2),
+                  gradient: const LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 210,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: items.length,
+            itemBuilder: (context, index) {
+              final s = items[index];
+              final image = s['image'] as String? ?? '';
+              final name = s['name'] as String? ?? '';
+              return GestureDetector(
+                onTap: () => _openSmartItem(s),
+                child: Container(
+                  width: 120,
+                  margin: const EdgeInsets.only(right: 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      EnergyFlowBorder(
+                        borderRadius: 12,
+                        borderWidth: 1.2,
+                        backgroundColor: const Color(0xFF1A1A1A),
+                        child: SizedBox(
+                          height: 150,
+                          width: double.infinity,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: image.isEmpty
+                                ? const Center(
+                                    child: Icon(
+                                      Icons.tv,
+                                      color: Colors.white24,
+                                      size: 32,
+                                    ),
+                                  )
+                                : Image.network(
+                                    image,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) =>
+                                        const Center(
+                                      child: Icon(
+                                        Icons.broken_image_outlined,
+                                        color: Colors.white24,
+                                        size: 32,
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          height: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 4),
+      ],
     );
   }
 

@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -460,24 +458,9 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
             )
           else
             const ColoredBox(color: Color(0xFF141414)),
-          // 1. Difuminado: sólo en la parte inferior para fundir con el
-          //    fondo negro de las cards de enlaces. Arriba la imagen queda nítida.
-          if (hasBackdrop)
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: ClipRect(
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-                  child: Container(
-                    width: double.infinity,
-                    height: (isLandscape ? 220 : 270) * 0.45,
-                    color: Colors.transparent,
-                  ),
-                ),
-              ),
-            ),
-          // 2. Degradado: arriba casi transparente (imagen visible) -> abajo
-          //    negro sólido para conectar con las cards de enlaces.
+          // 1. Fundido suave: la parte inferior de la portada se difumina
+          //    con el fondo negro (sin cuadro de blur con borde marcado).
+          //    Arriba la imagen queda nítida.
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -485,11 +468,12 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                 end: Alignment.bottomCenter,
                 colors: [
                   Colors.transparent,
-                  Colors.black.withValues(alpha: 0.25),
-                  Colors.black.withValues(alpha: 0.9),
+                  Colors.transparent,
+                  Colors.black.withValues(alpha: 0.35),
+                  Colors.black.withValues(alpha: 0.85),
                   Colors.black,
                 ],
-                stops: const [0.0, 0.4, 0.85, 1.0],
+                stops: const [0.0, 0.35, 0.55, 0.8, 1.0],
               ),
             ),
           ),
@@ -1157,11 +1141,22 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     }
   }
 
-  void _openAddons() {
-    Navigator.push(
+  Future<void> _openAddons() async {
+    String addonKey() => (ref.read(addonsProvider).valueOrNull ?? [])
+        .map((a) => a.id)
+        .join(',');
+    final before = addonKey();
+    await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const AddonsManagerPage()),
     );
+    if (!mounted) return;
+    // Si cambió el conjunto de addons (instaló, reconfiguró o quitó alguno),
+    // recargar los enlaces para mostrar los resultados nuevos.
+    if (addonKey() != before) {
+      if (widget.isSeries && !widget.isEpisodeMode) return;
+      await _refreshStreams();
+    }
   }
 
   /// Muestra la sinopsis de la película/serie (metadatos de TMDB).

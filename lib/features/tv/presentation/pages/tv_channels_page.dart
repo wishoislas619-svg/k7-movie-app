@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../shared/widgets/energy_flow_border.dart';
+import '../../../../shared/widgets/vip_promo_widgets.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 import '../../../../core/services/supabase_service.dart';
 import '../../../../shared/widgets/tv_focus_wrapper.dart';
@@ -226,16 +227,10 @@ class _TvChannelsPageState extends ConsumerState<TvChannelsPage> {
                 )
               : Row(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(colors: [Color(0xFFD400FF), Color(0xFF00A3FF)]),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: const Text('K7', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
+                    const K7AppBarTitle(
+                      title: 'TV VIVO',
+                      gradientColors: [Color(0xFFD400FF), Color(0xFF00A3FF)],
                     ),
-                    const SizedBox(width: 8),
-                    const Text('TV VIVO', style: TextStyle(letterSpacing: 2, fontWeight: FontWeight.normal, fontSize: 16, color: Colors.white)),
                   ],
                 ),
             actions: [

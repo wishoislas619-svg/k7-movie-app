@@ -410,12 +410,12 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                   ),
                   const SizedBox(height: 35),
 
-                  // 5. More Like This Header
+                  // 5. Recomendadas para ti
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text(
-                        'More Like This',
+                        'Recomendadas para ti',
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 20,
@@ -435,7 +435,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
 
                   // Related Movies Grid
                   SizedBox(
-                    height: 190,
+                    height: 205,
                     child: ListView.builder(
                       scrollDirection: Axis.horizontal,
                       itemCount: relatedMovies.length,
@@ -453,19 +453,40 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                           child: Container(
                             width: 130,
                             margin: const EdgeInsets.only(right: 15),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              image: DecorationImage(
-                                image: NetworkImage(relMovie.imagePath),
-                                fit: BoxFit.cover,
-                              ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Container(
+                                  height: 155,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(12),
+                                    image: DecorationImage(
+                                      image: NetworkImage(relMovie.imagePath),
+                                      fit: BoxFit.cover,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  relMovie.name,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    height: 1.2,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         );
                       },
                     ),
                   ),
-                const SizedBox(height: 40),
+                SizedBox(
+                  height: MediaQuery.of(context).padding.bottom + 48,
+                ),
               ],
             ),
           ),
