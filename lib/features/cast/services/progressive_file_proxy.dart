@@ -54,6 +54,7 @@ class ProgressiveFileProxy {
       final existing = _entries[existingToken];
       if (existing != null && !existing.dead) {
         existing.lastUse = DateTime.now();
+        await _evictOthers(existingToken);
         if (prefetch) _ensureFetch(existing);
         return existingToken;
       }
@@ -72,6 +73,11 @@ class ProgressiveFileProxy {
     );
     _entries[token] = entry;
     _urlToToken[urlKey] = token;
+    // Limpieza agresiva: al abrir OTRO enlace se borra lo anterior para no
+    // saturar el almacenamiento. Solo entra lo abandonado (sin uso
+    // reciente); lo que se sigue reproduciendo (PiP, reanudación del mismo
+    // enlace) tiene lastUse fresco y se conserva.
+    await _evictOthers(token);
     if (prefetch) _ensureFetch(entry);
     return token;
   }
@@ -202,7 +208,7 @@ class ProgressiveFileProxy {
 
   Future<void> _fetchLoop(_PgEntry entry) async {
     try {
-      while (!entry.done && !entry.fatal) {
+      while (!entry.done && !entry.fatal && !entry.dead) {
         final ok = await _fetchOnce(entry);
         if (ok) break;
         entry.failures++;
@@ -272,6 +278,8 @@ class ProgressiveFileProxy {
               'origen estancado', ProgressiveFileProxy._kStallTimeout)),
         );
         await for (final data in watched) {
+          // Si el enlace fue desplazado por otro nuevo, dejar de descargar.
+          if (entry.dead) return false;
           sink.add(data);
           await sink.flush();
         }
@@ -350,6 +358,33 @@ class ProgressiveFileProxy {
     final dir = Directory('${tmp.path}/$_kDirName');
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
+  }
+
+  /// Borra los archivos de OTROS enlaces abandonados (sin uso en los
+  /// últimos 60 s). Lo que se sigue reproduciendo tiene lastUse fresco y se
+  /// conserva. También detiene sus descargas en curso (ven `dead` y paran).
+  Future<void> _evictOthers(String keepToken) async {
+    try {
+      final now = DateTime.now();
+      var freed = 0;
+      for (final e in _entries.values) {
+        if (e.token == keepToken || e.dead) continue;
+        if (now.difference(e.lastUse) >
+            const Duration(seconds: 60)) {
+          e.dead = true;
+          try {
+            freed += await e.file.length();
+            await e.file.delete();
+          } catch (_) {}
+        }
+      }
+      _entries.removeWhere((_, e) => e.dead);
+      _urlToToken.removeWhere((_, t) => !_entries.containsKey(t));
+      if (freed > 0) {
+        print('[PG] Limpieza al abrir otro enlace: '
+            '${(freed / 1048576).toStringAsFixed(1)} MB liberados');
+      }
+    } catch (_) {}
   }
 
   Future<void> _evictIdle() async {
