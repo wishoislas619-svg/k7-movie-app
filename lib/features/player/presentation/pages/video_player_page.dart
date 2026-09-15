@@ -285,6 +285,7 @@ List<SubtitleInfo> _internalSubtitles = [];
   // Último error de reproducción ya reportado (evita spam en cada tick: el
   // flag hasError del controller es pegajoso y se imprimía sin parar).
   String? _lastReportedVideoError;
+  String? _lastDurationDbg;
   bool _hasFoundPremiumServer = false;
   bool _isAlgo3Extracting =
       false; // Pantalla de carga dedicada para Algoritmo 3
@@ -1044,17 +1045,30 @@ if (widget.videoOptions.isNotEmpty) {
     final raw = _controller?.value.duration ?? Duration.zero;
     final pos = _controller?.value.position ?? Duration.zero;
     final exp = widget.expectedDuration;
+    Duration eff;
     if (exp != null && exp.inMilliseconds > 0) {
       if (raw.inMilliseconds <= 0 ||
           raw.inMilliseconds < exp.inMilliseconds ~/ 2) {
-        return exp;
+        eff = exp;
+      } else {
+        eff = raw;
       }
+    } else if (raw.inMilliseconds <= 0) {
+      eff = pos + const Duration(minutes: 5);
+    } else if (pos.inMilliseconds - raw.inMilliseconds > 2000) {
+      eff = pos + const Duration(minutes: 5);
+    } else {
+      eff = raw;
     }
-    if (raw.inMilliseconds <= 0) return pos + const Duration(minutes: 5);
-    if (pos.inMilliseconds - raw.inMilliseconds > 2000) {
-      return pos + const Duration(minutes: 5);
+    final key =
+        '${raw.inSeconds}|${exp?.inSeconds}|${eff.inSeconds}';
+    if (key != _lastDurationDbg) {
+      _lastDurationDbg = key;
+      print('⏱️ [DURATION] raw=${raw.inSeconds}s '
+          'expected=${exp?.inSeconds}s effective=${eff.inSeconds}s '
+          'pos=${pos.inSeconds}s');
     }
-    return raw;
+    return eff;
   }
 
   void _initWebViewController() {
