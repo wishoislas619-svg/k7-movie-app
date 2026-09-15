@@ -186,6 +186,7 @@ class ProgressiveFileProxy {
       await request.response.close();
     } catch (_) {
       try {
+        request.response.statusCode = HttpStatus.badGateway;
         await request.response.close();
       } catch (_) {}
     }

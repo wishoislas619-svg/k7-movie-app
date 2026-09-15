@@ -1972,17 +1972,51 @@ if (widget.videoOptions.isNotEmpty) {
           toCast: false, // Bypass para ExoPlayer
         );
       } else if (_effectiveAlgorithm == 5) {
-        // Algoritmo 5 (http directo / Addon Latam): usar proxy local para
-        // que el seek (Range) se reenvíe correctamente con headers. El fix
-        // de Content-Disposition no-ASCII ya evita el crash del proxy.
-        effectiveUrl = MediaProxyService().getProxiedUrl(
-          videoUrl,
-          headers,
-          useLocalhost: true,
-          algorithm: _effectiveAlgorithm,
-          remux: false,
-          toCast: false,
-        );
+        // Algoritmo 5 (http directo / Addon Latam): proxy PROGRESIVO local
+        // estilo Stremio (/pg/, NO el proxy clásico). El clásico abre una
+        // conexión al origen por cada rango y los orígenes con sesión o
+        // throttle por conexión devuelven tramos truncados/desalineados: el
+        // decodificador de audio falla tras el seek, el reloj A/V se
+        // descuadra y todo el video llega tardío (pantalla negra + audio).
+        // /pg/ mantiene UNA sola descarga secuencial limpia y sirve todos
+        // los rangos desde disco con bytes exactos.
+        final lower5 = videoUrl.toLowerCase();
+        if (!lower5.contains('.m3u8')) {
+          var ext5 = videoUrl
+              .split('?')
+              .first
+              .split('/')
+              .last
+              .split('.')
+              .last
+              .toLowerCase();
+          const validExts5 = {
+            'mp4',
+            'mkv',
+            'avi',
+            'mov',
+            'webm',
+            'flv',
+            'wmv'
+          };
+          if (ext5.length > 5 || !validExts5.contains(ext5)) ext5 = 'mp4';
+          effectiveUrl = await MediaProxyService().getProgressiveUrl(
+            videoUrl,
+            headers,
+            ext: ext5,
+            prefetch: true,
+          );
+        } else {
+          // HLS: fuera del alcance del proxy progresivo, proxy clásico.
+          effectiveUrl = MediaProxyService().getProxiedUrl(
+            videoUrl,
+            headers,
+            useLocalhost: true,
+            algorithm: _effectiveAlgorithm,
+            remux: false,
+            toCast: false,
+          );
+        }
       } else {
         effectiveUrl = MediaProxyService().getProxiedUrl(
           videoUrl,
