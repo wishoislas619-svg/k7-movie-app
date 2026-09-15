@@ -369,9 +369,11 @@ if (widget.videoOptions.isNotEmpty) {
       _useProxy = false; // No usar proxy para streams locales
     } else if (_effectiveAlgorithm == 5) {
       // Algoritmo 5 = stream http directo (Addon Latam): reproducción directa
-      // sin webview — evita scraper y overlay "Analizando origen de video..."
+      // sin webview — evita scraper y overlay "Analizando origen de video...".
+      // NOTA: _isLoading se deja en true para que el overlay "Cargando
+      // video..." cubra la resolución de URL (proxy progresivo + remux,
+      // que tarda segundos). Lo apaga _initializeVideoPlayer al terminar.
       _isWebViewExtracting = false;
-      _isLoading = false;
       _isInitialLoading = false;
     }
 
@@ -755,8 +757,12 @@ if (widget.videoOptions.isNotEmpty) {
       // Algoritmo 5 = stream http directo (Addon Latam): reproducción directa.
       // Chequeo doble con widget.extractionAlgorithm por si _effectiveAlgorithm
       // no se detectó correctamente en initState.
-      _isLoading = false;
-      _isInitialLoading = false;
+      // En algo 5 NO se apaga _isLoading aquí: sigue visible hasta que el
+      // init del controller termina (cubre la espera de red).
+      if (_effectiveAlgorithm != 5 && widget.extractionAlgorithm != 5) {
+        _isLoading = false;
+        _isInitialLoading = false;
+      }
       // Pausa extendida + pre-check HTTP para que el servidor local de libtorrent estabilice.
       // Para torrents pre-descargados a fichero (file://) NO hay servidor HTTP: se
       // reproduce el archivo local directamente, sin esperar ni hacer sniffing.
