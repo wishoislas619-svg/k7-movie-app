@@ -800,6 +800,17 @@ if (widget.videoOptions.isNotEmpty) {
 
     if (position <= 0) return;
 
+    // Diagnóstico temporal: estado vivo del reproductor cada 5 s.
+    try {
+      final v = _controller!.value;
+      final bufEnd =
+          v.buffered.isNotEmpty ? v.buffered.last.end.inSeconds : -1;
+      print('🩺 [PLAYSTATE] pos=${v.position.inSeconds}s '
+          'raw=${v.duration.inSeconds}s eff=${duration ~/ 1000}s '
+          'playing=${v.isPlaying} buffering=${v.isBuffering} '
+          'bufEnd=${bufEnd}s hasErr=${v.hasError}');
+    } catch (_) {}
+
     try {
       ref
           .read(historyProvider.notifier)
