@@ -114,9 +114,6 @@ class ProgressiveFileProxy {
       final rangeHeader = request.headers.value('range');
       int start = 0;
       int end = total - 1;
-      // Rango abierto (bytes=N-): NO esperar el archivo completo, servir lo
-      // disponible y el reproductor pide más (arranque en segundos).
-      bool openEnded = true;
       if (rangeHeader != null) {
         final parsed = _parseRange(rangeHeader, total);
         if (parsed == null) {
@@ -127,19 +124,17 @@ class ProgressiveFileProxy {
         }
         start = parsed.$1;
         end = parsed.$2;
-        openEnded = RegExp(r'bytes=\d+\s*-\s*$')
-            .hasMatch(rangeHeader.trim());
       }
 
       // Atajo de índice: si el rango cae dentro de la cola ya traída (moov),
       // servirlo directo del sidecar sin esperar la descarga secuencial.
       if (await _serveFromTail(request, entry, total, start, end)) return;
-      // Esperar a que existan bytes para servir: en rango explícito hasta
-      // el fin pedido; en rango abierto basta con pasar el inicio (luego se
-      // recorta a lo disponible y el reproductor pide más).
-      final waitTarget = openEnded ? start : end;
+      // Esperar solo el byte INICIAL: lo pedido se sirve en hold-open
+      // emitiendo según descarga (ver bomba abajo). Esperar el fin
+      // explícito colgaba 30 s los rangos que llegan hasta EOF (p.ej. la
+      // cola/moov) aunque sus primeros bytes ya estaban listos.
       final waitBegin = DateTime.now();
-      final ok = await _waitForBytes(entry, waitTarget);
+      final ok = await _waitForBytes(entry, start);
       final waitedMs = DateTime.now().difference(waitBegin).inMilliseconds;
       // Diagnóstico de layout: si un rango espera segundos, esa región va
       // por detrás de la descarga (pistas no intercaladas: una pista pide

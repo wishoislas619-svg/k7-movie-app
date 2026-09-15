@@ -2743,14 +2743,35 @@ if (widget.videoOptions.isNotEmpty) {
     }
   }
 
+  Timer? _volBoostDebounce;
+  double _pendingBoostVolume = 1.0;
+  double _lastVolPrintVal = -1;
+
   Future<void> _applyVolumeBoost(double targetVolume) async {
+    // Debounce: el drag vertical dispara decenas de llamadas/seg; pegar al
+    // volumen del sistema + booster nativo en cada una puede glitchear el
+    // audio (y spamea el log). Se aplica la primera al instante y el resto
+    // se coalesce al último valor cada 120 ms.
+    _pendingBoostVolume = targetVolume;
+    if (_volBoostDebounce?.isActive ?? false) return;
+    _volBoostDebounce = Timer(const Duration(milliseconds: 120), () {
+      if (!mounted) return;
+      _applyVolumeBoostNow(_pendingBoostVolume);
+    });
+    await _applyVolumeBoostNow(targetVolume);
+  }
+
+  Future<void> _applyVolumeBoostNow(double targetVolume) async {
     final clamped = targetVolume.clamp(0.0, 3.0);
     final baseVolume = clamped <= 1.0 ? clamped : 1.0;
 
     _setPlayerSoftwareVolume(targetVolume);
     await VolumeController.instance.setVolume(baseVolume);
 
-    print('🔊 [VOL] target=$targetVolume base=$baseVolume (mpv+stream) aplicado');
+    if ((targetVolume - _lastVolPrintVal).abs() > 0.05) {
+      _lastVolPrintVal = targetVolume;
+      print('🔊 [VOL] target=$targetVolume base=$baseVolume (mpv+stream) aplicado');
+    }
   }
 
   Future<dynamic> _evaluateJS(String source) async {
@@ -2840,6 +2861,7 @@ if (widget.videoOptions.isNotEmpty) {
       _controller?.dispose();
     }
     _webViewController = null;
+    _volBoostDebounce?.cancel();
     _transformController.dispose();
 
     // Restore initial brightness only if we are truly exiting the player.
