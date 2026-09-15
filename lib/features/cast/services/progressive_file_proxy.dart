@@ -27,6 +27,10 @@ class ProgressiveFileProxy {
   static const Duration _kIdleEvictAfter = Duration(minutes: 30);
   // Tope blando del caché en disco (archivos completos se reutilizan).
   static const int _kMaxCacheBytes = 1500 * 1024 * 1024;
+  // Cola del archivo que se trae PRIMERO (ahí vive el índice moov del MP4).
+  // Sin ella el reproductor no puede mapear minuto→byte y los seeks lejanos
+  // fallan aunque el resto ya haya bajado. 5 MB cubren el moov típico.
+  static const int _kTailSize = 5 * 1024 * 1024;
 
   final Map<String, _PgEntry> _entries = {}; // token → entry
   final Map<String, String> _urlToToken = {}; // urlKey → token
@@ -70,6 +74,7 @@ class ProgressiveFileProxy {
       headers: Map<String, String>.from(headers),
       ext: ext,
       file: File('${dir.path}/$token.$ext'),
+      tailFile: File('${dir.path}/$token.tail.$ext'),
     );
     _entries[token] = entry;
     _urlToToken[urlKey] = token;
@@ -126,6 +131,9 @@ class ProgressiveFileProxy {
             .hasMatch(rangeHeader.trim());
       }
 
+      // Atajo de índice: si el rango cae dentro de la cola ya traída (moov),
+      // servirlo directo del sidecar sin esperar la descarga secuencial.
+      if (await _serveFromTail(request, entry, total, start, end)) return;
       // Esperar a que existan bytes para servir: en rango explícito hasta
       // el fin pedido; en rango abierto basta con pasar el inicio (luego se
       // recorta a lo disponible y el reproductor pide más).
@@ -198,12 +206,103 @@ class ProgressiveFileProxy {
     }
   }
 
+  /// Si [start..end] cae íntegro dentro de la cola ya traída (índice moov),
+  /// lo sirve del sidecar al instante. Devuelve true si lo sirvió.
+  Future<bool> _serveFromTail(
+    HttpRequest request,
+    _PgEntry entry,
+    int total,
+    int start,
+    int end,
+  ) async {
+    try {
+      if (!entry.tailReady) return false;
+      final tailStart = total - entry.tailSize;
+      if (tailStart < 0 || start < tailStart || end >= total) return false;
+      final raf = await entry.tailFile.open(mode: FileMode.read);
+      try {
+        await raf.setPosition(start - tailStart);
+        final data = await raf.read(end - start + 1);
+        if (data.length != end - start + 1) return false;
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.contentType =
+            ContentType.parse(entry.contentType);
+        request.response.headers.set('Accept-Ranges', 'bytes');
+        request.response.headers
+            .set('Content-Range', 'bytes $start-$end/$total');
+        request.response.headers
+            .set('Content-Length', '${end - start + 1}');
+        request.response.headers.set('Access-Control-Allow-Origin', '*');
+        request.response.headers.set('Connection', 'close');
+        request.response.add(data);
+        await request.response.close();
+        return true;
+      } finally {
+        await raf.close();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
   // --- Descarga secuencial única ---
 
   void _ensureFetch(_PgEntry entry) {
+    if (!entry.dead && !entry.tailFetching && !entry.tailReady) {
+      entry.tailFetching = true;
+      _fetchTail(entry);
+    }
     if (entry.fetching || entry.done || entry.fatal) return;
     entry.fetching = true;
     _fetchLoop(entry);
+  }
+
+  /// Trae la cola del archivo (índice moov) ANTES que el resto, para que los
+  /// seeks lejanos se puedan mapear desde el primer minuto. Una sola petición
+  /// con rango; si falla no pasa nada (el flujo secuencial la traerá al final).
+  Future<void> _fetchTail(_PgEntry entry) async {
+    try {
+      final total = await _waitForTotal(entry);
+      if (entry.dead) return;
+      if (total == null || total <= _kTailSize) return;
+      final tailStart = total - _kTailSize;
+      final client = http.Client();
+      try {
+        final req = http.Request('GET', Uri.parse(entry.url));
+        req.headers['User-Agent'] =
+            'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
+        req.headers['Accept'] = '*/*';
+        req.headers['Range'] = 'bytes=$tailStart-';
+        req.followRedirects = true;
+        final res =
+            await client.send(req).timeout(const Duration(seconds: 30));
+        if (res.statusCode != HttpStatus.partialContent) return;
+        final sink = entry.tailFile.openWrite(mode: FileMode.write);
+        try {
+          await for (final data in res.stream
+              .timeout(_kStallTimeout, onTimeout: (s) => s.addError(
+                  TimeoutException('cola estancada')))) {
+            if (entry.dead) return;
+            sink.add(data);
+          }
+          await sink.flush();
+        } finally {
+          await sink.close();
+        }
+        final got = await entry.tailFile.length();
+        if (got == _kTailSize) {
+          entry.tailSize = _kTailSize;
+          entry.tailReady = true;
+          print('[PG] Índice (últimos ${_kTailSize ~/ 1048576} MB) listo, '
+              'seeks lejanos habilitados');
+        }
+      } finally {
+        client.close();
+      }
+    } catch (_) {
+    } finally {
+      entry.tailFetching = false;
+    }
   }
 
   Future<void> _fetchLoop(_PgEntry entry) async {
@@ -374,8 +473,8 @@ class ProgressiveFileProxy {
           e.dead = true;
           try {
             freed += await e.file.length();
-            await e.file.delete();
           } catch (_) {}
+          await e.deleteFiles();
         }
       }
       _entries.removeWhere((_, e) => e.dead);
@@ -395,9 +494,7 @@ class ProgressiveFileProxy {
       for (final e in _entries.values) {
         if (now.difference(e.lastUse) > _kIdleEvictAfter) {
           e.dead = true;
-          try {
-            await e.file.delete();
-          } catch (_) {}
+          await e.deleteFiles();
         } else {
           try {
             total += await e.file.length();
@@ -434,6 +531,7 @@ class _PgEntry {
   final Map<String, String> headers;
   final String ext;
   final File file;
+  final File tailFile;
   int? totalBytes;
   String contentType;
   bool fetching = false;
@@ -441,6 +539,10 @@ class _PgEntry {
   bool fatal = false;
   bool dead = false;
   int failures = 0;
+  // Cola del archivo (índice) traída por adelantado.
+  bool tailFetching = false;
+  bool tailReady = false;
+  int tailSize = 0;
   DateTime lastUse = DateTime.now();
 
   _PgEntry({
@@ -449,6 +551,7 @@ class _PgEntry {
     required this.headers,
     required this.ext,
     required this.file,
+    required this.tailFile,
   }) : contentType = ProgressiveFileProxy._kExtToContentType[ext] ?? 'video/mp4';
 
   Future<int> localSize() async {
@@ -457,5 +560,14 @@ class _PgEntry {
     } catch (_) {
       return 0;
     }
+  }
+
+  Future<void> deleteFiles() async {
+    try {
+      await file.delete();
+    } catch (_) {}
+    try {
+      await tailFile.delete();
+    } catch (_) {}
   }
 }
