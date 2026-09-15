@@ -2064,20 +2064,35 @@ if (widget.videoOptions.isNotEmpty) {
             ext: ext5,
             prefetch: true,
           );
-          // Remux a fMP4 sano cuando el MP4 trae muxado roto (típico addon):
-          // re-indexa y re-intercala; ExoPlayer lo reproduce y busca robusto
-          // donde el progresivo original lo deja en negro. Con fallback a
-          // /pg/ si FFmpeg no produce a tiempo.
+          // Escalera "que lea cualquiera" para algo 5:
+          // 1) Transcode (reconstruye timestamps: lee hasta timelines
+          //    corruptas) 2) copy-remux (re-indexa, barato) 3) /pg/ directo.
+          // Cada nivel tiene timeout y cae al siguiente sin romper el play.
+          String? playUrl;
           try {
-            final remuxed = await MediaProxyService()
-                .getRemuxedUrl(effectiveUrl)
-                .timeout(const Duration(seconds: 25));
-            if (remuxed != null && remuxed.isNotEmpty) {
-              print('🎬 [REMUX] Usando fMP4 remuxeado para algo 5');
-              effectiveUrl = remuxed;
+            playUrl = await MediaProxyService()
+                .getTranscodedUrl(effectiveUrl)
+                .timeout(const Duration(seconds: 30));
+            if (playUrl != null && playUrl.isNotEmpty) {
+              print('🎬 [TRANSCODE] Usando fMP4 transcodificado para algo 5');
             }
           } catch (_) {
-            // Fallback: /pg/ directo (comportamiento actual).
+            playUrl = null;
+          }
+          if (playUrl == null) {
+            try {
+              playUrl = await MediaProxyService()
+                  .getRemuxedUrl(effectiveUrl)
+                  .timeout(const Duration(seconds: 20));
+              if (playUrl != null && playUrl.isNotEmpty) {
+                print('🎬 [REMUX] Usando fMP4 remuxeado para algo 5');
+              }
+            } catch (_) {
+              playUrl = null;
+            }
+          }
+          if (playUrl != null && playUrl.isNotEmpty) {
+            effectiveUrl = playUrl;
           }
         } else {
           // HLS: fuera del alcance del proxy progresivo, proxy clásico.

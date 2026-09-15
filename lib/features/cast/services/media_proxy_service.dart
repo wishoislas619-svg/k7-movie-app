@@ -40,9 +40,13 @@ class MediaProxyService {
     String url,
     Map<String, String> headers, {
     // Remux de MP4 con cabecera rota → fMP4 sano (re-indexa y re-intercala;
-    // ExoPlayer lo reproduce y busca de forma robusta donde el MP4 original
-    // lo deja en negro). Solo primer video + audios, sin re-encode.
+    // ExoPlayer lo reproduce y busca robusto donde el MP4 original lo deja
+    // en negro). Solo primer video + audios, sin re-encode.
     bool fixMp4 = false,
+    // Transcode de video (para timelines corruptas que ni el remux salva):
+    // reconstruye los timestamps desde cero (como hace VLC por software).
+    // Audio se copia intacto. Más CPU, pero lee CUALQUIER archivo.
+    bool transcodeVideo = false,
   }) async {
     _evictOldFfmpegStreams();
     final id = DateTime.now().millisecondsSinceEpoch.toString();
@@ -61,9 +65,11 @@ class MediaProxyService {
 
     // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
     // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
-    final cmd = fixMp4
-        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-i "$url" -map 0:v:0 -map 0:a? -c copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
-        : '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    final cmd = transcodeVideo
+        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-i "$url" -map 0:v:0 -map 0:a? -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 -c:a copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
+        : fixMp4
+            ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-i "$url" -map 0:v:0 -map 0:a? -c copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
+            : '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
     print('🎬 [FFMPEG] Starting stream $id: $cmd');
 
     _activeStreams[id] = _FfmpegStream(
@@ -1427,8 +1433,46 @@ class MediaProxyService {
     String pgUrl, {
     Duration timeout = const Duration(seconds: 20),
   }) async {
+    return _waitForFfmpegOut(
+      await _startFfmpegForPlayback(pgUrl, transcodeVideo: false),
+      timeout: timeout,
+      label: 'Remux',
+    );
+  }
+
+  /// Transcode (video H.264 + audio copy) → fMP4 con timestamps reconstruidos.
+  /// Lee CUALQUIER archivo aunque su línea temporal esté corrupta.
+  Future<String?> getTranscodedUrl(
+    String pgUrl, {
+    Duration timeout = const Duration(seconds: 25),
+  }) async {
+    return _waitForFfmpegOut(
+      await _startFfmpegForPlayback(pgUrl, transcodeVideo: true),
+      timeout: timeout,
+      label: 'Transcode',
+    );
+  }
+
+  Future<String?> _startFfmpegForPlayback(
+    String pgUrl, {
+    required bool transcodeVideo,
+  }) async {
     await start();
-    final id = await startFfmpegStream(pgUrl, const {}, fixMp4: true);
+    final id = await startFfmpegStream(
+      pgUrl,
+      const {},
+      fixMp4: true,
+      transcodeVideo: transcodeVideo,
+    );
+    return _activeStreams.containsKey(id) ? id : null;
+  }
+
+  Future<String?> _waitForFfmpegOut(
+    String? id, {
+    required Duration timeout,
+    required String label,
+  }) async {
+    if (id == null) return null;
     final entry = _activeStreams[id];
     if (entry == null) return null;
     final file = File(entry.outputPath);
@@ -1437,14 +1481,14 @@ class MediaProxyService {
       try {
         if (await file.exists() && await file.length() > 65536) {
           final streamUrl = 'http://127.0.0.1:$_port/ffstream/$id';
-          print('🎬 [FFMPEG] Remux listo: $streamUrl');
+          print('🎬 [FFMPEG] $label listo: $streamUrl');
           return streamUrl;
         }
         if (entry.isComplete) break;
       } catch (_) {}
       await Future.delayed(const Duration(milliseconds: 250));
     }
-    print('⚠️ [FFMPEG] Remux sin output a tiempo, se usará /pg/ directo');
+    print('⚠️ [FFMPEG] $label sin output a tiempo');
     return null;
   }
 
