@@ -284,11 +284,45 @@ class ProgressiveFileProxy {
       });
       return;
     }
-    if (!entry.tailFetching && !entry.tailReady) {
+    // Sin total no hay cola que pedir: directo a la secuencial.
+    if (entry.totalBytes == null) {
+      _startMain(entry);
+      return;
+    }
+    // Fase de cola: la principal espera (máx 12 s) a que el índice llegue.
+    final tailDone = entry.tailReady;
+    final tailExpired = entry.tailPhaseStart != null &&
+        DateTime.now().difference(entry.tailPhaseStart!) >
+            const Duration(seconds: 12);
+    if (!tailDone && !tailExpired) {
+      entry.tailPhaseStart ??= DateTime.now();
+      entry.lastTailTry = DateTime.now();
+      if (!entry.tailFetching) {
+        entry.tailFetching = true;
+        _fetchTail(entry);
+      }
+      return;
+    }
+    // La principal necesita el slot: abortar intento de cola colgado.
+    try {
+      entry.tailClient?.close();
+    } catch (_) {}
+    entry.tailClient = null;
+    _startMain(entry);
+    // Reintentos de cola en fondo (con backoff): si sigue faltando.
+    if (!tailDone &&
+        !entry.tailFetching &&
+        (entry.lastTailTry == null ||
+            DateTime.now().difference(entry.lastTailTry!) >
+                const Duration(seconds: 60))) {
+      entry.lastTailTry = DateTime.now();
       entry.tailFetching = true;
       _fetchTail(entry);
     }
-    if (entry.fetching || entry.done || entry.fatal) return;
+  }
+
+  void _startMain(_PgEntry entry) {
+    if (entry.fetching || entry.done || entry.fatal || entry.dead) return;
     entry.fetching = true;
     _fetchLoop(entry);
   }
@@ -344,11 +378,13 @@ class ProgressiveFileProxy {
   /// Un intento de traer la cola. Devuelve true si quedó lista.
   Future<bool> _fetchTailOnce(_PgEntry entry) async {
     try {
-      final total = await _waitForTotal(entry);
+      final total = entry.totalBytes;
       if (entry.dead) return false;
       if (total == null || total <= _kTailSize) return false;
       final tailStart = total - _kTailSize;
       final client = http.Client();
+      // Guardar el cliente para poder abortarlo si la principal lo necesita.
+      entry.tailClient = client;
       try {
         final req = http.Request('GET', Uri.parse(entry.url));
         req.headers['User-Agent'] =
@@ -382,6 +418,7 @@ class ProgressiveFileProxy {
         return false;
       } finally {
         client.close();
+        if (identical(entry.tailClient, client)) entry.tailClient = null;
       }
     } catch (_) {
       return false;
@@ -663,6 +700,11 @@ class _PgEntry {
   // Orden de arranque: probe de cabeceras antes que descarga y cola.
   bool probing = false;
   bool totalProbed = false;
+  // Fase de cola: inicio (para toparla a 12 s) y último intento (backoff).
+  DateTime? tailPhaseStart;
+  DateTime? lastTailTry;
+  // Cliente del intento de cola en curso (para abortarlo al arrancar la principal).
+  http.Client? tailClient;
   // Contadores en memoria para log de progreso (evitan stat por chunk).
   int memBytes = 0;
   int lastLogBytes = 0;
