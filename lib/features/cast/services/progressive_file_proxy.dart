@@ -280,12 +280,27 @@ class ProgressiveFileProxy {
 
   /// Trae la cola del archivo (índice moov) ANTES que el resto, para que los
   /// seeks lejanos se puedan mapear desde el primer minuto. Una sola petición
-  /// con rango; si falla no pasa nada (el flujo secuencial la traerá al final).
+  /// con rango; con reintentos (los orígenes lentos la ahogan a veces).
   Future<void> _fetchTail(_PgEntry entry) async {
     try {
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        if (entry.dead || entry.tailReady) return;
+        final ok = await _fetchTailOnce(entry);
+        if (ok) return;
+        if (attempt < 3) await Future.delayed(Duration(seconds: 2 * attempt));
+      }
+    } catch (_) {
+    } finally {
+      entry.tailFetching = false;
+    }
+  }
+
+  /// Un intento de traer la cola. Devuelve true si quedó lista.
+  Future<bool> _fetchTailOnce(_PgEntry entry) async {
+    try {
       final total = await _waitForTotal(entry);
-      if (entry.dead) return;
-      if (total == null || total <= _kTailSize) return;
+      if (entry.dead) return false;
+      if (total == null || total <= _kTailSize) return false;
       final tailStart = total - _kTailSize;
       final client = http.Client();
       try {
@@ -297,13 +312,13 @@ class ProgressiveFileProxy {
         req.followRedirects = true;
         final res =
             await client.send(req).timeout(const Duration(seconds: 30));
-        if (res.statusCode != HttpStatus.partialContent) return;
+        if (res.statusCode != HttpStatus.partialContent) return false;
         final sink = entry.tailFile.openWrite(mode: FileMode.write);
         try {
           await for (final data in res.stream
               .timeout(_kStallTimeout, onTimeout: (s) => s.addError(
                   TimeoutException('cola estancada')))) {
-            if (entry.dead) return;
+            if (entry.dead) return false;
             sink.add(data);
           }
           await sink.flush();
@@ -316,13 +331,14 @@ class ProgressiveFileProxy {
           entry.tailReady = true;
           print('[PG] Índice (últimos ${_kTailSize ~/ 1048576} MB) listo, '
               'seeks lejanos habilitados');
+          return true;
         }
+        return false;
       } finally {
         client.close();
       }
     } catch (_) {
-    } finally {
-      entry.tailFetching = false;
+      return false;
     }
   }
 
