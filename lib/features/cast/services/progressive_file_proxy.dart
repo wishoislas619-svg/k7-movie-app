@@ -152,8 +152,11 @@ class ProgressiveFileProxy {
         await request.response.close();
         return;
       }
-      if (end >= available) end = available - 1;
-
+      // NO recortar `end` a lo disponible: se mantiene la conexión abierta
+      // emitiendo bytes según los descarga el origen (streaming progresivo
+      // real). Recortarla hacía que el reproductor creyera que no había más
+      // datos: arrancaba el audio y el video quedaba tardío para siempre
+      // (pantalla negra). Content-Length declara el rango completo pedido.
       request.response.statusCode = HttpStatus.partialContent;
       request.response.headers.contentType = ContentType.parse(entry.contentType);
       request.response.headers.set('Accept-Ranges', 'bytes');
@@ -165,18 +168,26 @@ class ProgressiveFileProxy {
       request.response.headers.set('Connection', 'close');
 
       // Bombear del archivo con espera: si el reproductor pide más rápido
-      // de lo que descarga el origen, se pausa hasta que lleguen bytes (o
-      // hasta el timeout), en vez de cerrar el tramo.
+      // de lo que descarga el origen, se pausa hasta que lleguen bytes.
+      // El deadline es de INACTIVIDAD (se renueva con cada chunk): una
+      // transferencia sana nunca se corta, solo los estancamientos.
+      var clientGone = false;
+      unawaited(request.response.done.then((_) {
+        clientGone = true;
+      }).catchError((_) {
+        clientGone = true;
+      }));
       final raf = await entry.file.open(mode: FileMode.read);
       try {
         var pos = start;
-        final deadline =
+        var deadline =
             DateTime.now().add(_kWaitForBytesTimeout);
         const chunk = 256 * 1024;
         while (pos <= end) {
+          if (clientGone || entry.fatal) break;
           final have = await entry.localSize();
           if (pos >= have) {
-            if (entry.done || entry.fatal) break;
+            if (entry.done) break;
             if (DateTime.now().isAfter(deadline)) break;
             await Future.delayed(_kPollInterval);
             continue;
@@ -193,6 +204,7 @@ class ProgressiveFileProxy {
           }
           request.response.add(data);
           pos += data.length;
+          deadline = DateTime.now().add(_kWaitForBytesTimeout);
         }
       } finally {
         await raf.close();
