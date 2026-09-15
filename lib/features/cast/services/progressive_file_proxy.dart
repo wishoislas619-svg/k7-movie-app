@@ -269,13 +269,59 @@ class ProgressiveFileProxy {
   // --- Descarga secuencial única ---
 
   void _ensureFetch(_PgEntry entry) {
-    if (!entry.dead && !entry.tailFetching && !entry.tailReady) {
+    if (entry.dead) return;
+    // Orden estricto: PRIMERO probe de cabeceras + cola (índice), DESPUÉS
+    // la descarga secuencial. Algunos orígenes limitan a 1 conexión por IP:
+    // si la secuencial acapara el slot, la cola (moov) no llega nunca y el
+    // reproductor no puede mapear seeks. En serie nunca compiten.
+    if (!entry.totalProbed) {
+      if (entry.probing) return;
+      entry.probing = true;
+      _probeTotal(entry).whenComplete(() {
+        entry.probing = false;
+        entry.totalProbed = true;
+        if (!entry.dead) _ensureFetch(entry);
+      });
+      return;
+    }
+    if (!entry.tailFetching && !entry.tailReady) {
       entry.tailFetching = true;
       _fetchTail(entry);
     }
     if (entry.fetching || entry.done || entry.fatal) return;
     entry.fetching = true;
     _fetchLoop(entry);
+  }
+
+  /// Lee SOLO las cabeceras del origen (tamaño total) y cierra sin bajar el
+  /// cuerpo. Así la cola puede pedirse antes de abrir la descarga grande.
+  Future<void> _probeTotal(_PgEntry entry) async {
+    final client = http.Client();
+    try {
+      final req = http.Request('GET', Uri.parse(entry.url));
+      req.headers['User-Agent'] =
+          'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
+      req.headers['Accept'] = '*/*';
+      req.headers['Range'] = 'bytes=0-0';
+      req.followRedirects = true;
+      final res =
+          await client.send(req).timeout(const Duration(seconds: 15));
+      // Con Range 0-0 el total viene en Content-Range aunque el cuerpo sea 1 byte.
+      final cr = res.headers['content-range'];
+      if (cr != null && cr.contains('/')) {
+        entry.totalBytes ??= int.tryParse(cr.split('/').last);
+      }
+      entry.totalBytes ??= int.tryParse(res.headers['content-length'] ?? '');
+      final ct = res.headers['content-type'];
+      if (ct != null && ct.toLowerCase().startsWith('video/')) {
+        entry.contentType = ct.split(';').first.trim();
+      }
+      print('[PG] Probe: total=${entry.totalBytes} type=${entry.contentType}');
+    } catch (e) {
+      print('[PG] Probe falló ($e), se intentará directo');
+    } finally {
+      client.close();
+    }
   }
 
   /// Trae la cola del archivo (índice moov) ANTES que el resto, para que los
@@ -614,6 +660,9 @@ class _PgEntry {
   bool dead = false;
   int failures = 0;
   DateTime? fetchStartedAt;
+  // Orden de arranque: probe de cabeceras antes que descarga y cola.
+  bool probing = false;
+  bool totalProbed = false;
   // Contadores en memoria para log de progreso (evitan stat por chunk).
   int memBytes = 0;
   int lastLogBytes = 0;
