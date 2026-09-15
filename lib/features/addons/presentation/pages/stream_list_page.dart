@@ -335,6 +335,32 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       language: stream.language,
       extractionAlgorithm: algo,
     );
+    // Duración esperada por metadatos TMDB (estilo Stremio): si el archivo
+    // trae la cabecera rota, el player usa esto para el seek. No bloquea el
+    // play si falla.
+    Duration? expectedDuration;
+    try {
+      if (widget.isSeries) {
+        final epNum = _activeEpisodeNumber;
+        if (epNum != null) {
+          for (final ep in _episodes) {
+            if (ep['episodeNumber'] == epNum) {
+              final rt = ep['runtime'];
+              if (rt is int && rt > 0) {
+                expectedDuration = Duration(minutes: rt);
+              }
+              break;
+            }
+          }
+        }
+      } else {
+        final mins = await TmdbService.getMovieRuntime(widget.tmdbId)
+            .timeout(const Duration(seconds: 5), onTimeout: () => null);
+        if (mins != null && mins > 0) {
+          expectedDuration = Duration(minutes: mins);
+        }
+      }
+    } catch (_) {}
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -347,6 +373,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           extractionAlgorithm: algo,
           torrentDownloadProgress: torrentHandle,
           skipAd: true,
+          expectedDuration: expectedDuration,
           externalSubtitles: [
             for (final s in stream.subtitles)
               SubtitleInfo(language: s.language, url: s.url)

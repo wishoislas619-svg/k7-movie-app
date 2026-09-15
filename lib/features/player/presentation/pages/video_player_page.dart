@@ -124,6 +124,12 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
   /// el player omite su propio gate de anuncio para no duplicarlo.
   final bool skipAd;
 
+  /// Duración esperada por metadatos TMDB (runtime). Estilo Stremio: cuando
+  /// el archivo trae la cabecera de duración rota, la UI y la lógica usan
+  /// este valor en vez del reportado. Opcional; si es null se conserva el
+  /// comportamiento anterior (auto-extensión al superar lo reportado).
+  final Duration? expectedDuration;
+
   const VideoPlayerPage({
     super.key,
     required this.movieName,
@@ -148,6 +154,7 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.headers,
     this.initialController,
     this.skipAd = false,
+    this.expectedDuration,
   });
 
   final double? initialVolume;
@@ -1026,15 +1033,23 @@ if (widget.videoOptions.isNotEmpty) {
     return "$twoDigitMinutes:$twoDigitSeconds";
   }
 
-  /// Duración efectiva para UI y lógica. Algunos encodes traen la cabecera
-  /// de duración rota (ExoPlayer reporta 0 o un valor corto que la
-  /// reproducción supera — VLC muestra 00:00 en esos casos). Para no dejar
-  /// el seek atorado ni disparar fin/midroll anticipados, la duración se
-  /// extiende sola a medida que se supera lo reportado. En archivos sanos
-  /// devuelve el valor real sin cambios.
+  /// Duración efectiva para UI y lógica. Prioridad:
+  /// 1. Metadato TMDB (estilo Stremio) cuando el archivo miente: si hay
+  ///    duración esperada y lo reportado es 0 o menos de la mitad de lo
+  ///    esperado, manda el metadato.
+  /// 2. Si no hay metadato y lo reportado es 0 o ya fue superado por la
+  ///    reproducción (cabecera rota), se auto-extiende (posición + 5 min).
+  /// 3. En archivos sanos devuelve el valor real sin cambios.
   Duration _effectiveDuration() {
     final raw = _controller?.value.duration ?? Duration.zero;
     final pos = _controller?.value.position ?? Duration.zero;
+    final exp = widget.expectedDuration;
+    if (exp != null && exp.inMilliseconds > 0) {
+      if (raw.inMilliseconds <= 0 ||
+          raw.inMilliseconds < exp.inMilliseconds ~/ 2) {
+        return exp;
+      }
+    }
     if (raw.inMilliseconds <= 0) return pos + const Duration(minutes: 5);
     if (pos.inMilliseconds - raw.inMilliseconds > 2000) {
       return pos + const Duration(minutes: 5);

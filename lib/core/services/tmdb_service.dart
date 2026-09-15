@@ -30,6 +30,25 @@ class TmdbService {
     return null;
   }
 
+  /// Runtime de una película en minutos (para duración esperada del player
+  /// cuando el archivo trae la cabecera rota, estilo Stremio/Cinemeta).
+  static Future<int?> getMovieRuntime(String tmdbId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/movie/$tmdbId?api_key=$_apiKey&language=es-MX'),
+      );
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final rt = data['runtime'];
+        if (rt is int && rt > 0) return rt;
+        if (rt is num && rt > 0) return rt.toInt();
+      }
+    } catch (e) {
+      print('TMDB Runtime Error: $e');
+    }
+    return null;
+  }
+
   static Future<List<Map<String, dynamic>>> searchMovies(String query) async {
     try {
       final uri = Uri.parse(
@@ -347,10 +366,12 @@ class TmdbService {
         final eps = data['episodes'] as List<dynamic>? ?? [];
         return eps.map<Map<String, dynamic>>((e) {
           final map = e as Map<String, dynamic>;
+          final rt = map['runtime'];
           return {
             'episodeNumber': map['episode_number'],
             'name': map['name'] ?? '',
             'overview': map['overview'] ?? '',
+            'runtime': rt is num ? rt.toInt() : null,
             'image':
                 'https://image.tmdb.org/t/p/w500${map['still_path'] ?? ''}',
           };
