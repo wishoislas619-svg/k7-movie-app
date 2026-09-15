@@ -886,12 +886,25 @@ class MediaProxyService {
     request.response.headers.set('Access-Control-Allow-Origin', '*');
     request.response.headers.set('Connection', 'keep-alive');
 
-    // Forzar video/MP2T — el proxy solo sirve segmentos de vídeo y algunas
-    // CDNs los entregan como image/png, lo que impide la reproducción en TVs.
+    // Forzar video/MP2T solo cuando NO es video progresivo declarado:
+    // el proxy también sirve MP4/WebM/MKV directos (p.ej. Addon Latam) y
+    // mentirle el content-type a receptores externos (WVC/TV) hace que
+    // elijan mal demuxer y aborten tras el buffer inicial (~6 s). El tipo
+    // origen ya quedó copiado arriba; aquí solo se corrige el resto.
     // (salvo passthrough de rangos, donde se conserva el content-type origen
     // ya copiado arriba junto con content-range).
     if (!preserveContentType) {
-      request.response.headers.set('content-type', 'video/MP2T');
+      final reqPath = request.uri.path.toLowerCase();
+      final isTsSegment =
+          reqPath.endsWith('.ts') || reqPath.endsWith('.m2ts');
+      final isProgressiveVideo = upstreamContentType.startsWith('video/mp4') ||
+          upstreamContentType.startsWith('video/webm') ||
+          upstreamContentType.contains('matroska') ||
+          upstreamContentType.startsWith('video/quicktime') ||
+          upstreamContentType.startsWith('video/x-msvideo');
+      if (isTsSegment || !isProgressiveVideo) {
+        request.response.headers.set('content-type', 'video/MP2T');
+      }
     }
     if (firstChunk != null) request.response.add(firstChunk);
     try {
