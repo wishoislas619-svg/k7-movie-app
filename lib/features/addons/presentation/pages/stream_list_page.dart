@@ -1097,26 +1097,14 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         return;
       }
     } else {
-      // Streams http directos (Addon Latam / otros / debrid): pasar por el
-      // proxy local. Entregar la URL cruda a WVC muere a los ~6 s: el origen
-      // exige sesión/cabeceras en los tramos siguientes (y las URLs debrid
-      // van atadas a la IP del teléfono, no a la de la TV). WVC corre en
-      // este mismo teléfono, así que se usa localhost (robusto sin importar
-      // la red). Igual que en torrents, se mantiene servicio de primer
-      // plano porque nuestra app pasa a 2º plano al abrir WVC.
-      await MediaProxyService().start();
-      await ForegroundService.start(
-        title: 'Transmitiendo a Web Video Caster',
-        text: 'Manteniendo la conexión del stream',
-      );
-      url = MediaProxyService().getProxiedUrl(
-        stream.url!,
-        const {},
-        useLocalhost: true,
-        algorithm: 5,
-        toCast: true,
-      );
-      print('--- [WVC] URL proxiada entregada (http directo): $url ---');
+      // Streams http directos (Addon Latam / otros / debrid): URL DIRECTA a
+      // WVC, como antes. Proxearlos rompe la sesión del origen: algunos
+      // hosts (p.ej. Dropbox con su cookie uc_session) atan la descarga a
+      // la sesión y nuestro proxy la rota en cada petición, matando los
+      // streams paralelos de WVC (~6 s y desconexión). WVC gestiona sus
+      // propias cookies por conexión con la URL cruda.
+      url = stream.url;
+      print('--- [WVC] URL directa entregada (http directo): $url ---');
     }
 
     final videoUrl = url;
