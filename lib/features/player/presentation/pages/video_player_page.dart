@@ -4940,16 +4940,47 @@ if (widget.videoOptions.isNotEmpty) {
                                 ),
                               )
                             else if (_controller != null)
-                              VideoProgressIndicator(
-                                _controller!,
-                                allowScrubbing: !_isTorrentSeekLocked,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 12,
+                              // Slider propio en vez de VideoProgressIndicator:
+                              // el indicador del plugin lee
+                              // controller.value.duration directo y se atora
+                              // en archivos con cabecera rota. Este usa la
+                              // duración efectiva (metadato TMDB o
+                              // auto-extendida).
+                              SliderTheme(
+                                data: const SliderThemeData(
+                                  trackHeight: 24,
+                                  activeTrackColor: Colors.transparent,
+                                  inactiveTrackColor: Colors.transparent,
+                                  thumbColor: Colors.transparent,
+                                  overlayColor: Colors.transparent,
+                                  thumbShape: RoundSliderThumbShape(
+                                    enabledThumbRadius: 12.0,
+                                  ),
+                                  overlayShape: RoundSliderOverlayShape(
+                                    overlayRadius: 0.0,
+                                  ),
                                 ),
-                                colors: const VideoProgressColors(
-                                  playedColor: Colors.transparent,
-                                  bufferedColor: Colors.white24,
-                                  backgroundColor: Colors.transparent,
+                                child: Slider(
+                                  value: position.inMilliseconds
+                                      .toDouble()
+                                      .clamp(
+                                        0.0,
+                                        duration.inMilliseconds.toDouble() > 0
+                                            ? duration.inMilliseconds.toDouble()
+                                            : 1.0,
+                                      ),
+                                  max: duration.inMilliseconds.toDouble() > 0
+                                      ? duration.inMilliseconds.toDouble()
+                                      : 1.0,
+                                  onChanged: _isTorrentSeekLocked
+                                      ? null
+                                      : (val) {
+                                          _controller?.seekTo(
+                                            Duration(
+                                                milliseconds: val.toInt()),
+                                          );
+                                          _startHideTimer();
+                                        },
                                 ),
                               ),
                             // Iridescent Progress Bar
