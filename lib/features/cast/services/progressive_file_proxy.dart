@@ -53,16 +53,23 @@ class ProgressiveFileProxy {
     bool prefetch = false,
   }) async {
     final urlKey = '$url|${headers.toString()}';
+    // Borrado agresivo: aunque sea el MISMO enlace ya en disco, se elimina
+    // y se empieza limpio. El archivo previo puede traer bytes mezclados o
+    // truncos de sesiones con reinicios del origen, y reutilizarlo recicla
+    // el error (pantalla negra tras seek). Se prefiere re-descargar.
     final existingToken = _urlToToken[urlKey];
     if (existingToken != null) {
-      final existing = _entries[existingToken];
-      if (existing != null && !existing.dead) {
-        existing.lastUse = DateTime.now();
-        await _evictOthers(existingToken);
-        if (prefetch) _ensureFetch(existing);
-        return existingToken;
-      }
+      final existing = _entries.remove(existingToken);
       _urlToToken.remove(urlKey);
+      if (existing != null) {
+        existing.dead = true;
+        try {
+          final mb = (await existing.localSize()) / 1048576;
+          await existing.deleteFiles();
+          print('[PG] Archivo previo eliminado '
+              '(${mb.toStringAsFixed(1)} MB) para reapertura limpia');
+        } catch (_) {}
+      }
     }
     await _evictIdle();
     final dir = await _cacheDir();
