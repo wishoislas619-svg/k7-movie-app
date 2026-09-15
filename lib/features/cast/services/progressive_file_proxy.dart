@@ -270,10 +270,7 @@ class ProgressiveFileProxy {
 
   void _ensureFetch(_PgEntry entry) {
     if (entry.dead) return;
-    // Orden estricto: PRIMERO probe de cabeceras + cola (índice), DESPUÉS
-    // la descarga secuencial. Algunos orígenes limitan a 1 conexión por IP:
-    // si la secuencial acapara el slot, la cola (moov) no llega nunca y el
-    // reproductor no puede mapear seeks. En serie nunca compiten.
+    // Probe de cabeceras primero (total temprano para la cola).
     if (!entry.totalProbed) {
       if (entry.probing) return;
       entry.probing = true;
@@ -284,47 +281,12 @@ class ProgressiveFileProxy {
       });
       return;
     }
-    // Sin total no hay cola que pedir: directo a la secuencial.
-    if (entry.totalBytes == null) {
-      _startMain(entry);
-      return;
+    // Un solo bucle planificador: UNA sola conexión al origen a la vez
+    // (probe → cola → chunks). Sin competencia por slots del origen.
+    if (!entry.fetching && !entry.done && !entry.fatal) {
+      entry.fetching = true;
+      _fetchScheduler(entry);
     }
-    // Fase de cola: la principal espera (máx 12 s) a que el índice llegue.
-    final tailDone = entry.tailReady;
-    final tailExpired = entry.tailPhaseStart != null &&
-        DateTime.now().difference(entry.tailPhaseStart!) >
-            const Duration(seconds: 12);
-    if (!tailDone && !tailExpired) {
-      entry.tailPhaseStart ??= DateTime.now();
-      entry.lastTailTry = DateTime.now();
-      if (!entry.tailFetching) {
-        entry.tailFetching = true;
-        _fetchTail(entry);
-      }
-      return;
-    }
-    // La principal necesita el slot: abortar intento de cola colgado.
-    try {
-      entry.tailClient?.close();
-    } catch (_) {}
-    entry.tailClient = null;
-    _startMain(entry);
-    // Reintentos de cola en fondo (con backoff): si sigue faltando.
-    if (!tailDone &&
-        !entry.tailFetching &&
-        (entry.lastTailTry == null ||
-            DateTime.now().difference(entry.lastTailTry!) >
-                const Duration(seconds: 60))) {
-      entry.lastTailTry = DateTime.now();
-      entry.tailFetching = true;
-      _fetchTail(entry);
-    }
-  }
-
-  void _startMain(_PgEntry entry) {
-    if (entry.fetching || entry.done || entry.fatal || entry.dead) return;
-    entry.fetching = true;
-    _fetchLoop(entry);
   }
 
   /// Lee SOLO las cabeceras del origen (tamaño total) y cierra sin bajar el
@@ -358,33 +320,20 @@ class ProgressiveFileProxy {
     }
   }
 
-  /// Trae la cola del archivo (índice moov) ANTES que el resto, para que los
-  /// seeks lejanos se puedan mapear desde el primer minuto. Una sola petición
-  /// con rango; con reintentos (los orígenes lentos la ahogan a veces).
-  Future<void> _fetchTail(_PgEntry entry) async {
-    try {
-      for (var attempt = 1; attempt <= 3; attempt++) {
-        if (entry.dead || entry.tailReady) return;
-        final ok = await _fetchTailOnce(entry);
-        if (ok) return;
-        if (attempt < 3) await Future.delayed(Duration(seconds: 2 * attempt));
-      }
-    } catch (_) {
-    } finally {
-      entry.tailFetching = false;
-    }
-  }
-
-  /// Un intento de traer la cola. Devuelve true si quedó lista.
-  Future<bool> _fetchTailOnce(_PgEntry entry) async {
+  /// Trae la cola del archivo (índice moov). El planificador la pide primero
+  /// y luego con backoff; NUNCA en paralelo con otra petición (una sola
+  /// conexión al origen a la vez).
+  Future<bool> _fetchTailOnce(
+    _PgEntry entry, {
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration stallTimeout = _kStallTimeout,
+  }) async {
     try {
       final total = entry.totalBytes;
       if (entry.dead) return false;
       if (total == null || total <= _kTailSize) return false;
       final tailStart = total - _kTailSize;
       final client = http.Client();
-      // Guardar el cliente para poder abortarlo si la principal lo necesita.
-      entry.tailClient = client;
       try {
         final req = http.Request('GET', Uri.parse(entry.url));
         req.headers['User-Agent'] =
@@ -392,14 +341,13 @@ class ProgressiveFileProxy {
         req.headers['Accept'] = '*/*';
         req.headers['Range'] = 'bytes=$tailStart-';
         req.followRedirects = true;
-        final res =
-            await client.send(req).timeout(const Duration(seconds: 30));
+        final res = await client.send(req).timeout(sendTimeout);
         if (res.statusCode != HttpStatus.partialContent) return false;
         final sink = entry.tailFile.openWrite(mode: FileMode.write);
         try {
-          await for (final data in res.stream
-              .timeout(_kStallTimeout, onTimeout: (s) => s.addError(
-                  TimeoutException('cola estancada')))) {
+          await for (final data in res.stream.timeout(stallTimeout,
+              onTimeout: (s) =>
+                  s.addError(TimeoutException('cola estancada')))) {
             if (entry.dead) return false;
             sink.add(data);
           }
@@ -418,31 +366,66 @@ class ProgressiveFileProxy {
         return false;
       } finally {
         client.close();
-        if (identical(entry.tailClient, client)) entry.tailClient = null;
       }
     } catch (_) {
       return false;
     }
   }
 
-  Future<void> _fetchLoop(_PgEntry entry) async {
+  /// Planificador con UNA sola conexión al origen a la vez: primero la cola
+  /// (índice moov, con timeout corto en la primera ronda para no frenar el
+  /// arranque), luego chunks secuenciales de 4 MB con resume. La cola se
+  /// reintenta con backoff mientras falte. Los fallos se resetean con cada
+  /// éxito; fatal tras 6 seguidos.
+  static const int _kChunkSize = 4 * 1024 * 1024;
+
+  Future<void> _fetchScheduler(_PgEntry entry) async {
     entry.fetchStartedAt ??= DateTime.now();
+    var rounds = 0;
     try {
       while (!entry.done && !entry.fatal && !entry.dead) {
-        final ok = await _fetchOnce(entry);
-        if (ok) {
-          final mb = (await entry.localSize()) / 1048576;
-          final secs = DateTime.now()
-              .difference(entry.fetchStartedAt!)
-              .inSeconds;
-          print('[PG] Descarga completa: ${mb.toStringAsFixed(1)} MB '
-              'en ${secs}s (${entry.url})');
-          break;
+        rounds++;
+        // 1) Cola pendiente: primera ronda con timeout corto, luego backoff.
+        final total = entry.totalBytes;
+        final needTail = !entry.tailReady &&
+            total != null &&
+            total > _kTailSize &&
+            (entry.lastTailTry == null ||
+                DateTime.now().difference(entry.lastTailTry!) >
+                    const Duration(seconds: 60));
+        if (needTail) {
+          entry.lastTailTry = DateTime.now();
+          final quick = rounds == 1;
+          final okTail = await _fetchTailOnce(
+            entry,
+            sendTimeout:
+                quick ? const Duration(seconds: 12) : const Duration(seconds: 30),
+            stallTimeout:
+                quick ? const Duration(seconds: 8) : _kStallTimeout,
+          );
+          if (okTail) {
+            entry.failures = 0;
+            continue;
+          }
+        }
+        // 2) Chunk secuencial con resume.
+        if (await _fetchChunk(entry)) {
+          entry.failures = 0;
+          if (entry.done) {
+            final mb = (await entry.localSize()) / 1048576;
+            final secs = DateTime.now()
+                .difference(entry.fetchStartedAt!)
+                .inSeconds;
+            print('[PG] Descarga completa: ${mb.toStringAsFixed(1)} MB '
+                'en ${secs}s (${entry.url})');
+            break;
+          }
+          continue;
         }
         entry.failures++;
-        if (entry.failures >= 4) {
+        if (entry.failures >= 6) {
           entry.fatal = true;
-          print('[PG] FATAL tras ${entry.failures} intentos '
+          print('[PG] FATAL tras ${entry.failures} fallos '
               '(${entry.url}). Los rangos más allá de lo descargado '
               'devolverán 504.');
           break;
@@ -454,13 +437,18 @@ class ProgressiveFileProxy {
     }
   }
 
-  /// Un intento de descarga (con resume si hay parcial). Devuelve true si el
-  /// archivo quedó completo.
-  Future<bool> _fetchOnce(_PgEntry entry) async {
+  /// Descarga el siguiente chunk (4 MB) con resume. Devuelve true si avanzó
+  /// o completó. Aprende el total de las cabeceras si aún no se conoce.
+  Future<bool> _fetchChunk(_PgEntry entry) async {
     final client = http.Client();
     try {
       final from = await entry.localSize();
       entry.memBytes = from;
+      final knownTotal = entry.totalBytes;
+      if (knownTotal != null && from >= knownTotal) {
+        entry.done = true;
+        return true;
+      }
       final req = http.Request('GET', Uri.parse(entry.url));
       // UNA sola sesión estable: cabeceras mínimas, sin rotar cookies entre
       // peticiones (eso es lo que rompía los orígenes con sesión).
@@ -474,29 +462,56 @@ class ProgressiveFileProxy {
           req.headers[k] = v;
         }
       });
-      if (from > 0) req.headers['Range'] = 'bytes=$from-';
+      var ranged = true;
+      if (!entry.ignoreRange && (from > 0 || knownTotal != null)) {
+        final end = knownTotal != null
+            ? (from + _kChunkSize - 1).clamp(from, knownTotal - 1)
+            : (from + _kChunkSize - 1);
+        req.headers['Range'] = 'bytes=$from-$end';
+      } else if (!entry.ignoreRange && from == 0 && knownTotal == null) {
+        // Primer chunk sin total: rango explícito para descubrirlo por
+        // Content-Range sin pedir el archivo entero.
+        req.headers['Range'] = 'bytes=0-${_kChunkSize - 1}';
+      } else {
+        // Origen que ignora rangos: GET completo clásico con resume imposible.
+        ranged = false;
+        if (from > 0) {
+          await entry.file.writeAsBytes([], mode: FileMode.write);
+        }
+      }
       req.followRedirects = true;
 
       final res = await client.send(req).timeout(const Duration(seconds: 30));
-      if (res.statusCode != 200 && res.statusCode != 206) {
-        if (res.statusCode == 401 || res.statusCode == 403) {
-          // Token del enlace muerto (p.ej. `st=` de Dropbox expirado):
-          // reintentar es inútil, marcar fatal de inmediato para que el
-          // reproductor lo vea rápido en vez de colgarse reintentando.
-          entry.fatal = true;
-          print('[PG] FATAL: origen responde ${res.statusCode} '
-              '(link expirado?) (${entry.url})');
-        } else {
-          print('[PG] Intento fallido (${entry.failures + 1}): '
-              'status=${res.statusCode} (${entry.url})');
-        }
+      if (res.statusCode == 401 || res.statusCode == 403) {
+        // Token del enlace muerto: reintentar es inútil.
+        entry.fatal = true;
+        print('[PG] FATAL: origen responde ${res.statusCode} '
+            '(link expirado?) (${entry.url})');
         return false;
       }
-      if (res.statusCode == 200 && from > 0) {
-        // El origen ignoró el resume: reiniciar archivo.
-        await entry.file.writeAsBytes([], mode: FileMode.write);
+      if (res.statusCode == 200 && ranged && from > 0) {
+        // El origen ignoró el rango: a partir de ahora sin rangos.
+        entry.ignoreRange = true;
+        print('[PG] Origen ignora rangos, cambio a descarga completa');
+        return false;
       }
-      // Tamaño total desde la primera respuesta con longitud.
+      if (res.statusCode != 200 && res.statusCode != 206) {
+        print('[PG] Chunk fallido (${entry.failures + 1}): '
+            'status=${res.statusCode} (${entry.url})');
+        return false;
+      }
+      if (res.statusCode == 206) {
+        // Verificar que el tramo es el pedido (origen confundido = basura).
+        final cr = res.headers['content-range'] ?? '';
+        final m = RegExp(r'bytes\s+(\d+)-').firstMatch(cr);
+        final crStart = m != null ? int.tryParse(m.group(1) ?? '') : null;
+        if (crStart != null && crStart != from) {
+          print('[PG] Chunk con offset inesperado ($crStart != $from), '
+              'se reintenta');
+          return false;
+        }
+      }
+      // Aprender total y tipo de las cabeceras.
       if (entry.totalBytes == null) {
         final cr = res.headers['content-range'];
         final crTotal = cr != null && cr.contains('/')
@@ -510,22 +525,21 @@ class ProgressiveFileProxy {
         }
       }
 
+      var got = 0;
       final sink = entry.file.openWrite(mode: FileMode.append);
       try {
-        // Vigilante de estancamiento: si el origen deja de mandar bytes, se
-        // aborta el intento y se reintenta con resume (el reproductor sigue
-        // servido desde lo ya descargado en disco).
+        // Vigilante de estancamiento: aborta y el planificador reintenta
+        // con resume (el reproductor sigue servido desde disco).
         final watched = res.stream.timeout(
           ProgressiveFileProxy._kStallTimeout,
           onTimeout: (sink) => sink.addError(TimeoutException(
               'origen estancado', ProgressiveFileProxy._kStallTimeout)),
         );
         await for (final data in watched) {
-          // Si el enlace fue desplazado por otro nuevo, dejar de descargar.
           if (entry.dead) return false;
           sink.add(data);
           await sink.flush();
-          // Progreso periódico para diagnóstico (cada 100 MB).
+          got += data.length;
           entry.memBytes += data.length;
           if (entry.memBytes - entry.lastLogBytes >= 100 * 1024 * 1024) {
             entry.lastLogBytes = entry.memBytes;
@@ -536,26 +550,23 @@ class ProgressiveFileProxy {
             print('[PG] Descargando... '
                 '${(entry.memBytes / 1048576).toStringAsFixed(0)} MB $pct');
           }
+          // Chunk completo: soltar la conexión aunque el origen mande más
+          // (el próximo round pide el siguiente tramo).
+          if (!entry.ignoreRange && got >= _kChunkSize) break;
         }
       } finally {
         await sink.close();
       }
+      if (got == 0) return false;
       // Verificar compleción por tamaño.
       final total = entry.totalBytes;
       final have = await entry.localSize();
       if (total != null && have >= total) {
         entry.done = true;
-        return true;
       }
-      // Sin total conocido pero el stream terminó: asumir completo.
-      if (total == null) {
-        entry.done = true;
-        return true;
-      }
-      // Incompleto y sin error explícito: el origen cortó; reintentar resume.
-      return false;
+      return true;
     } catch (e) {
-      print('[PG] Intento fallido (${entry.failures + 1}): $e '
+      print('[PG] Chunk fallido (${entry.failures + 1}): $e '
           '(${entry.url})');
       return false;
     } finally {
@@ -700,16 +711,14 @@ class _PgEntry {
   // Orden de arranque: probe de cabeceras antes que descarga y cola.
   bool probing = false;
   bool totalProbed = false;
-  // Fase de cola: inicio (para toparla a 12 s) y último intento (backoff).
-  DateTime? tailPhaseStart;
+  // Fase de cola: último intento (backoff de 60 s en el planificador).
   DateTime? lastTailTry;
-  // Cliente del intento de cola en curso (para abortarlo al arrancar la principal).
-  http.Client? tailClient;
+  // Origen que ignora rangos: se descarga completo clásico.
+  bool ignoreRange = false;
   // Contadores en memoria para log de progreso (evitan stat por chunk).
   int memBytes = 0;
   int lastLogBytes = 0;
   // Cola del archivo (índice) traída por adelantado.
-  bool tailFetching = false;
   bool tailReady = false;
   int tailSize = 0;
   DateTime lastUse = DateTime.now();
