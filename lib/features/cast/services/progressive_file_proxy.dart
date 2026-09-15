@@ -138,7 +138,17 @@ class ProgressiveFileProxy {
       // el fin pedido; en rango abierto basta con pasar el inicio (luego se
       // recorta a lo disponible y el reproductor pide más).
       final waitTarget = openEnded ? start : end;
+      final waitBegin = DateTime.now();
       final ok = await _waitForBytes(entry, waitTarget);
+      final waitedMs = DateTime.now().difference(waitBegin).inMilliseconds;
+      // Diagnóstico de layout: si un rango espera segundos, esa región va
+      // por detrás de la descarga (pistas no intercaladas: una pista pide
+      // lejos mientras la secuencial aún no llega).
+      if (!ok || waitedMs > 3000) {
+        final have = await entry.localSize();
+        print('[PG] rango $start-$end de $total: esperó ${waitedMs}ms, '
+            'hay $have bytes -> ${ok ? "OK" : (entry.fatal ? "FATAL" : "TIMEOUT")}');
+      }
       if (!ok) {
         if (entry.fatal) {
           print('[PG] 504: rango $start- más allá de lo descargado y la '
