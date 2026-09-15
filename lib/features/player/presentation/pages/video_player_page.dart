@@ -3269,6 +3269,34 @@ if (widget.videoOptions.isNotEmpty) {
                             ),
                           ),
 
+                      // Indicador de buffering: spinner tras seeks/aperturas
+                      // mientras el reproductor carga datos. Translúcido para
+                      // ver el último frame + IgnorePointer para no tapar taps.
+                      if (!_useWebViewPlayer && _controller != null)
+                        ValueListenableBuilder(
+                          valueListenable: _controller!,
+                          builder:
+                              (context, VideoPlayerValue value, _) {
+                            if (!value.isInitialized ||
+                                !value.isBuffering ||
+                                value.hasError) {
+                              return const SizedBox.shrink();
+                            }
+                            return const Positioned.fill(
+                              child: IgnorePointer(
+                                child: ColoredBox(
+                                  color: Colors.black38,
+                                  child: Center(
+                                    child: CircularProgressIndicator(
+                                      color: Color(0xFF00A3FF),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+
                       // The InAppWebView: Hidden by default, visible ONLY for subtitle scraping or if manually requested
                       Offstage(
                         offstage:
