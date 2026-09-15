@@ -38,8 +38,13 @@ class MediaProxyService {
   /// Retorna inmediatamente con el ID del stream (no espera a que FFmpeg produzca datos).
   Future<String> startFfmpegStream(
     String url,
-    Map<String, String> headers,
-  ) async {
+    Map<String, String> headers, {
+    // Remux de MP4 con cabecera rota → fMP4 sano (re-indexa y re-intercala;
+    // ExoPlayer lo reproduce y busca de forma robusta donde el MP4 original
+    // lo deja en negro). Solo primer video + audios, sin re-encode.
+    bool fixMp4 = false,
+  }) async {
+    _evictOldFfmpegStreams();
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final outDir = await _ensureStreamsDir();
     final outputPath = '$outDir/$id.mp4';
@@ -56,7 +61,9 @@ class MediaProxyService {
 
     // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
     // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
-    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    final cmd = fixMp4
+        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-i "$url" -map 0:v:0 -map 0:a? -c copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
+        : '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
     print('🎬 [FFMPEG] Starting stream $id: $cmd');
 
     _activeStreams[id] = _FfmpegStream(
@@ -76,6 +83,27 @@ class MediaProxyService {
     });
 
     return id;
+  }
+
+  /// Limpieza de remuxes viejos (los temporales streams/*.mp4 se acumulaban
+  /// sin fin). Conserva los que siguen corriendo de la última hora; borra
+  /// los completados y los antiguos.
+  void _evictOldFfmpegStreams() {
+    try {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      _activeStreams.removeWhere((id, entry) {
+        final born = int.tryParse(id) ?? now;
+        final ageMs = (now - born).clamp(0, now);
+        final old = ageMs > const Duration(hours: 1).inMilliseconds;
+        if (entry.isComplete || old) {
+          try {
+            File(entry.outputPath).deleteSync();
+          } catch (_) {}
+          return true;
+        }
+        return false;
+      });
+    } catch (_) {}
   }
 
   Future<void> _handleFfmpegStream(HttpRequest request) async {
@@ -1390,6 +1418,34 @@ class MediaProxyService {
     final streamUrl = 'http://$host/ffstream/$id';
     print('🎬 [FFMPEG] fMP4 stream URL: $streamUrl');
     return streamUrl;
+  }
+
+  /// Remux MP4 roto → fMP4 sano para reproducción local (misma máquina).
+  /// Espera a que FFmpeg produzca los primeros bytes (moov+primer fragmento);
+  /// devuelve null si no lo logra a tiempo para usar el fallback (/pg/).
+  Future<String?> getRemuxedUrl(
+    String pgUrl, {
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    await start();
+    final id = await startFfmpegStream(pgUrl, const {}, fixMp4: true);
+    final entry = _activeStreams[id];
+    if (entry == null) return null;
+    final file = File(entry.outputPath);
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        if (await file.exists() && await file.length() > 65536) {
+          final streamUrl = 'http://127.0.0.1:$_port/ffstream/$id';
+          print('🎬 [FFMPEG] Remux listo: $streamUrl');
+          return streamUrl;
+        }
+        if (entry.isComplete) break;
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    print('⚠️ [FFMPEG] Remux sin output a tiempo, se usará /pg/ directo');
+    return null;
   }
 
   Future<void> _refreshLocalIp({String? targetIp}) async {

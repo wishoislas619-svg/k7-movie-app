@@ -2064,6 +2064,21 @@ if (widget.videoOptions.isNotEmpty) {
             ext: ext5,
             prefetch: true,
           );
+          // Remux a fMP4 sano cuando el MP4 trae muxado roto (típico addon):
+          // re-indexa y re-intercala; ExoPlayer lo reproduce y busca robusto
+          // donde el progresivo original lo deja en negro. Con fallback a
+          // /pg/ si FFmpeg no produce a tiempo.
+          try {
+            final remuxed = await MediaProxyService()
+                .getRemuxedUrl(effectiveUrl)
+                .timeout(const Duration(seconds: 25));
+            if (remuxed != null && remuxed.isNotEmpty) {
+              print('🎬 [REMUX] Usando fMP4 remuxeado para algo 5');
+              effectiveUrl = remuxed;
+            }
+          } catch (_) {
+            // Fallback: /pg/ directo (comportamiento actual).
+          }
         } else {
           // HLS: fuera del alcance del proxy progresivo, proxy clásico.
           effectiveUrl = MediaProxyService().getProxiedUrl(
