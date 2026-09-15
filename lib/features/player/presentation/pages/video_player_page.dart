@@ -42,6 +42,7 @@ import 'package:movie_app/features/series/presentation/pages/series_details_page
 import 'package:movie_app/features/cast/services/cast_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:movie_app/features/cast/services/media_proxy_service.dart';
+import 'package:movie_app/features/cast/services/progressive_file_proxy.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 import '../../../addons/data/datasources/torrent_streaming_service.dart';
 
@@ -287,6 +288,44 @@ List<SubtitleInfo> _internalSubtitles = [];
   String? _lastReportedVideoError;
   String? _lastDurationDbg;
   int _lastBarDbg = -1;
+  // Temporales de esta reproducción (proxy progresivo / remux FFmpeg) para
+  // liberarlos al cerrar y no saturar el almacenamiento.
+  String? _pgTokenForCleanup;
+  String? _ffStreamIdForCleanup;
+
+  static String? _pgTokenFromUrl(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final segs = uri.pathSegments;
+      if (segs.length >= 2 && segs[0] == 'pg') {
+        return segs[1].split('.').first;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static String? _ffIdFromUrl(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final segs = uri.pathSegments;
+      if (segs.length >= 2 && segs[0] == 'ffstream') return segs[1];
+    } catch (_) {}
+    return null;
+  }
+
+  /// Borra los temporales de esta sesión (sin await: fire-and-forget).
+  void _releaseTempPlaybackFiles() {
+    final pg = _pgTokenForCleanup;
+    final ff = _ffStreamIdForCleanup;
+    _pgTokenForCleanup = null;
+    _ffStreamIdForCleanup = null;
+    if (ff != null) {
+      MediaProxyService().releaseFfmpegStream(ff).catchError((_) {});
+    }
+    if (pg != null) {
+      ProgressiveFileProxy.instance.release(pg).catchError((_) {});
+    }
+  }
   bool _hasFoundPremiumServer = false;
   bool _isAlgo3Extracting =
       false; // Pantalla de carga dedicada para Algoritmo 3
@@ -2070,6 +2109,7 @@ if (widget.videoOptions.isNotEmpty) {
             ext: ext5,
             prefetch: true,
           );
+          _pgTokenForCleanup = _pgTokenFromUrl(effectiveUrl);
           // Escalera "que lea cualquiera" para algo 5:
           // 1) Transcode (reconstruye timestamps: lee hasta timelines
           //    corruptas) 2) copy-remux (re-indexa, barato) 3) /pg/ directo.
@@ -2099,6 +2139,7 @@ if (widget.videoOptions.isNotEmpty) {
           }
           if (playUrl != null && playUrl.isNotEmpty) {
             effectiveUrl = playUrl;
+            _ffStreamIdForCleanup = _ffIdFromUrl(playUrl);
           }
         } else {
           // HLS: fuera del alcance del proxy progresivo, proxy clásico.
@@ -2883,6 +2924,7 @@ if (widget.videoOptions.isNotEmpty) {
     }
     _webViewController = null;
     _volBoostDebounce?.cancel();
+    _releaseTempPlaybackFiles();
     _transformController.dispose();
 
     // Restore initial brightness only if we are truly exiting the player.

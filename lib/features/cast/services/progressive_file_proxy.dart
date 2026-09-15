@@ -93,6 +93,17 @@ class ProgressiveFileProxy {
     if (entry != null && !entry.dead) _ensureFetch(entry);
   }
 
+  /// Libera una entrada al cerrar el reproductor: detiene su descarga y
+  /// borra sus archivos de inmediato (no espera a las ventanas de evicción).
+  Future<void> release(String token) async {
+    final e = _entries.remove(token);
+    _urlToToken.removeWhere((_, t) => t == token);
+    if (e == null) return;
+    e.dead = true;
+    await e.deleteFiles();
+    print('[PG] Entrada $token liberada al cerrar reproductor');
+  }
+
   _PgEntry? get(String token) => _entries[token];
 
   /// Sirve una petición HTTP con soporte total de rangos sobre el archivo
@@ -192,8 +203,12 @@ class ProgressiveFileProxy {
         var deadline =
             DateTime.now().add(_kWaitForBytesTimeout);
         const chunk = 256 * 1024;
+        final gen = entry.generation;
         while (pos <= end) {
-          if (clientGone || entry.fatal) break;
+          // Archivo reiniciado bajo nuestros pies (truncate): abortar para
+          // no servir mezcla de bytes viejos con nuevos; el reproductor
+          // reintenta el rango y recibe bytes consistentes.
+          if (gen != entry.generation || clientGone || entry.fatal) break;
           final have = await entry.localSize();
           if (pos >= have) {
             if (entry.done) break;
@@ -490,9 +505,25 @@ class ProgressiveFileProxy {
         return false;
       }
       if (res.statusCode == 200 && ranged && from > 0) {
-        // El origen ignoró el rango: a partir de ahora sin rangos.
+        // El origen ignoró el resume. ANTES de truncar hay que verificar que
+        // lo que viene es video real: una página de error (200 text/html)
+        // truncaría un archivo sano y mezclaría basura bajo los offsets que
+        // el reproductor ya está leyendo (pantalla negra tras seek). Con
+        // generación nueva los lectores en curso abortan en vez de mezclar.
+        final ct200 = (res.headers['content-type'] ?? '').toLowerCase();
+        final len200 = int.tryParse(res.headers['content-length'] ?? '');
+        final looksVideo = ct200.startsWith('video/') &&
+            (len200 == null || len200 > 1024 * 1024);
+        if (!looksVideo) {
+          print('[PG] 200 inesperado no-video ($ct200 len=$len200), '
+              'se descarta SIN truncar');
+          return false;
+        }
         entry.ignoreRange = true;
-        print('[PG] Origen ignora rangos, cambio a descarga completa');
+        entry.generation++;
+        print('[PG] TRUNCATE gen=${entry.generation}: origen reinició con '
+            '200, archivo reiniciado');
+        await entry.file.writeAsBytes([], mode: FileMode.write);
         return false;
       }
       if (res.statusCode != 200 && res.statusCode != 206) {
@@ -715,6 +746,9 @@ class _PgEntry {
   DateTime? lastTailTry;
   // Origen que ignora rangos: se descarga completo clásico.
   bool ignoreRange = false;
+  // Generación del archivo: cada truncate la sube; los lectores (pump) con
+  // generación vieja abortan en vez de servir bytes mezclados.
+  int generation = 0;
   // Contadores en memoria para log de progreso (evitan stat por chunk).
   int memBytes = 0;
   int lastLogBytes = 0;

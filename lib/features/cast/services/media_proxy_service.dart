@@ -27,8 +27,10 @@ class MediaProxyService {
 
   Future<String> _ensureStreamsDir() async {
     if (_streamsDir != null) return _streamsDir!;
-    final appDir = await getApplicationDocumentsDirectory();
-    final dir = Directory('${appDir.path}/streams');
+    // Temporales de remux/transcode en CACHÉ (no en documentos de usuario):
+    // el sistema puede purgarlos y no entran a backups.
+    final tmp = await getTemporaryDirectory();
+    final dir = Directory('${tmp.path}/streams');
     if (!await dir.exists()) await dir.create(recursive: true);
     _streamsDir = dir.path;
     return dir.path;
@@ -91,9 +93,30 @@ class MediaProxyService {
         entry.isComplete = true;
         entry.completer.complete();
       }
-    });
+    }).then((session) {
+      // Guardar la sesión para poder cancelarla al liberar el stream.
+      _activeStreams[id]?.sessionId = session.getSessionId();
+    }).catchError((_) {});
 
     return id;
+  }
+
+  /// Libera un stream FFmpeg al cerrar el reproductor: cancela la sesión
+  /// viva y borra el temporal. Así no se acumulan GB en el dispositivo.
+  Future<void> releaseFfmpegStream(String id) async {
+    final entry = _activeStreams.remove(id);
+    if (entry == null) return;
+    try {
+      final sid = entry.sessionId;
+      if (sid != null) {
+        await FFmpegKit.cancel(sid)
+            .timeout(const Duration(seconds: 5), onTimeout: () {});
+      }
+    } catch (_) {}
+    try {
+      await File(entry.outputPath).delete();
+    } catch (_) {}
+    print('[FFMPEG] Stream $id liberado al cerrar reproductor');
   }
 
   /// Limpieza de remuxes viejos (los temporales streams/*.mp4 se acumulaban
@@ -1739,6 +1762,7 @@ class _FfmpegStream {
   final String outputPath;
   final Completer<void> completer = Completer<void>();
   bool isComplete = false;
+  int? sessionId;
 
   _FfmpegStream({required this.id, required this.outputPath});
 }
