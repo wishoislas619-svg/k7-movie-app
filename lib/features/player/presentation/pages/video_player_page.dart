@@ -275,6 +275,9 @@ List<SubtitleInfo> _internalSubtitles = [];
   Set<String> _failedVideasyServers = {};
   InternalServerInfo? _currentVideasyServer;
   Duration? _pendingResumeDuration;
+  // Último error de reproducción ya reportado (evita spam en cada tick: el
+  // flag hasError del controller es pegajoso y se imprimía sin parar).
+  String? _lastReportedVideoError;
   bool _hasFoundPremiumServer = false;
   bool _isAlgo3Extracting =
       false; // Pantalla de carga dedicada para Algoritmo 3
@@ -2362,9 +2365,13 @@ if (widget.videoOptions.isNotEmpty) {
     if (_controller == null) return;
 
     if (_controller!.value.hasError) {
-      print(
-        "⚠️ [VIDEO_ERROR] Detectado error en reproducción: ${_controller!.value.errorDescription}",
-      );
+      final desc = _controller!.value.errorDescription ?? '';
+      if (desc != _lastReportedVideoError) {
+        _lastReportedVideoError = desc;
+        print(
+          "⚠️ [VIDEO_ERROR] Detectado error en reproducción: $desc",
+        );
+      }
       if (_effectiveAlgorithm == 3 &&
           _videasyServers.isNotEmpty &&
           _isAutoSelectEnabled) {

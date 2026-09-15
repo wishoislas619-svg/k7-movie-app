@@ -530,22 +530,35 @@ class MediaProxyService {
       } catch (_) {}
     }
 
+    // Enlaces directos (http directo / algoritmo 5, con o sin headers del
+    // llamante): van LIMPIOS, sin jar de sesión compartido. Algunos orígenes
+    // (p.ej. Dropbox con su cookie uc_session) atan la descarga a la sesión:
+    // reinyectar la cookie de una petición anterior invalida las conexiones
+    // paralelas (seeks, WVC) y sus cuerpos llegan truncados → el
+    // decodificador falla al adelantar. El flujo con extractor (Algo 1 / TV)
+    // sí necesita el jar y lo conserva intacto.
+    final isDirectLink = algoParam == '5' || encodedHeaders == null;
+
     // Re-combinar cookies de sesión: las del extractor (auth del sitio) más
     // las cookies que el CDN haya seteado durante la sesión (Set-Cookie).
-    if (_sessionCookies.isNotEmpty) {
+    // (Solo flujo con extractor; enlaces directos van sin cookies.)
+    if (!isDirectLink && _sessionCookies.isNotEmpty) {
       final extractorCookie = headers['Cookie'] ?? '';
       final merged = extractorCookie.isEmpty
           ? _sessionCookies
           : '$extractorCookie; $_sessionCookies';
       headers['Cookie'] = merged;
     }
-    if (_lastOriginCookie.isEmpty && headers.containsKey('Cookie')) {
+    if (!isDirectLink &&
+        _lastOriginCookie.isEmpty &&
+        headers.containsKey('Cookie')) {
       _lastOriginCookie = headers['Cookie'] ?? '';
     }
 
     // Refrescar cookies desde el WebView (usa el mismo almacén de cookies que
     // Chrome/WebView del dispositivo, manteniendo la sesión activa).
-    if (isLiveTv) {
+    // (Solo flujo con extractor; enlaces directos van limpios.)
+    if (!isDirectLink && isLiveTv) {
       // TV: con timeout. Si el WebView está destruido el await podría no
       // volver nunca y colgar la petición (el reproductor se quedaría
       // esperando).
@@ -564,8 +577,8 @@ class MediaProxyService {
       } catch (_) {
         // CookieManager puede fallar si no hay WebView activo, ignorar
       }
-    } else {
-      // ALGO 1 (e048125): sin timeout.
+    } else if (!isDirectLink) {
+      // ALGO 1 (e048125): sin timeout. (Enlaces directos: sin refresh.)
       try {
         final webCookies = await CookieManager.instance().getCookies(
           url: WebUri(url),
@@ -626,9 +639,10 @@ class MediaProxyService {
 
       print('📡 [PROXY][$requestId] Response Status: ${streamedResponse.statusCode} | Type: $upstreamContentType');
 
-      // Capturar Set-Cookie del CDN para mantener sesión entre peticiones
+      // Capturar Set-Cookie del CDN para mantener sesión entre peticiones.
+      // (Solo flujo con extractor: los directos no tocan el jar compartido.)
       final setCookie = streamedResponse.headers['set-cookie'];
-      if (setCookie != null && setCookie.isNotEmpty) {
+      if (!isDirectLink && setCookie != null && setCookie.isNotEmpty) {
         print('🍪 [PROXY][$requestId] Set-Cookie from CDN: "$setCookie"');
         // Almacenar para próximas peticiones
         _sessionCookies = setCookie;
