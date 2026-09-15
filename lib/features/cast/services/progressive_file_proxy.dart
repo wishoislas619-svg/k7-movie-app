@@ -356,6 +356,7 @@ class ProgressiveFileProxy {
     final client = http.Client();
     try {
       final from = await entry.localSize();
+      entry.memBytes = from;
       final req = http.Request('GET', Uri.parse(entry.url));
       // UNA sola sesión estable: cabeceras mínimas, sin rotar cookies entre
       // peticiones (eso es lo que rompía los orígenes con sesión).
@@ -420,6 +421,17 @@ class ProgressiveFileProxy {
           if (entry.dead) return false;
           sink.add(data);
           await sink.flush();
+          // Progreso periódico para diagnóstico (cada 100 MB).
+          entry.memBytes += data.length;
+          if (entry.memBytes - entry.lastLogBytes >= 100 * 1024 * 1024) {
+            entry.lastLogBytes = entry.memBytes;
+            final total = entry.totalBytes;
+            final pct = total != null && total > 0
+                ? '(${(entry.memBytes * 100 ~/ total)}%)'
+                : '';
+            print('[PG] Descargando... '
+                '${(entry.memBytes / 1048576).toStringAsFixed(0)} MB $pct');
+          }
         }
       } finally {
         await sink.close();
@@ -581,6 +593,9 @@ class _PgEntry {
   bool dead = false;
   int failures = 0;
   DateTime? fetchStartedAt;
+  // Contadores en memoria para log de progreso (evitan stat por chunk).
+  int memBytes = 0;
+  int lastLogBytes = 0;
   // Cola del archivo (índice) traída por adelantado.
   bool tailFetching = false;
   bool tailReady = false;

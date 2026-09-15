@@ -286,6 +286,7 @@ List<SubtitleInfo> _internalSubtitles = [];
   // flag hasError del controller es pegajoso y se imprimía sin parar).
   String? _lastReportedVideoError;
   String? _lastDurationDbg;
+  int _lastBarDbg = -1;
   bool _hasFoundPremiumServer = false;
   bool _isAlgo3Extracting =
       false; // Pantalla de carga dedicada para Algoritmo 3
@@ -4900,6 +4901,14 @@ if (widget.videoOptions.isNotEmpty) {
                   final position = isCast
                       ? CastService().position
                       : (_controller?.value.position ?? Duration.zero);
+
+                  // Diagnóstico temporal: qué recibe la barra del seek.
+                  final posSec = position.inSeconds;
+                  if (posSec ~/ 10 != _lastBarDbg ~/ 10) {
+                    _lastBarDbg = posSec;
+                    print('🎚️ [SEEKUI] pos=${posSec}s '
+                        'max=${duration.inSeconds}s');
+                  }
 
                   return Row(
                     mainAxisAlignment: MainAxisAlignment.center,
