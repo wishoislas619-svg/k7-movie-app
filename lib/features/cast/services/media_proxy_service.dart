@@ -565,14 +565,12 @@ class MediaProxyService {
       headers.forEach((k, v) => proxyRequest.headers[k] = v);
       proxyRequest.followRedirects = true;
 
-      // TV: con timeout. Sin esto, un origen colgado cuelga la petición
-      // para siempre y el reproductor se queda esperando (initialize sin
-      // fin). ALGO 1: espera sin límite como en e048125.
-      final streamedResponse = isLiveTv
-          ? await client
-              .send(proxyRequest)
-              .timeout(const Duration(seconds: 15))
-          : await client.send(proxyRequest);
+      // TV: con timeout de 15 s. Algo 1: 30 s (antes sin límite: un origen
+      // colgado colgaba el proxy para siempre y el reproductor se quedaba
+      // esperando hasta agotar su buffer y desconectarse). En flujos sanos
+      // el timeout nunca dispara, el comportamiento no cambia.
+      final streamedResponse = await client.send(proxyRequest).timeout(
+          isLiveTv ? const Duration(seconds: 15) : const Duration(seconds: 30));
       final upstreamContentType =
           (streamedResponse.headers['content-type'] ?? '').toLowerCase();
 
@@ -907,6 +905,15 @@ class MediaProxyService {
       }
     }
     if (firstChunk != null) request.response.add(firstChunk);
+    // Si la TV/WVC abandona la petición (RST al saltar de tramo), abortar
+    // el fetch al origen de inmediato: sin esto, las descargas huérfanas de
+    // archivos grandes se acumulan en el host y le roban ancho de banda a
+    // los tramos vivos (el reproductor se queda sin datos y se desconecta).
+    unawaited(request.response.done.then((_) {
+      try {
+        client.close();
+      } catch (_) {}
+    }).catchError((_) {}));
     try {
       await request.response.addStream(stream);
     } catch (e) {
