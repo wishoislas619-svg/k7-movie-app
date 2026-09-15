@@ -787,7 +787,8 @@ if (widget.videoOptions.isNotEmpty) {
     if (_controller == null || !_controller!.value.isInitialized) return;
 
     final position = _controller!.value.position.inMilliseconds;
-    final duration = _controller!.value.duration.inMilliseconds;
+    // Duración efectiva (se auto-extiende si la cabecera del archivo miente).
+    final duration = _effectiveDuration().inMilliseconds;
 
     if (position <= 0) return;
 
@@ -1023,6 +1024,22 @@ if (widget.videoOptions.isNotEmpty) {
       return "${twoDigits(duration.inHours)}:$twoDigitMinutes:$twoDigitSeconds";
     }
     return "$twoDigitMinutes:$twoDigitSeconds";
+  }
+
+  /// Duración efectiva para UI y lógica. Algunos encodes traen la cabecera
+  /// de duración rota (ExoPlayer reporta 0 o un valor corto que la
+  /// reproducción supera — VLC muestra 00:00 en esos casos). Para no dejar
+  /// el seek atorado ni disparar fin/midroll anticipados, la duración se
+  /// extiende sola a medida que se supera lo reportado. En archivos sanos
+  /// devuelve el valor real sin cambios.
+  Duration _effectiveDuration() {
+    final raw = _controller?.value.duration ?? Duration.zero;
+    final pos = _controller?.value.position ?? Duration.zero;
+    if (raw.inMilliseconds <= 0) return pos + const Duration(minutes: 5);
+    if (pos.inMilliseconds - raw.inMilliseconds > 2000) {
+      return pos + const Duration(minutes: 5);
+    }
+    return raw;
   }
 
   void _initWebViewController() {
@@ -2460,8 +2477,8 @@ if (widget.videoOptions.isNotEmpty) {
     // Disparar midroll al llegar a la mitad del tiempo REAL visto (no posición)
     if (widget.mediaType == 'movie' &&
         !_isMidrollShown &&
-        _controller!.value.duration.inSeconds > 0) {
-      final halfDuration = _controller!.value.duration.inSeconds ~/ 2;
+        _effectiveDuration().inSeconds > 0) {
+      final halfDuration = _effectiveDuration().inSeconds ~/ 2;
       if (_realWatchedSeconds >= halfDuration) {
         _showMidrollAd();
         return;
@@ -2504,10 +2521,12 @@ if (widget.videoOptions.isNotEmpty) {
     if (!_isPushingNextEpisode &&
         widget.mediaType == 'series' &&
         _controller!.value.isInitialized) {
-      final duration = _controller!.value.duration;
+      final duration = _effectiveDuration();
       final position = _controller!.value.position;
 
-      // We consider it finished if it's within 500ms of the end or position >= duration
+      // We consider it finished if it's within 500ms of the end or position >= duration.
+      // Con duración efectiva, los archivos con cabecera rota nunca disparan
+      // fin anticipado (la estimación siempre va por delante).
       final bool reachedEnd =
           position >= duration ||
           (duration.inMilliseconds > 0 &&
@@ -4837,7 +4856,7 @@ if (widget.videoOptions.isNotEmpty) {
                   final isCast = CastService().isConnected;
                   final duration = isCast
                       ? CastService().duration
-                      : (_controller?.value.duration ?? Duration.zero);
+                      : _effectiveDuration();
                   final position = isCast
                       ? CastService().position
                       : (_controller?.value.position ?? Duration.zero);
