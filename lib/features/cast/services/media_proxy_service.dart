@@ -969,6 +969,17 @@ class MediaProxyService {
       }
     }
     if (firstChunk != null) request.response.add(firstChunk);
+    // Vigilante de estancamiento a mitad del cuerpo: si el origen deja de
+    // mandar bytes (típico en una de las conexiones paralelas tras un seek),
+    // abortar para que el reproductor reintente el tramo con una conexión
+    // fresca. Sin esto, la pista de video se atrasa sin fin: cada frame
+    // llega tarde y se dropea (pantalla negra + audio) para siempre.
+    // (El timeout de 30 s de arriba solo cubre el establecimiento.)
+    final watched = stream.timeout(
+      const Duration(seconds: 15),
+      onTimeout: (sink) => sink.addError(
+          TimeoutException('origen estancado a mitad de cuerpo')),
+    );
     // Si la TV/WVC abandona la petición (RST al saltar de tramo), abortar
     // el fetch al origen de inmediato: sin esto, las descargas huérfanas de
     // archivos grandes se acumulan en el host y le roban ancho de banda a
@@ -979,9 +990,9 @@ class MediaProxyService {
       } catch (_) {}
     }).catchError((_) {}));
     try {
-      await request.response.addStream(stream);
+      await request.response.addStream(watched);
     } catch (e) {
-      print('⚠️ [PROXY][$requestId] Stream interrupted by client/TV: $e');
+      print('⚠️ [PROXY][$requestId] Relay cortado: $e');
     } finally {
       try {
         await request.response.close();
