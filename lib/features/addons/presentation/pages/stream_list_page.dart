@@ -1097,14 +1097,36 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         return;
       }
     } else {
-      // Streams http directos (Addon Latam / otros / debrid): URL DIRECTA a
-      // WVC, como antes. Proxearlos rompe la sesión del origen: algunos
-      // hosts (p.ej. Dropbox con su cookie uc_session) atan la descarga a
-      // la sesión y nuestro proxy la rota en cada petición, matando los
-      // streams paralelos de WVC (~6 s y desconexión). WVC gestiona sus
-      // propias cookies por conexión con la URL cruda.
-      url = stream.url;
-      print('--- [WVC] URL directa entregada (http directo): $url ---');
+      // Streams http directos (Addon Latam / otros / debrid): proxy
+      // PROGRESIVO local estilo Stremio. Ni URL cruda ni proxy clásico:
+      // la cruda muere en WVC con orígenes de sesión (Dropbox) y el proxy
+      // clásico abre una conexión al origen por cada rango (las sesiones
+      // chocan y el stream se corta a los ~6 s). Aquí el origen ve UNA sola
+      // descarga secuencial y WVC ve un servidor local rápido con rangos
+      // totales. Arranque en segundos, sin esperar descarga completa.
+      final rawUrl = stream.url!;
+      final lower = rawUrl.toLowerCase();
+      if (lower.contains('.m3u8')) {
+        // HLS: fuera del alcance del proxy progresivo, URL directa.
+        url = rawUrl;
+        print('--- [WVC] URL directa entregada (HLS): $url ---');
+      } else {
+        var ext = rawUrl.split('?').first.split('/').last.split('.').last.toLowerCase();
+        const validExts = {'mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', 'wmv'};
+        if (ext.length > 5 || !validExts.contains(ext)) ext = 'mp4';
+        await MediaProxyService().start();
+        await ForegroundService.start(
+          title: 'Transmitiendo a Web Video Caster',
+          text: 'Manteniendo la conexión del stream',
+        );
+        url = await MediaProxyService().getProgressiveUrl(
+          rawUrl,
+          const {},
+          ext: ext,
+          prefetch: true,
+        );
+        print('--- [WVC] URL progresiva entregada (http directo): $url ---');
+      }
     }
 
     final videoUrl = url;

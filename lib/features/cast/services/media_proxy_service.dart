@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'progressive_file_proxy.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
 import 'package:path_provider/path_provider.dart';
@@ -255,6 +256,8 @@ class MediaProxyService {
       _server!.listen((HttpRequest request) {
         if (request.uri.path.startsWith('/local/')) {
           _handleLocalFileRequest(request);
+        } else if (request.uri.path.startsWith('/pg/')) {
+          _handleProgressiveRequest(request);
         } else if (request.uri.path.startsWith('/proxy')) {
           _handleProxyRequest(request);
         } else if (request.uri.path.startsWith('/pluto/')) {
@@ -425,6 +428,53 @@ class MediaProxyService {
         await request.response.close();
       } catch (_) {}
     }
+  }
+
+  // --- PROXY PROGRESIVO (/pg/): UNA sola descarga secuencial al origen
+  // que llena un archivo local, servido con rangos a N conexiones del
+  // reproductor. Para http directos con sesión (Dropbox). No interfiere con
+  // Algo 1 (/proxy) ni TV (/pluto): endpoint y lógica separados.
+  Future<void> _handleProgressiveRequest(HttpRequest request) async {
+    try {
+      // Ruta: /pg/<token>.<ext>
+      final seg = request.uri.pathSegments;
+      if (seg.length < 2 || seg[0] != 'pg') {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+        return;
+      }
+      final token = seg[1].split('.').first;
+      final entry = ProgressiveFileProxy.instance.get(token);
+      if (entry == null) {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+        return;
+      }
+      await ProgressiveFileProxy.instance.handle(request, entry);
+    } catch (_) {
+      try {
+        request.response.statusCode = HttpStatus.badGateway;
+        await request.response.close();
+      } catch (_) {}
+    }
+  }
+
+  /// URL local progresiva para un http directo (misma máquina): arranque en
+  /// segundos, una sola sesión con el origen, rangos totales al reproductor.
+  Future<String> getProgressiveUrl(
+    String url,
+    Map<String, String> headers, {
+    String ext = 'mp4',
+    bool prefetch = true,
+  }) async {
+    await start();
+    final token = await ProgressiveFileProxy.instance.register(
+      url,
+      headers,
+      ext: ext,
+      prefetch: prefetch,
+    );
+    return 'http://127.0.0.1:$_port/pg/$token.$ext';
   }
 
   // --- LÓGICA DE PROXY (ALGO 1: FRAGMENTOS) ---
