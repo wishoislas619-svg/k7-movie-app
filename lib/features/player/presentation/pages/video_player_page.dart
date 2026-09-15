@@ -2114,6 +2114,9 @@ if (widget.videoOptions.isNotEmpty) {
           // 1) Transcode (reconstruye timestamps: lee hasta timelines
           //    corruptas) 2) copy-remux (re-indexa, barato) 3) /pg/ directo.
           // Cada nivel tiene timeout y cae al siguiente sin romper el play.
+          // Primero liberar temporales de una resolución anterior (re-init
+          // sin dispose) para no acumular.
+          _releaseTempPlaybackFiles();
           String? playUrl;
           try {
             playUrl = await MediaProxyService()

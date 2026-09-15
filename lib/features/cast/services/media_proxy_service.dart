@@ -33,6 +33,16 @@ class MediaProxyService {
     final dir = Directory('${tmp.path}/streams');
     if (!await dir.exists()) await dir.create(recursive: true);
     _streamsDir = dir.path;
+    // Migración: borrar el directorio legacy en documentos (versiones
+    // anteriores lo usaban y esos GB quedaban huérfanos).
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final legacy = Directory('${appDir.path}/streams');
+      if (await legacy.exists()) {
+        await legacy.delete(recursive: true);
+        print('[FFMPEG] Dir legacy en documentos eliminado');
+      }
+    } catch (_) {}
     return dir.path;
   }
 

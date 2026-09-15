@@ -24,6 +24,11 @@ class ProgressiveFileProxy {
   static const Duration _kPollInterval = Duration(milliseconds: 250);
   static const Duration _kWaitForBytesTimeout = Duration(seconds: 30);
   static const Duration _kStallTimeout = Duration(seconds: 20);
+  // Paciencia del hold-open sirviendo (bomba): se renueva con cada chunk.
+  // Debe superar los baches del origen para no cortarle el input a FFmpeg
+  // (un corte = EOF = fMP4 truncado = EOS prematuro en el reproductor).
+  // En fatal se aborta de inmediato (ver bomba).
+  static const Duration _kPumpIdleTimeout = Duration(seconds: 180);
   static const Duration _kIdleEvictAfter = Duration(minutes: 30);
   // Tope blando del caché en disco (archivos completos se reutilizan).
   static const int _kMaxCacheBytes = 1500 * 1024 * 1024;
@@ -196,8 +201,10 @@ class ProgressiveFileProxy {
 
       // Bombear del archivo con espera: si el reproductor pide más rápido
       // de lo que descarga el origen, se pausa hasta que lleguen bytes.
-      // El deadline es de INACTIVIDAD (se renueva con cada chunk): una
-      // transferencia sana nunca se corta, solo los estancamientos.
+      // El deadline es de INACTIVIDAD LARGA (se renueva con cada chunk): una
+      // transferencia sana nunca se corta. Es generoso a propósito: cortar
+      // temprano le da EOF a FFmpeg (fMP4 truncado = EOS prematuro). En
+      // fatal sí se aborta de inmediato.
       var clientGone = false;
       unawaited(request.response.done.then((_) {
         clientGone = true;
@@ -208,7 +215,7 @@ class ProgressiveFileProxy {
       try {
         var pos = start;
         var deadline =
-            DateTime.now().add(_kWaitForBytesTimeout);
+            DateTime.now().add(_kPumpIdleTimeout);
         const chunk = 256 * 1024;
         final gen = entry.generation;
         while (pos <= end) {
@@ -235,7 +242,7 @@ class ProgressiveFileProxy {
           }
           request.response.add(data);
           pos += data.length;
-          deadline = DateTime.now().add(_kWaitForBytesTimeout);
+          deadline = DateTime.now().add(_kPumpIdleTimeout);
         }
       } finally {
         await raf.close();
