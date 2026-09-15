@@ -64,9 +64,12 @@ class MediaProxyService {
     final headerStr = headerLines.join('\\r\\n');
 
     // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
-    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
+    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe.
+    // Transcode: -fflags +genpts reconstruye los pts desde cero (timelines
+    // corruptas/drift) y -vsync cfr los emite a ritmo constante. Sin esto el
+    // transcode copiaba la línea corrupta y ExoPlayer dropeaba el 100%.
     final cmd = transcodeVideo
-        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-i "$url" -map 0:v:0 -map 0:a? -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 -c:a copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
+        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-fflags +genpts -i "$url" -map 0:v:0 -map 0:a? -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 -vsync cfr -c:a copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
         : fixMp4
             ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-i "$url" -map 0:v:0 -map 0:a? -c copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
             : '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
