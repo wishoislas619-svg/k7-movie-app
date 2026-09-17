@@ -239,11 +239,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     }
   }
 
-  Future<void> _play(
-    TorrentStream stream, {
-    List<TorrentStream>? siblings,
-    Set<TorrentStream>? tried,
-  }) async {
+  Future<void> _play(TorrentStream stream) async {
     String? directUrl = stream.url;
     TorrentPlaybackSession? torrentSession;
     TorrentStreamingHandle? torrentHandle;
@@ -339,33 +335,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       language: stream.language,
       extractionAlgorithm: algo,
     );
-    // Duración esperada por metadatos TMDB (estilo Stremio): si el archivo
-    // trae la cabecera rota, el player usa esto para el seek. No bloquea el
-    // play si falla.
-    Duration? expectedDuration;
-    try {
-      if (widget.isSeries) {
-        final epNum = _activeEpisodeNumber;
-        if (epNum != null) {
-          for (final ep in _episodes) {
-            if (ep['episodeNumber'] == epNum) {
-              final rt = ep['runtime'];
-              if (rt is int && rt > 0) {
-                expectedDuration = Duration(minutes: rt);
-              }
-              break;
-            }
-          }
-        }
-      } else {
-        final mins = await TmdbService.getMovieRuntime(widget.tmdbId)
-            .timeout(const Duration(seconds: 5), onTimeout: () => null);
-        if (mins != null && mins > 0) {
-          expectedDuration = Duration(minutes: mins);
-        }
-      }
-    } catch (_) {}
-    final playResult = await Navigator.push(
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => VideoPlayerPage(
@@ -377,7 +347,6 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           extractionAlgorithm: algo,
           torrentDownloadProgress: torrentHandle,
           skipAd: true,
-          expectedDuration: expectedDuration,
           externalSubtitles: [
             for (final s in stream.subtitles)
               SubtitleInfo(language: s.language, url: s.url)
@@ -391,38 +360,6 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       print('TORRENT_DBG: llamando stop() para liberar el torrent');
       await TorrentStreamingService.instance.stop(sessionToStop);
       print('TORRENT_DBG: stop() hecho');
-    }
-    // Link muerto (el reproductor no bajó ni un byte): probar solo con el
-    // siguiente enlace de la misma pestaña, estilo Stremio.
-    if (playResult == 'linkDead' && siblings != null && mounted) {
-      final already = tried ?? <TorrentStream>{};
-      already.add(stream);
-      TorrentStream? next;
-      for (final s in siblings) {
-        if (!already.contains(s) && _canPlay(s)) {
-          next = s;
-          break;
-        }
-      }
-      if (next != null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                  'Enlace caído, probando: ${next.title.isNotEmpty ? next.title : next.name}'),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-        await _play(next, siblings: siblings, tried: already);
-      } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Ningún enlace de la lista responde.'),
-            duration: Duration(seconds: 3),
-          ),
-        );
-      }
     }
   }
 
@@ -878,7 +815,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
           itemCount: list.length,
-          itemBuilder: (context, index) => _buildStreamTile(list[index], list),
+          itemBuilder: (context, index) => _buildStreamTile(list[index]),
         ),
       );
     }
@@ -929,7 +866,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     }
   }
 
-  Widget _buildStreamTile(TorrentStream stream, List<TorrentStream> siblings) {
+  Widget _buildStreamTile(TorrentStream stream) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: EnergyFlowBorder(
@@ -1070,7 +1007,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                   : const Icon(Icons.downloading, color: Colors.white24),
             ],
           ),
-          onTap: () => _play(stream, siblings: siblings),
+          onTap: () => _play(stream),
         ),
       ),
     );
@@ -1160,36 +1097,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         return;
       }
     } else {
-      // Streams http directos (Addon Latam / otros / debrid): proxy
-      // PROGRESIVO local estilo Stremio. Ni URL cruda ni proxy clásico:
-      // la cruda muere en WVC con orígenes de sesión (Dropbox) y el proxy
-      // clásico abre una conexión al origen por cada rango (las sesiones
-      // chocan y el stream se corta a los ~6 s). Aquí el origen ve UNA sola
-      // descarga secuencial y WVC ve un servidor local rápido con rangos
-      // totales. Arranque en segundos, sin esperar descarga completa.
-      final rawUrl = stream.url!;
-      final lower = rawUrl.toLowerCase();
-      if (lower.contains('.m3u8')) {
-        // HLS: fuera del alcance del proxy progresivo, URL directa.
-        url = rawUrl;
-        print('--- [WVC] URL directa entregada (HLS): $url ---');
-      } else {
-        var ext = rawUrl.split('?').first.split('/').last.split('.').last.toLowerCase();
-        const validExts = {'mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', 'wmv'};
-        if (ext.length > 5 || !validExts.contains(ext)) ext = 'mp4';
-        await MediaProxyService().start();
-        await ForegroundService.start(
-          title: 'Transmitiendo a Web Video Caster',
-          text: 'Manteniendo la conexión del stream',
-        );
-        url = await MediaProxyService().getProgressiveUrl(
-          rawUrl,
-          const {},
-          ext: ext,
-          prefetch: true,
-        );
-        print('--- [WVC] URL progresiva entregada (http directo): $url ---');
-      }
+      url = stream.url;
     }
 
     final videoUrl = url;

@@ -449,9 +449,6 @@ class _CastButtonState extends ConsumerState<CastButton>
     await _seedHistoryForCastStart();
 
     final String videoUrl = finalUrl;
-    // Diagnóstico: URL exacta entregada a WVC (host:port del proxy + params).
-    // Si el receptor no llega al proxy, aquí se ve por qué (IP mal, puerto 0…).
-    print('--- [WVC] URL entregada (algo=${widget.algorithm}): $videoUrl ---');
     // El nombre de paquete correcto es .webvideo, no .browser
     const String wvcPackage = 'com.instantbits.cast.webvideo';
 

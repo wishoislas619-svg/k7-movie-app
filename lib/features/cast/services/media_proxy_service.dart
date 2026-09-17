@@ -5,10 +5,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'progressive_file_proxy.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit_config.dart';
-import 'package:ffmpeg_kit_flutter_new_https_gpl/log.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -26,50 +23,13 @@ class MediaProxyService {
   // --- Streaming FFmpeg (progresivo) ---
   final Map<String, _FfmpegStream> _activeStreams = {};
   String? _streamsDir;
-  // Anillo de logs FFmpeg por sesión (para diagnosticar rc!=0).
-  static final Map<int, List<String>> _ffmpegLogRing = {};
-  static bool _ffmpegLogHooked = false;
-
-  static void _hookFfmpegLogs() {
-    if (_ffmpegLogHooked) return;
-    _ffmpegLogHooked = true;
-    FFmpegKitConfig.enableLogCallback((Log? log) {
-      if (log == null) return;
-      final id = log.getSessionId();
-      final lines = _ffmpegLogRing.putIfAbsent(id, () => <String>[]);
-      lines.add(log.getMessage());
-      if (lines.length > 40) lines.removeAt(0);
-    });
-  }
-
-  static void _dumpFfmpegLogs(String id, int sessionId) {
-    final lines = _ffmpegLogRing.remove(sessionId) ?? const <String>[];
-    if (lines.isEmpty) return;
-    final tail = lines.length > 25 ? lines.sublist(lines.length - 25) : lines;
-    print('🎬 [FFMPEG] Log $id (últimas ${tail.length}):');
-    for (final l in tail) {
-      print('🎬 [FFMPEG][$id] $l');
-    }
-  }
 
   Future<String> _ensureStreamsDir() async {
     if (_streamsDir != null) return _streamsDir!;
-    // Temporales de remux/transcode en CACHÉ (no en documentos de usuario):
-    // el sistema puede purgarlos y no entran a backups.
-    final tmp = await getTemporaryDirectory();
-    final dir = Directory('${tmp.path}/streams');
+    final appDir = await getApplicationDocumentsDirectory();
+    final dir = Directory('${appDir.path}/streams');
     if (!await dir.exists()) await dir.create(recursive: true);
     _streamsDir = dir.path;
-    // Migración: borrar el directorio legacy en documentos (versiones
-    // anteriores lo usaban y esos GB quedaban huérfanos).
-    try {
-      final appDir = await getApplicationDocumentsDirectory();
-      final legacy = Directory('${appDir.path}/streams');
-      if (await legacy.exists()) {
-        await legacy.delete(recursive: true);
-        print('[FFMPEG] Dir legacy en documentos eliminado');
-      }
-    } catch (_) {}
     return dir.path;
   }
 
@@ -77,17 +37,8 @@ class MediaProxyService {
   /// Retorna inmediatamente con el ID del stream (no espera a que FFmpeg produzca datos).
   Future<String> startFfmpegStream(
     String url,
-    Map<String, String> headers, {
-    // Remux de MP4 con cabecera rota → fMP4 sano (re-indexa y re-intercala;
-    // ExoPlayer lo reproduce y busca robusto donde el MP4 original lo deja
-    // en negro). Solo primer video + audios, sin re-encode.
-    bool fixMp4 = false,
-    // Transcode de video (para timelines corruptas que ni el remux salva):
-    // reconstruye los timestamps desde cero (como hace VLC por software).
-    // Audio se copia intacto. Más CPU, pero lee CUALQUIER archivo.
-    bool transcodeVideo = false,
-  }) async {
-    _evictOldFfmpegStreams();
+    Map<String, String> headers,
+  ) async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final outDir = await _ensureStreamsDir();
     final outputPath = '$outDir/$id.mp4';
@@ -103,22 +54,8 @@ class MediaProxyService {
     final headerStr = headerLines.join('\\r\\n');
 
     // FFmpeg: remux HLS → MP4 fragmentado (streaming progresivo, soporte universal)
-    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe.
-    // Transcode: -fflags +genpts reconstruye los pts de video desde cero y
-    // -fps_mode cfr los emite constantes; el AUDIO también se re-encodea
-    // (-c:a aac + aresample async) porque su framing/timeline suele venir
-    // roto en estos archivos. Sintaxis moderna FFmpeg 7 (-async/-vsync ya no
-    // existen y mataban la sesión con rc=1 al instante).
-    // -reconnect*: la entrada es nuestro /pg/ local en construcción (o un
-    // origen flaky): ante un 404/502 transitorio, reintenta en vez de morir
-    // con rc=1 al instante.
-    const recon =
-        '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5';
-    final cmd = transcodeVideo
-        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}$recon -fflags +genpts -i "$url" -map 0:v:0 -map 0:a? -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 -fps_mode cfr -c:a aac -b:a 128k -af aresample=async=1 -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
-        : fixMp4
-            ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}$recon -i "$url" -map 0:v:0 -map 0:a? -c copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
-            : '-y -headers "$headerStr\\r\\n" $recon -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+    // -movflags +frag_keyframe+empty_moov crea un MP4 que se puede leer mientras se escribe
+    final cmd = '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
     print('🎬 [FFMPEG] Starting stream $id: $cmd');
 
     _activeStreams[id] = _FfmpegStream(
@@ -126,79 +63,18 @@ class MediaProxyService {
       outputPath: outputPath,
     );
 
-    _hookFfmpegLogs();
     FFmpegKit.executeAsync(cmd, (session) async {
       final rc = await session.getReturnCode();
       final isOk = ReturnCode.isSuccess(rc);
       print('🎬 [FFMPEG] Stream $id ended: rc=$rc success=$isOk');
-      if (!isOk) {
-        // Causa real (flag inválido, input ilegible...): sin esto solo se ve rc=1.
-        try {
-          final trace = await session.getFailStackTrace();
-          final str = trace?.toString() ?? '';
-          print('🎬 [FFMPEG] Fail trace $id: '
-              '${str.length > 2000 ? str.substring(str.length - 2000) : str}');
-        } catch (_) {}
-        try {
-          final sid = session.getSessionId();
-          if (sid != null) _dumpFfmpegLogs(id, sid);
-        } catch (_) {}
-      } else {
-        try {
-          final sid = session.getSessionId();
-          if (sid != null) _ffmpegLogRing.remove(sid);
-        } catch (_) {}
-      }
       final entry = _activeStreams[id];
       if (entry != null) {
         entry.isComplete = true;
         entry.completer.complete();
       }
-    }).then((session) {
-      // Guardar la sesión para poder cancelarla al liberar el stream.
-      _activeStreams[id]?.sessionId = session.getSessionId();
-    }).catchError((_) {});
+    });
 
     return id;
-  }
-
-  /// Libera un stream FFmpeg al cerrar el reproductor: cancela la sesión
-  /// viva y borra el temporal. Así no se acumulan GB en el dispositivo.
-  Future<void> releaseFfmpegStream(String id) async {
-    final entry = _activeStreams.remove(id);
-    if (entry == null) return;
-    try {
-      final sid = entry.sessionId;
-      if (sid != null) {
-        await FFmpegKit.cancel(sid)
-            .timeout(const Duration(seconds: 5), onTimeout: () {});
-      }
-    } catch (_) {}
-    try {
-      await File(entry.outputPath).delete();
-    } catch (_) {}
-    print('[FFMPEG] Stream $id liberado al cerrar reproductor');
-  }
-
-  /// Limpieza de remuxes viejos (los temporales streams/*.mp4 se acumulaban
-  /// sin fin). Conserva los que siguen corriendo de la última hora; borra
-  /// los completados y los antiguos.
-  void _evictOldFfmpegStreams() {
-    try {
-      final now = DateTime.now().millisecondsSinceEpoch;
-      _activeStreams.removeWhere((id, entry) {
-        final born = int.tryParse(id) ?? now;
-        final ageMs = (now - born).clamp(0, now);
-        final old = ageMs > const Duration(hours: 1).inMilliseconds;
-        if (entry.isComplete || old) {
-          try {
-            File(entry.outputPath).deleteSync();
-          } catch (_) {}
-          return true;
-        }
-        return false;
-      });
-    } catch (_) {}
   }
 
   Future<void> _handleFfmpegStream(HttpRequest request) async {
@@ -379,8 +255,6 @@ class MediaProxyService {
       _server!.listen((HttpRequest request) {
         if (request.uri.path.startsWith('/local/')) {
           _handleLocalFileRequest(request);
-        } else if (request.uri.path.startsWith('/pg/')) {
-          _handleProgressiveRequest(request);
         } else if (request.uri.path.startsWith('/proxy')) {
           _handleProxyRequest(request);
         } else if (request.uri.path.startsWith('/pluto/')) {
@@ -553,53 +427,6 @@ class MediaProxyService {
     }
   }
 
-  // --- PROXY PROGRESIVO (/pg/): UNA sola descarga secuencial al origen
-  // que llena un archivo local, servido con rangos a N conexiones del
-  // reproductor. Para http directos con sesión (Dropbox). No interfiere con
-  // Algo 1 (/proxy) ni TV (/pluto): endpoint y lógica separados.
-  Future<void> _handleProgressiveRequest(HttpRequest request) async {
-    try {
-      // Ruta: /pg/<token>.<ext>
-      final seg = request.uri.pathSegments;
-      if (seg.length < 2 || seg[0] != 'pg') {
-        request.response.statusCode = HttpStatus.notFound;
-        await request.response.close();
-        return;
-      }
-      final token = seg[1].split('.').first;
-      final entry = ProgressiveFileProxy.instance.get(token);
-      if (entry == null) {
-        request.response.statusCode = HttpStatus.notFound;
-        await request.response.close();
-        return;
-      }
-      await ProgressiveFileProxy.instance.handle(request, entry);
-    } catch (_) {
-      try {
-        request.response.statusCode = HttpStatus.badGateway;
-        await request.response.close();
-      } catch (_) {}
-    }
-  }
-
-  /// URL local progresiva para un http directo (misma máquina): arranque en
-  /// segundos, una sola sesión con el origen, rangos totales al reproductor.
-  Future<String> getProgressiveUrl(
-    String url,
-    Map<String, String> headers, {
-    String ext = 'mp4',
-    bool prefetch = true,
-  }) async {
-    await start();
-    final token = await ProgressiveFileProxy.instance.register(
-      url,
-      headers,
-      ext: ext,
-      prefetch: prefetch,
-    );
-    return 'http://127.0.0.1:$_port/pg/$token.$ext';
-  }
-
   // --- LÓGICA DE PROXY (ALGO 1: FRAGMENTOS) ---
   Future<void> _handleProxyRequest(HttpRequest request) async {
     final encodedUrl = request.uri.queryParameters['url'];
@@ -653,35 +480,22 @@ class MediaProxyService {
       } catch (_) {}
     }
 
-    // Enlaces directos (http directo / algoritmo 5, con o sin headers del
-    // llamante): van LIMPIOS, sin jar de sesión compartido. Algunos orígenes
-    // (p.ej. Dropbox con su cookie uc_session) atan la descarga a la sesión:
-    // reinyectar la cookie de una petición anterior invalida las conexiones
-    // paralelas (seeks, WVC) y sus cuerpos llegan truncados → el
-    // decodificador falla al adelantar. El flujo con extractor (Algo 1 / TV)
-    // sí necesita el jar y lo conserva intacto.
-    final isDirectLink = algoParam == '5' || encodedHeaders == null;
-
     // Re-combinar cookies de sesión: las del extractor (auth del sitio) más
     // las cookies que el CDN haya seteado durante la sesión (Set-Cookie).
-    // (Solo flujo con extractor; enlaces directos van sin cookies.)
-    if (!isDirectLink && _sessionCookies.isNotEmpty) {
+    if (_sessionCookies.isNotEmpty) {
       final extractorCookie = headers['Cookie'] ?? '';
       final merged = extractorCookie.isEmpty
           ? _sessionCookies
           : '$extractorCookie; $_sessionCookies';
       headers['Cookie'] = merged;
     }
-    if (!isDirectLink &&
-        _lastOriginCookie.isEmpty &&
-        headers.containsKey('Cookie')) {
+    if (_lastOriginCookie.isEmpty && headers.containsKey('Cookie')) {
       _lastOriginCookie = headers['Cookie'] ?? '';
     }
 
     // Refrescar cookies desde el WebView (usa el mismo almacén de cookies que
     // Chrome/WebView del dispositivo, manteniendo la sesión activa).
-    // (Solo flujo con extractor; enlaces directos van limpios.)
-    if (!isDirectLink && isLiveTv) {
+    if (isLiveTv) {
       // TV: con timeout. Si el WebView está destruido el await podría no
       // volver nunca y colgar la petición (el reproductor se quedaría
       // esperando).
@@ -700,8 +514,8 @@ class MediaProxyService {
       } catch (_) {
         // CookieManager puede fallar si no hay WebView activo, ignorar
       }
-    } else if (!isDirectLink) {
-      // ALGO 1 (e048125): sin timeout. (Enlaces directos: sin refresh.)
+    } else {
+      // ALGO 1 (e048125): sin timeout.
       try {
         final webCookies = await CookieManager.instance().getCookies(
           url: WebUri(url),
@@ -751,21 +565,22 @@ class MediaProxyService {
       headers.forEach((k, v) => proxyRequest.headers[k] = v);
       proxyRequest.followRedirects = true;
 
-      // TV: con timeout de 15 s. Algo 1: 30 s (antes sin límite: un origen
-      // colgado colgaba el proxy para siempre y el reproductor se quedaba
-      // esperando hasta agotar su buffer y desconectarse). En flujos sanos
-      // el timeout nunca dispara, el comportamiento no cambia.
-      final streamedResponse = await client.send(proxyRequest).timeout(
-          isLiveTv ? const Duration(seconds: 15) : const Duration(seconds: 30));
+      // TV: con timeout. Sin esto, un origen colgado cuelga la petición
+      // para siempre y el reproductor se queda esperando (initialize sin
+      // fin). ALGO 1: espera sin límite como en e048125.
+      final streamedResponse = isLiveTv
+          ? await client
+              .send(proxyRequest)
+              .timeout(const Duration(seconds: 15))
+          : await client.send(proxyRequest);
       final upstreamContentType =
           (streamedResponse.headers['content-type'] ?? '').toLowerCase();
 
       print('📡 [PROXY][$requestId] Response Status: ${streamedResponse.statusCode} | Type: $upstreamContentType');
 
-      // Capturar Set-Cookie del CDN para mantener sesión entre peticiones.
-      // (Solo flujo con extractor: los directos no tocan el jar compartido.)
+      // Capturar Set-Cookie del CDN para mantener sesión entre peticiones
       final setCookie = streamedResponse.headers['set-cookie'];
-      if (!isDirectLink && setCookie != null && setCookie.isNotEmpty) {
+      if (setCookie != null && setCookie.isNotEmpty) {
         print('🍪 [PROXY][$requestId] Set-Cookie from CDN: "$setCookie"');
         // Almacenar para próximas peticiones
         _sessionCookies = setCookie;
@@ -1071,51 +886,18 @@ class MediaProxyService {
     request.response.headers.set('Access-Control-Allow-Origin', '*');
     request.response.headers.set('Connection', 'keep-alive');
 
-    // Forzar video/MP2T solo cuando NO es video progresivo declarado:
-    // el proxy también sirve MP4/WebM/MKV directos (p.ej. Addon Latam) y
-    // mentirle el content-type a receptores externos (WVC/TV) hace que
-    // elijan mal demuxer y aborten tras el buffer inicial (~6 s). El tipo
-    // origen ya quedó copiado arriba; aquí solo se corrige el resto.
+    // Forzar video/MP2T — el proxy solo sirve segmentos de vídeo y algunas
+    // CDNs los entregan como image/png, lo que impide la reproducción en TVs.
     // (salvo passthrough de rangos, donde se conserva el content-type origen
     // ya copiado arriba junto con content-range).
     if (!preserveContentType) {
-      final reqPath = request.uri.path.toLowerCase();
-      final isTsSegment =
-          reqPath.endsWith('.ts') || reqPath.endsWith('.m2ts');
-      final isProgressiveVideo = upstreamContentType.startsWith('video/mp4') ||
-          upstreamContentType.startsWith('video/webm') ||
-          upstreamContentType.contains('matroska') ||
-          upstreamContentType.startsWith('video/quicktime') ||
-          upstreamContentType.startsWith('video/x-msvideo');
-      if (isTsSegment || !isProgressiveVideo) {
-        request.response.headers.set('content-type', 'video/MP2T');
-      }
+      request.response.headers.set('content-type', 'video/MP2T');
     }
     if (firstChunk != null) request.response.add(firstChunk);
-    // Vigilante de estancamiento a mitad del cuerpo: si el origen deja de
-    // mandar bytes (típico en una de las conexiones paralelas tras un seek),
-    // abortar para que el reproductor reintente el tramo con una conexión
-    // fresca. Sin esto, la pista de video se atrasa sin fin: cada frame
-    // llega tarde y se dropea (pantalla negra + audio) para siempre.
-    // (El timeout de 30 s de arriba solo cubre el establecimiento.)
-    final watched = stream.timeout(
-      const Duration(seconds: 15),
-      onTimeout: (sink) => sink.addError(
-          TimeoutException('origen estancado a mitad de cuerpo')),
-    );
-    // Si la TV/WVC abandona la petición (RST al saltar de tramo), abortar
-    // el fetch al origen de inmediato: sin esto, las descargas huérfanas de
-    // archivos grandes se acumulan en el host y le roban ancho de banda a
-    // los tramos vivos (el reproductor se queda sin datos y se desconecta).
-    unawaited(request.response.done.then((_) {
-      try {
-        client.close();
-      } catch (_) {}
-    }).catchError((_) {}));
     try {
-      await request.response.addStream(watched);
+      await request.response.addStream(stream);
     } catch (e) {
-      print('⚠️ [PROXY][$requestId] Relay cortado: $e');
+      print('⚠️ [PROXY][$requestId] Stream interrupted by client/TV: $e');
     } finally {
       try {
         await request.response.close();
@@ -1515,72 +1297,6 @@ class MediaProxyService {
     return streamUrl;
   }
 
-  /// Remux MP4 roto → fMP4 sano para reproducción local (misma máquina).
-  /// Espera a que FFmpeg produzca los primeros bytes (moov+primer fragmento);
-  /// devuelve null si no lo logra a tiempo para usar el fallback (/pg/).
-  Future<String?> getRemuxedUrl(
-    String pgUrl, {
-    Duration timeout = const Duration(seconds: 20),
-  }) async {
-    return _waitForFfmpegOut(
-      await _startFfmpegForPlayback(pgUrl, transcodeVideo: false),
-      timeout: timeout,
-      label: 'Remux',
-    );
-  }
-
-  /// Transcode (video H.264 + audio copy) → fMP4 con timestamps reconstruidos.
-  /// Lee CUALQUIER archivo aunque su línea temporal esté corrupta.
-  Future<String?> getTranscodedUrl(
-    String pgUrl, {
-    Duration timeout = const Duration(seconds: 25),
-  }) async {
-    return _waitForFfmpegOut(
-      await _startFfmpegForPlayback(pgUrl, transcodeVideo: true),
-      timeout: timeout,
-      label: 'Transcode',
-    );
-  }
-
-  Future<String?> _startFfmpegForPlayback(
-    String pgUrl, {
-    required bool transcodeVideo,
-  }) async {
-    await start();
-    final id = await startFfmpegStream(
-      pgUrl,
-      const {},
-      fixMp4: true,
-      transcodeVideo: transcodeVideo,
-    );
-    return _activeStreams.containsKey(id) ? id : null;
-  }
-
-  Future<String?> _waitForFfmpegOut(
-    String? id, {
-    required Duration timeout,
-    required String label,
-  }) async {
-    if (id == null) return null;
-    final entry = _activeStreams[id];
-    if (entry == null) return null;
-    final file = File(entry.outputPath);
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      try {
-        if (await file.exists() && await file.length() > 65536) {
-          final streamUrl = 'http://127.0.0.1:$_port/ffstream/$id';
-          print('🎬 [FFMPEG] $label listo: $streamUrl');
-          return streamUrl;
-        }
-        if (entry.isComplete) break;
-      } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 250));
-    }
-    print('⚠️ [FFMPEG] $label sin output a tiempo');
-    return null;
-  }
-
   Future<void> _refreshLocalIp({String? targetIp}) async {
     try {
       final interfaces = await NetworkInterface.list(
@@ -1823,7 +1539,6 @@ class _FfmpegStream {
   final String outputPath;
   final Completer<void> completer = Completer<void>();
   bool isComplete = false;
-  int? sessionId;
 
   _FfmpegStream({required this.id, required this.outputPath});
 }

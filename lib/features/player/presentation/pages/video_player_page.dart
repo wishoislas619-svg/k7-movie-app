@@ -42,7 +42,6 @@ import 'package:movie_app/features/series/presentation/pages/series_details_page
 import 'package:movie_app/features/cast/services/cast_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:movie_app/features/cast/services/media_proxy_service.dart';
-import 'package:movie_app/features/cast/services/progressive_file_proxy.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
 import '../../../addons/data/datasources/torrent_streaming_service.dart';
 
@@ -125,12 +124,6 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
   /// el player omite su propio gate de anuncio para no duplicarlo.
   final bool skipAd;
 
-  /// Duración esperada por metadatos TMDB (runtime). Estilo Stremio: cuando
-  /// el archivo trae la cabecera de duración rota, la UI y la lógica usan
-  /// este valor en vez del reportado. Opcional; si es null se conserva el
-  /// comportamiento anterior (auto-extensión al superar lo reportado).
-  final Duration? expectedDuration;
-
   const VideoPlayerPage({
     super.key,
     required this.movieName,
@@ -155,7 +148,6 @@ class VideoPlayerPage extends ConsumerStatefulWidget {
     this.headers,
     this.initialController,
     this.skipAd = false,
-    this.expectedDuration,
   });
 
   final double? initialVolume;
@@ -283,49 +275,6 @@ List<SubtitleInfo> _internalSubtitles = [];
   Set<String> _failedVideasyServers = {};
   InternalServerInfo? _currentVideasyServer;
   Duration? _pendingResumeDuration;
-  // Último error de reproducción ya reportado (evita spam en cada tick: el
-  // flag hasError del controller es pegajoso y se imprimía sin parar).
-  String? _lastReportedVideoError;
-  String? _lastDurationDbg;
-  int _lastBarDbg = -1;
-  // Temporales de esta reproducción (proxy progresivo / remux FFmpeg) para
-  // liberarlos al cerrar y no saturar el almacenamiento.
-  String? _pgTokenForCleanup;
-  String? _ffStreamIdForCleanup;
-
-  static String? _pgTokenFromUrl(String url) {
-    try {
-      final uri = Uri.parse(url);
-      final segs = uri.pathSegments;
-      if (segs.length >= 2 && segs[0] == 'pg') {
-        return segs[1].split('.').first;
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  static String? _ffIdFromUrl(String url) {
-    try {
-      final uri = Uri.parse(url);
-      final segs = uri.pathSegments;
-      if (segs.length >= 2 && segs[0] == 'ffstream') return segs[1];
-    } catch (_) {}
-    return null;
-  }
-
-  /// Borra los temporales de esta sesión (sin await: fire-and-forget).
-  void _releaseTempPlaybackFiles() {
-    final pg = _pgTokenForCleanup;
-    final ff = _ffStreamIdForCleanup;
-    _pgTokenForCleanup = null;
-    _ffStreamIdForCleanup = null;
-    if (ff != null) {
-      MediaProxyService().releaseFfmpegStream(ff).catchError((_) {});
-    }
-    if (pg != null) {
-      ProgressiveFileProxy.instance.release(pg).catchError((_) {});
-    }
-  }
   bool _hasFoundPremiumServer = false;
   bool _isAlgo3Extracting =
       false; // Pantalla de carga dedicada para Algoritmo 3
@@ -408,11 +357,9 @@ if (widget.videoOptions.isNotEmpty) {
       _useProxy = false; // No usar proxy para streams locales
     } else if (_effectiveAlgorithm == 5) {
       // Algoritmo 5 = stream http directo (Addon Latam): reproducción directa
-      // sin webview — evita scraper y overlay "Analizando origen de video...".
-      // NOTA: _isLoading se deja en true para que el overlay "Cargando
-      // video..." cubra la resolución de URL (proxy progresivo + remux,
-      // que tarda segundos). Lo apaga _initializeVideoPlayer al terminar.
+      // sin webview — evita scraper y overlay "Analizando origen de video..."
       _isWebViewExtracting = false;
+      _isLoading = false;
       _isInitialLoading = false;
     }
 
@@ -796,12 +743,8 @@ if (widget.videoOptions.isNotEmpty) {
       // Algoritmo 5 = stream http directo (Addon Latam): reproducción directa.
       // Chequeo doble con widget.extractionAlgorithm por si _effectiveAlgorithm
       // no se detectó correctamente en initState.
-      // En algo 5 NO se apaga _isLoading aquí: sigue visible hasta que el
-      // init del controller termina (cubre la espera de red).
-      if (_effectiveAlgorithm != 5 && widget.extractionAlgorithm != 5) {
-        _isLoading = false;
-        _isInitialLoading = false;
-      }
+      _isLoading = false;
+      _isInitialLoading = false;
       // Pausa extendida + pre-check HTTP para que el servidor local de libtorrent estabilice.
       // Para torrents pre-descargados a fichero (file://) NO hay servidor HTTP: se
       // reproduce el archivo local directamente, sin esperar ni hacer sniffing.
@@ -833,38 +776,7 @@ if (widget.videoOptions.isNotEmpty) {
     _progressSaveTimer?.cancel();
     _progressSaveTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
       _saveProgress();
-      _checkLinkDead();
     });
-  }
-
-  bool _linkDeadActed = false;
-
-  /// Watchdog de link muerto (estilo Stremio: saltar al siguiente enlace).
-  /// Si a los ~25 s de registrado no bajó ni un byte (token expirado /
-  /// tarpit), se devuelve 'linkDead' para que la lista pruebe el siguiente.
-  /// Una vez que baja algo, jamás dispara (solo cubre muerte al nacer).
-  Future<void> _checkLinkDead() async {
-    final token = _pgTokenForCleanup;
-    if (token == null || _linkDeadActed || !mounted) return;
-    try {
-      final st = await ProgressiveFileProxy.instance.status(token);
-      if (st == null || !mounted || _linkDeadActed) return;
-      final downloaded = (st['downloaded'] as int?) ?? 0;
-      if (downloaded > 0) {
-        _linkDeadActed = true; // Sano: no volver a revisar este token.
-        return;
-      }
-      final fatal = (st['fatal'] as bool?) ?? false;
-      final age = (st['age'] as int?) ?? 0;
-      if (fatal || age >= 25) {
-        _linkDeadActed = true;
-        print('💀 [LINKDEAD] Sin bytes en ${age}s (fatal=$fatal), '
-            'devolviendo para probar siguiente enlace');
-        if (mounted) {
-          Navigator.of(context).pop('linkDead');
-        }
-      }
-    } catch (_) {}
   }
 
   Future<void> _saveProgress() async {
@@ -872,21 +784,9 @@ if (widget.videoOptions.isNotEmpty) {
     if (_controller == null || !_controller!.value.isInitialized) return;
 
     final position = _controller!.value.position.inMilliseconds;
-    // Duración efectiva (se auto-extiende si la cabecera del archivo miente).
-    final duration = _effectiveDuration().inMilliseconds;
+    final duration = _controller!.value.duration.inMilliseconds;
 
     if (position <= 0) return;
-
-    // Diagnóstico temporal: estado vivo del reproductor cada 5 s.
-    try {
-      final v = _controller!.value;
-      final bufEnd =
-          v.buffered.isNotEmpty ? v.buffered.last.end.inSeconds : -1;
-      print('🩺 [PLAYSTATE] pos=${v.position.inSeconds}s '
-          'raw=${v.duration.inSeconds}s eff=${duration ~/ 1000}s '
-          'playing=${v.isPlaying} buffering=${v.isBuffering} '
-          'bufEnd=${bufEnd}s hasErr=${v.hasError}');
-    } catch (_) {}
 
     try {
       ref
@@ -1120,43 +1020,6 @@ if (widget.videoOptions.isNotEmpty) {
       return "${twoDigits(duration.inHours)}:$twoDigitMinutes:$twoDigitSeconds";
     }
     return "$twoDigitMinutes:$twoDigitSeconds";
-  }
-
-  /// Duración efectiva para UI y lógica. Prioridad:
-  /// 1. Metadato TMDB (estilo Stremio) cuando el archivo miente: si hay
-  ///    duración esperada y lo reportado es 0 o menos de la mitad de lo
-  ///    esperado, manda el metadato.
-  /// 2. Si no hay metadato y lo reportado es 0 o ya fue superado por la
-  ///    reproducción (cabecera rota), se auto-extiende (posición + 5 min).
-  /// 3. En archivos sanos devuelve el valor real sin cambios.
-  Duration _effectiveDuration() {
-    final raw = _controller?.value.duration ?? Duration.zero;
-    final pos = _controller?.value.position ?? Duration.zero;
-    final exp = widget.expectedDuration;
-    Duration eff;
-    if (exp != null && exp.inMilliseconds > 0) {
-      if (raw.inMilliseconds <= 0 ||
-          raw.inMilliseconds < exp.inMilliseconds ~/ 2) {
-        eff = exp;
-      } else {
-        eff = raw;
-      }
-    } else if (raw.inMilliseconds <= 0) {
-      eff = pos + const Duration(minutes: 5);
-    } else if (pos.inMilliseconds - raw.inMilliseconds > 2000) {
-      eff = pos + const Duration(minutes: 5);
-    } else {
-      eff = raw;
-    }
-    final key =
-        '${raw.inSeconds}|${exp?.inSeconds}|${eff.inSeconds}';
-    if (key != _lastDurationDbg) {
-      _lastDurationDbg = key;
-      print('⏱️ [DURATION] raw=${raw.inSeconds}s '
-          'expected=${exp?.inSeconds}s effective=${eff.inSeconds}s '
-          'pos=${pos.inSeconds}s');
-    }
-    return eff;
   }
 
   void _initWebViewController() {
@@ -2106,86 +1969,17 @@ if (widget.videoOptions.isNotEmpty) {
           toCast: false, // Bypass para ExoPlayer
         );
       } else if (_effectiveAlgorithm == 5) {
-        // Algoritmo 5 (http directo / Addon Latam): proxy PROGRESIVO local
-        // estilo Stremio (/pg/, NO el proxy clásico). El clásico abre una
-        // conexión al origen por cada rango y los orígenes con sesión o
-        // throttle por conexión devuelven tramos truncados/desalineados: el
-        // decodificador de audio falla tras el seek, el reloj A/V se
-        // descuadra y todo el video llega tardío (pantalla negra + audio).
-        // /pg/ mantiene UNA sola descarga secuencial limpia y sirve todos
-        // los rangos desde disco con bytes exactos.
-        final lower5 = videoUrl.toLowerCase();
-        if (!lower5.contains('.m3u8')) {
-          var ext5 = videoUrl
-              .split('?')
-              .first
-              .split('/')
-              .last
-              .split('.')
-              .last
-              .toLowerCase();
-          const validExts5 = {
-            'mp4',
-            'mkv',
-            'avi',
-            'mov',
-            'webm',
-            'flv',
-            'wmv'
-          };
-          if (ext5.length > 5 || !validExts5.contains(ext5)) ext5 = 'mp4';
-          effectiveUrl = await MediaProxyService().getProgressiveUrl(
-            videoUrl,
-            headers,
-            ext: ext5,
-            prefetch: true,
-          );
-          _pgTokenForCleanup = _pgTokenFromUrl(effectiveUrl);
-          // Escalera "que lea cualquiera" para algo 5:
-          // 1) Transcode (reconstruye timestamps: lee hasta timelines
-          //    corruptas) 2) copy-remux (re-indexa, barato) 3) /pg/ directo.
-          // Cada nivel tiene timeout y cae al siguiente sin romper el play.
-          // Primero liberar temporales de una resolución anterior (re-init
-          // sin dispose) para no acumular.
-          _releaseTempPlaybackFiles();
-          String? playUrl;
-          try {
-            playUrl = await MediaProxyService()
-                .getTranscodedUrl(effectiveUrl)
-                .timeout(const Duration(seconds: 30));
-            if (playUrl != null && playUrl.isNotEmpty) {
-              print('🎬 [TRANSCODE] Usando fMP4 transcodificado para algo 5');
-            }
-          } catch (_) {
-            playUrl = null;
-          }
-          if (playUrl == null) {
-            try {
-              playUrl = await MediaProxyService()
-                  .getRemuxedUrl(effectiveUrl)
-                  .timeout(const Duration(seconds: 20));
-              if (playUrl != null && playUrl.isNotEmpty) {
-                print('🎬 [REMUX] Usando fMP4 remuxeado para algo 5');
-              }
-            } catch (_) {
-              playUrl = null;
-            }
-          }
-          if (playUrl != null && playUrl.isNotEmpty) {
-            effectiveUrl = playUrl;
-            _ffStreamIdForCleanup = _ffIdFromUrl(playUrl);
-          }
-        } else {
-          // HLS: fuera del alcance del proxy progresivo, proxy clásico.
-          effectiveUrl = MediaProxyService().getProxiedUrl(
-            videoUrl,
-            headers,
-            useLocalhost: true,
-            algorithm: _effectiveAlgorithm,
-            remux: false,
-            toCast: false,
-          );
-        }
+        // Algoritmo 5 (http directo / Addon Latam): usar proxy local para
+        // que el seek (Range) se reenvíe correctamente con headers. El fix
+        // de Content-Disposition no-ASCII ya evita el crash del proxy.
+        effectiveUrl = MediaProxyService().getProxiedUrl(
+          videoUrl,
+          headers,
+          useLocalhost: true,
+          algorithm: _effectiveAlgorithm,
+          remux: false,
+          toCast: false,
+        );
       } else {
         effectiveUrl = MediaProxyService().getProxiedUrl(
           videoUrl,
@@ -2568,13 +2362,9 @@ if (widget.videoOptions.isNotEmpty) {
     if (_controller == null) return;
 
     if (_controller!.value.hasError) {
-      final desc = _controller!.value.errorDescription ?? '';
-      if (desc != _lastReportedVideoError) {
-        _lastReportedVideoError = desc;
-        print(
-          "⚠️ [VIDEO_ERROR] Detectado error en reproducción: $desc",
-        );
-      }
+      print(
+        "⚠️ [VIDEO_ERROR] Detectado error en reproducción: ${_controller!.value.errorDescription}",
+      );
       if (_effectiveAlgorithm == 3 &&
           _videasyServers.isNotEmpty &&
           _isAutoSelectEnabled) {
@@ -2629,8 +2419,8 @@ if (widget.videoOptions.isNotEmpty) {
     // Disparar midroll al llegar a la mitad del tiempo REAL visto (no posición)
     if (widget.mediaType == 'movie' &&
         !_isMidrollShown &&
-        _effectiveDuration().inSeconds > 0) {
-      final halfDuration = _effectiveDuration().inSeconds ~/ 2;
+        _controller!.value.duration.inSeconds > 0) {
+      final halfDuration = _controller!.value.duration.inSeconds ~/ 2;
       if (_realWatchedSeconds >= halfDuration) {
         _showMidrollAd();
         return;
@@ -2673,12 +2463,10 @@ if (widget.videoOptions.isNotEmpty) {
     if (!_isPushingNextEpisode &&
         widget.mediaType == 'series' &&
         _controller!.value.isInitialized) {
-      final duration = _effectiveDuration();
+      final duration = _controller!.value.duration;
       final position = _controller!.value.position;
 
-      // We consider it finished if it's within 500ms of the end or position >= duration.
-      // Con duración efectiva, los archivos con cabecera rota nunca disparan
-      // fin anticipado (la estimación siempre va por delante).
+      // We consider it finished if it's within 500ms of the end or position >= duration
       final bool reachedEnd =
           position >= duration ||
           (duration.inMilliseconds > 0 &&
@@ -2839,35 +2627,14 @@ if (widget.videoOptions.isNotEmpty) {
     }
   }
 
-  Timer? _volBoostDebounce;
-  double _pendingBoostVolume = 1.0;
-  double _lastVolPrintVal = -1;
-
   Future<void> _applyVolumeBoost(double targetVolume) async {
-    // Debounce: el drag vertical dispara decenas de llamadas/seg; pegar al
-    // volumen del sistema + booster nativo en cada una puede glitchear el
-    // audio (y spamea el log). Se aplica la primera al instante y el resto
-    // se coalesce al último valor cada 120 ms.
-    _pendingBoostVolume = targetVolume;
-    if (_volBoostDebounce?.isActive ?? false) return;
-    _volBoostDebounce = Timer(const Duration(milliseconds: 120), () {
-      if (!mounted) return;
-      _applyVolumeBoostNow(_pendingBoostVolume);
-    });
-    await _applyVolumeBoostNow(targetVolume);
-  }
-
-  Future<void> _applyVolumeBoostNow(double targetVolume) async {
     final clamped = targetVolume.clamp(0.0, 3.0);
     final baseVolume = clamped <= 1.0 ? clamped : 1.0;
 
     _setPlayerSoftwareVolume(targetVolume);
     await VolumeController.instance.setVolume(baseVolume);
 
-    if ((targetVolume - _lastVolPrintVal).abs() > 0.05) {
-      _lastVolPrintVal = targetVolume;
-      print('🔊 [VOL] target=$targetVolume base=$baseVolume (mpv+stream) aplicado');
-    }
+    print('🔊 [VOL] target=$targetVolume base=$baseVolume (mpv+stream) aplicado');
   }
 
   Future<dynamic> _evaluateJS(String source) async {
@@ -2957,8 +2724,6 @@ if (widget.videoOptions.isNotEmpty) {
       _controller?.dispose();
     }
     _webViewController = null;
-    _volBoostDebounce?.cancel();
-    _releaseTempPlaybackFiles();
     _transformController.dispose();
 
     // Restore initial brightness only if we are truly exiting the player.
@@ -3350,34 +3115,6 @@ if (widget.videoOptions.isNotEmpty) {
                           ),
                             ),
                           ),
-
-                      // Indicador de buffering: spinner tras seeks/aperturas
-                      // mientras el reproductor carga datos. Translúcido para
-                      // ver el último frame + IgnorePointer para no tapar taps.
-                      if (!_useWebViewPlayer && _controller != null)
-                        ValueListenableBuilder(
-                          valueListenable: _controller!,
-                          builder:
-                              (context, VideoPlayerValue value, _) {
-                            if (!value.isInitialized ||
-                                !value.isBuffering ||
-                                value.hasError) {
-                              return const SizedBox.shrink();
-                            }
-                            return const Positioned.fill(
-                              child: IgnorePointer(
-                                child: ColoredBox(
-                                  color: Colors.black38,
-                                  child: Center(
-                                    child: CircularProgressIndicator(
-                                      color: Color(0xFF00A3FF),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
 
                       // The InAppWebView: Hidden by default, visible ONLY for subtitle scraping or if manually requested
                       Offstage(
@@ -5059,18 +4796,10 @@ if (widget.videoOptions.isNotEmpty) {
                   final isCast = CastService().isConnected;
                   final duration = isCast
                       ? CastService().duration
-                      : _effectiveDuration();
+                      : (_controller?.value.duration ?? Duration.zero);
                   final position = isCast
                       ? CastService().position
                       : (_controller?.value.position ?? Duration.zero);
-
-                  // Diagnóstico temporal: qué recibe la barra del seek.
-                  final posSec = position.inSeconds;
-                  if (posSec ~/ 10 != _lastBarDbg ~/ 10) {
-                    _lastBarDbg = posSec;
-                    print('🎚️ [SEEKUI] pos=${posSec}s '
-                        'max=${duration.inSeconds}s');
-                  }
 
                   return Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -5136,47 +4865,16 @@ if (widget.videoOptions.isNotEmpty) {
                                 ),
                               )
                             else if (_controller != null)
-                              // Slider propio en vez de VideoProgressIndicator:
-                              // el indicador del plugin lee
-                              // controller.value.duration directo y se atora
-                              // en archivos con cabecera rota. Este usa la
-                              // duración efectiva (metadato TMDB o
-                              // auto-extendida).
-                              SliderTheme(
-                                data: const SliderThemeData(
-                                  trackHeight: 24,
-                                  activeTrackColor: Colors.transparent,
-                                  inactiveTrackColor: Colors.transparent,
-                                  thumbColor: Colors.transparent,
-                                  overlayColor: Colors.transparent,
-                                  thumbShape: RoundSliderThumbShape(
-                                    enabledThumbRadius: 12.0,
-                                  ),
-                                  overlayShape: RoundSliderOverlayShape(
-                                    overlayRadius: 0.0,
-                                  ),
+                              VideoProgressIndicator(
+                                _controller!,
+                                allowScrubbing: !_isTorrentSeekLocked,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
                                 ),
-                                child: Slider(
-                                  value: position.inMilliseconds
-                                      .toDouble()
-                                      .clamp(
-                                        0.0,
-                                        duration.inMilliseconds.toDouble() > 0
-                                            ? duration.inMilliseconds.toDouble()
-                                            : 1.0,
-                                      ),
-                                  max: duration.inMilliseconds.toDouble() > 0
-                                      ? duration.inMilliseconds.toDouble()
-                                      : 1.0,
-                                  onChanged: _isTorrentSeekLocked
-                                      ? null
-                                      : (val) {
-                                          _controller?.seekTo(
-                                            Duration(
-                                                milliseconds: val.toInt()),
-                                          );
-                                          _startHideTimer();
-                                        },
+                                colors: const VideoProgressColors(
+                                  playedColor: Colors.transparent,
+                                  bufferedColor: Colors.white24,
+                                  backgroundColor: Colors.transparent,
                                 ),
                               ),
                             // Iridescent Progress Bar
