@@ -59,20 +59,36 @@ class ProgressiveFileProxy {
   }) async {
     final urlKey = '$url|${headers.toString()}';
     // Reapertura: el archivo previo se elimina para arrancar limpio, SALVO
-    // que siga en uso activo (otro init/ffmpeg lo pidió hace segundos:
-    // borrarlo le daría 404), esté completo (replay instantáneo) o muerto
-    // (siempre se recrea para reintentar el origen).
+    // estos casos (borrar aquí daría 404 a un consumidor en vuelo):
+    // - completo: replay instantáneo;
+    // - en uso activo (<=10 s): otro init/ffmpeg lo está pidiendo;
+    // - muerto reciente (<=120 s): handoff entre reintentos del mismo play
+    //   (se revive y continúa donde quedó: los bytes son append-only);
+    // - fatal: se recrea para reintentar el origen (pero si está fresco por
+    //   un reintento en curso, se reutiliza para no romperlo).
     final existingToken = _urlToToken[urlKey];
     if (existingToken != null) {
       final existing = _entries[existingToken];
-      if (existing != null && !existing.dead) {
+      if (existing != null) {
         final idleSecs =
             DateTime.now().difference(existing.lastUse).inSeconds;
-        final reusable = existing.done || idleSecs <= 10;
-        if (reusable) {
+        final reusable = existing.done ||
+            (!existing.fatal && idleSecs <= 120);
+        if (reusable && !existing.dead) {
           existing.lastUse = DateTime.now();
           await _evictOthers(existingToken);
           if (prefetch) _ensureFetch(existing);
+          return existingToken;
+        }
+        if (reusable && existing.dead) {
+          // Handoff: revivir y continuar (no borrar bajo el otro consumidor).
+          existing.dead = false;
+          existing.fatal = false;
+          existing.failures = 0;
+          existing.lastUse = DateTime.now();
+          await _evictOthers(existingToken);
+          if (prefetch) _ensureFetch(existing);
+          print('[PG] Entrada reutilizada en handoff ($existingToken)');
           return existingToken;
         }
       }
@@ -120,9 +136,19 @@ class ProgressiveFileProxy {
   /// Libera una entrada al cerrar el reproductor: detiene su descarga y
   /// borra sus archivos de inmediato (no espera a las ventanas de evicción).
   Future<void> release(String token) async {
-    final e = _entries.remove(token);
-    _urlToToken.removeWhere((_, t) => t == token);
+    final e = _entries[token];
     if (e == null) return;
+    // Gracia de handoff: si otro consumidor la tocó hace <5 s (segundo init
+    // o ffmpeg arrancando), no borrar bajo sus pies; se marca dead (frena
+    // la descarga) pero se conserva mapeada para reutilización inmediata.
+    final idleSecs = DateTime.now().difference(e.lastUse).inSeconds;
+    if (idleSecs < 5) {
+      e.dead = true;
+      print('[PG] Release diferido ($token, en uso hace ${idleSecs}s)');
+      return;
+    }
+    _entries.remove(token);
+    _urlToToken.removeWhere((_, t) => t == token);
     e.dead = true;
     await e.deleteFiles();
     print('[PG] Entrada $token liberada al cerrar reproductor');
@@ -748,7 +774,17 @@ class ProgressiveFileProxy {
           } catch (_) {}
         }
       }
-      _entries.removeWhere((_, e) => e.dead);
+      // Purgar muertas abandonadas (>60 s sin uso) CON sus archivos. Las
+      // muertas frescas pueden revivir en handoff y conservan los suyos
+      // (si no, quedarían desvinculadas dejando huérfanos en disco).
+      for (final t in _entries.keys.toList()) {
+        final e = _entries[t];
+        if (e == null || !e.dead) continue;
+        if (now.difference(e.lastUse) > const Duration(seconds: 60)) {
+          await e.deleteFiles();
+          _entries.remove(t);
+        }
+      }
       _urlToToken.removeWhere((_, t) => !_entries.containsKey(t));
       if (total <= _kMaxCacheBytes) return;
       // Podar archivos huérfanos del caché hasta volver al tope.
