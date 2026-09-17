@@ -7,6 +7,8 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'progressive_file_proxy.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/ffmpeg_kit_config.dart';
+import 'package:ffmpeg_kit_flutter_new_https_gpl/log.dart';
 import 'package:ffmpeg_kit_flutter_new_https_gpl/return_code.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -24,6 +26,31 @@ class MediaProxyService {
   // --- Streaming FFmpeg (progresivo) ---
   final Map<String, _FfmpegStream> _activeStreams = {};
   String? _streamsDir;
+  // Anillo de logs FFmpeg por sesión (para diagnosticar rc!=0).
+  static final Map<int, List<String>> _ffmpegLogRing = {};
+  static bool _ffmpegLogHooked = false;
+
+  static void _hookFfmpegLogs() {
+    if (_ffmpegLogHooked) return;
+    _ffmpegLogHooked = true;
+    FFmpegKitConfig.enableLogCallback((Log? log) {
+      if (log == null) return;
+      final id = log.getSessionId();
+      final lines = _ffmpegLogRing.putIfAbsent(id, () => <String>[]);
+      lines.add(log.getMessage());
+      if (lines.length > 40) lines.removeAt(0);
+    });
+  }
+
+  static void _dumpFfmpegLogs(String id, int sessionId) {
+    final lines = _ffmpegLogRing.remove(sessionId) ?? const <String>[];
+    if (lines.isEmpty) return;
+    final tail = lines.length > 25 ? lines.sublist(lines.length - 25) : lines;
+    print('🎬 [FFMPEG] Log $id (últimas ${tail.length}):');
+    for (final l in tail) {
+      print('🎬 [FFMPEG][$id] $l');
+    }
+  }
 
   Future<String> _ensureStreamsDir() async {
     if (_streamsDir != null) return _streamsDir!;
@@ -94,6 +121,7 @@ class MediaProxyService {
       outputPath: outputPath,
     );
 
+    _hookFfmpegLogs();
     FFmpegKit.executeAsync(cmd, (session) async {
       final rc = await session.getReturnCode();
       final isOk = ReturnCode.isSuccess(rc);
@@ -106,6 +134,11 @@ class MediaProxyService {
           print('🎬 [FFMPEG] Fail trace $id: '
               '${str.length > 2000 ? str.substring(str.length - 2000) : str}');
         } catch (_) {}
+        try {
+          _dumpFfmpegLogs(id, session.getSessionId());
+        } catch (_) {}
+      } else {
+        _ffmpegLogRing.remove(session.getSessionId());
       }
       final entry = _activeStreams[id];
       if (entry != null) {

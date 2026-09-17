@@ -426,38 +426,34 @@ class ProgressiveFileProxy {
     }
   }
 
-  /// Planificador con UNA sola conexión al origen a la vez: primero la cola
-  /// (índice moov, con timeout corto en la primera ronda para no frenar el
-  /// arranque), luego chunks secuenciales de 4 MB con resume. La cola se
-  /// reintenta con backoff mientras falte. Los fallos se resetean con cada
-  /// éxito; fatal tras 6 seguidos.
+  /// Planificador con UNA sola conexión al origen a la vez: cabeza primero
+  /// (arranque en segundos) y cola del índice en cuanto haya colchón
+  /// (>= 8 MB descargados), luego chunks secuenciales. La cola se reintenta
+  /// con backoff mientras falte. Los fallos se resetean con cada éxito;
+  /// fatal tras 6 seguidos.
   static const int _kChunkSize = 4 * 1024 * 1024;
+  // Cola en cuanto haya este colchón de cabeza: suficiente para arrancar el
+  // player/FFmpeg, sin retrasar el índice (en orígenes lentos 8 MB eran ~40 s
+  // y todo expiraba antes: init 25 s, ladder 20-25 s).
+  static const int _kHeadStartBytes = 2 * 1024 * 1024;
 
   Future<void> _fetchScheduler(_PgEntry entry) async {
     entry.fetchStartedAt ??= DateTime.now();
-    var rounds = 0;
     try {
       while (!entry.done && !entry.fatal && !entry.dead) {
-        rounds++;
-        // 1) Cola pendiente: primera ronda con timeout corto, luego backoff.
+        // 1) Cola (índice moov) solo con colchón de cabeza y backoff.
         final total = entry.totalBytes;
+        final have = await entry.localSize();
         final needTail = !entry.tailReady &&
             total != null &&
             total > _kTailSize &&
+            (have >= _kHeadStartBytes || entry.done) &&
             (entry.lastTailTry == null ||
                 DateTime.now().difference(entry.lastTailTry!) >
                     const Duration(seconds: 60));
         if (needTail) {
           entry.lastTailTry = DateTime.now();
-          final quick = rounds == 1;
-          final okTail = await _fetchTailOnce(
-            entry,
-            sendTimeout:
-                quick ? const Duration(seconds: 12) : const Duration(seconds: 30),
-            stallTimeout:
-                quick ? const Duration(seconds: 8) : _kStallTimeout,
-          );
-          if (okTail) {
+          if (await _fetchTailOnce(entry)) {
             entry.failures = 0;
             continue;
           }
