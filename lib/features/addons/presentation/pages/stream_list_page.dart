@@ -1070,7 +1070,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                   : const Icon(Icons.downloading, color: Colors.white24),
             ],
           ),
-          onTap: () => _play(stream, siblings: list),
+          onTap: () => _play(stream, siblings: siblings),
         ),
       ),
     );
