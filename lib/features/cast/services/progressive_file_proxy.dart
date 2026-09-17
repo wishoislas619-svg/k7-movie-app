@@ -156,6 +156,23 @@ class ProgressiveFileProxy {
 
   _PgEntry? get(String token) => _entries[token];
 
+  /// Estado de una descarga para el watchdog del player (link muerto).
+  Future<Map<String, dynamic>?> status(String token) async {
+    final e = _entries[token];
+    if (e == null) return null;
+    var dl = 0;
+    try {
+      dl = await e.file.length();
+    } catch (_) {}
+    return {
+      'downloaded': dl,
+      'total': e.totalBytes,
+      'fatal': e.fatal,
+      'done': e.done,
+      'age': DateTime.now().difference(e.createdAt).inSeconds,
+    };
+  }
+
   /// Sirve una petición HTTP con soporte total de rangos sobre el archivo
   /// creciente. Si el rango pedido aún no se descargó, espera hasta
   /// [_kWaitForBytesTimeout] (el reproductor reintenta si falla).
@@ -832,6 +849,8 @@ class _PgEntry {
   // Generación del archivo: cada truncate la sube; los lectores (pump) con
   // generación vieja abortan en vez de servir bytes mezclados.
   int generation = 0;
+  // Nacimiento de la entrada (para el watchdog de link muerto).
+  final DateTime createdAt = DateTime.now();
   // Contadores en memoria para log de progreso (evitan stat por chunk).
   int memBytes = 0;
   int lastLogBytes = 0;

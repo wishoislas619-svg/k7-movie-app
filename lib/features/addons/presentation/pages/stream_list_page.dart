@@ -239,7 +239,11 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     }
   }
 
-  Future<void> _play(TorrentStream stream) async {
+  Future<void> _play(
+    TorrentStream stream, {
+    List<TorrentStream>? siblings,
+    Set<TorrentStream>? tried,
+  }) async {
     String? directUrl = stream.url;
     TorrentPlaybackSession? torrentSession;
     TorrentStreamingHandle? torrentHandle;
@@ -361,7 +365,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         }
       }
     } catch (_) {}
-    await Navigator.push(
+    final playResult = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => VideoPlayerPage(
@@ -387,6 +391,38 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       print('TORRENT_DBG: llamando stop() para liberar el torrent');
       await TorrentStreamingService.instance.stop(sessionToStop);
       print('TORRENT_DBG: stop() hecho');
+    }
+    // Link muerto (el reproductor no bajó ni un byte): probar solo con el
+    // siguiente enlace de la misma pestaña, estilo Stremio.
+    if (playResult == 'linkDead' && siblings != null && mounted) {
+      final already = tried ?? <TorrentStream>{};
+      already.add(stream);
+      TorrentStream? next;
+      for (final s in siblings) {
+        if (!already.contains(s) && _canPlay(s)) {
+          next = s;
+          break;
+        }
+      }
+      if (next != null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  'Enlace caído, probando: ${next.title.isNotEmpty ? next.title : next.name}'),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+        await _play(next, siblings: siblings, tried: already);
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ningún enlace de la lista responde.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
     }
   }
 
@@ -842,7 +878,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
           itemCount: list.length,
-          itemBuilder: (context, index) => _buildStreamTile(list[index]),
+          itemBuilder: (context, index) => _buildStreamTile(list[index], list),
         ),
       );
     }
@@ -893,7 +929,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     }
   }
 
-  Widget _buildStreamTile(TorrentStream stream) {
+  Widget _buildStreamTile(TorrentStream stream, List<TorrentStream> siblings) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: EnergyFlowBorder(
@@ -1034,7 +1070,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                   : const Icon(Icons.downloading, color: Colors.white24),
             ],
           ),
-          onTap: () => _play(stream),
+          onTap: () => _play(stream, siblings: list),
         ),
       ),
     );

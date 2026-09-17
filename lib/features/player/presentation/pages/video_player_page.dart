@@ -833,7 +833,38 @@ if (widget.videoOptions.isNotEmpty) {
     _progressSaveTimer?.cancel();
     _progressSaveTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
       _saveProgress();
+      _checkLinkDead();
     });
+  }
+
+  bool _linkDeadActed = false;
+
+  /// Watchdog de link muerto (estilo Stremio: saltar al siguiente enlace).
+  /// Si a los ~25 s de registrado no bajó ni un byte (token expirado /
+  /// tarpit), se devuelve 'linkDead' para que la lista pruebe el siguiente.
+  /// Una vez que baja algo, jamás dispara (solo cubre muerte al nacer).
+  Future<void> _checkLinkDead() async {
+    final token = _pgTokenForCleanup;
+    if (token == null || _linkDeadActed || !mounted) return;
+    try {
+      final st = await ProgressiveFileProxy.instance.status(token);
+      if (st == null || !mounted || _linkDeadActed) return;
+      final downloaded = (st['downloaded'] as int?) ?? 0;
+      if (downloaded > 0) {
+        _linkDeadActed = true; // Sano: no volver a revisar este token.
+        return;
+      }
+      final fatal = (st['fatal'] as bool?) ?? false;
+      final age = (st['age'] as int?) ?? 0;
+      if (fatal || age >= 25) {
+        _linkDeadActed = true;
+        print('💀 [LINKDEAD] Sin bytes en ${age}s (fatal=$fatal), '
+            'devolviendo para probar siguiente enlace');
+        if (mounted) {
+          Navigator.of(context).pop('linkDead');
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _saveProgress() async {
