@@ -109,11 +109,16 @@ class MediaProxyService {
     // (-c:a aac + aresample async) porque su framing/timeline suele venir
     // roto en estos archivos. Sintaxis moderna FFmpeg 7 (-async/-vsync ya no
     // existen y mataban la sesión con rc=1 al instante).
+    // -reconnect*: la entrada es nuestro /pg/ local en construcción (o un
+    // origen flaky): ante un 404/502 transitorio, reintenta en vez de morir
+    // con rc=1 al instante.
+    const recon =
+        '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5';
     final cmd = transcodeVideo
-        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-fflags +genpts -i "$url" -map 0:v:0 -map 0:a? -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 -fps_mode cfr -c:a aac -b:a 128k -af aresample=async=1 -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
+        ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}$recon -fflags +genpts -i "$url" -map 0:v:0 -map 0:a? -c:v libx264 -preset ultrafast -tune zerolatency -crf 23 -fps_mode cfr -c:a aac -b:a 128k -af aresample=async=1 -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
         : fixMp4
-            ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}-i "$url" -map 0:v:0 -map 0:a? -c copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
-            : '-y -headers "$headerStr\\r\\n" -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
+            ? '-y ${headerStr.isEmpty ? '' : '-headers "$headerStr\\r\\n" '}$recon -i "$url" -map 0:v:0 -map 0:a? -c copy -f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof "$outputPath"'
+            : '-y -headers "$headerStr\\r\\n" $recon -i "$url" -c copy -f mp4 -movflags +frag_keyframe+empty_moov "$outputPath"';
     print('🎬 [FFMPEG] Starting stream $id: $cmd');
 
     _activeStreams[id] = _FfmpegStream(

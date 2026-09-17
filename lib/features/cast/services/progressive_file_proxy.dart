@@ -58,13 +58,25 @@ class ProgressiveFileProxy {
     bool prefetch = false,
   }) async {
     final urlKey = '$url|${headers.toString()}';
-    // Borrado agresivo: aunque sea el MISMO enlace ya en disco, se elimina
-    // y se empieza limpio. El archivo previo puede traer bytes mezclados o
-    // truncos de sesiones con reinicios del origen, y reutilizarlo recicla
-    // el error (pantalla negra tras seek). Se prefiere re-descargar.
+    // Reapertura: el archivo previo se elimina para arrancar limpio, SALVO
+    // que siga en uso activo (otro init/ffmpeg lo pidió hace segundos:
+    // borrarlo le daría 404), esté completo (replay instantáneo) o muerto
+    // (siempre se recrea para reintentar el origen).
     final existingToken = _urlToToken[urlKey];
     if (existingToken != null) {
-      final existing = _entries.remove(existingToken);
+      final existing = _entries[existingToken];
+      if (existing != null && !existing.dead) {
+        final idleSecs =
+            DateTime.now().difference(existing.lastUse).inSeconds;
+        final reusable = existing.done || idleSecs <= 10;
+        if (reusable) {
+          existing.lastUse = DateTime.now();
+          await _evictOthers(existingToken);
+          if (prefetch) _ensureFetch(existing);
+          return existingToken;
+        }
+      }
+      _entries.remove(existingToken);
       _urlToToken.remove(urlKey);
       if (existing != null) {
         existing.dead = true;
