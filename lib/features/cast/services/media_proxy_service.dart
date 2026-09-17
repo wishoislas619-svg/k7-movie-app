@@ -135,10 +135,14 @@ class MediaProxyService {
               '${str.length > 2000 ? str.substring(str.length - 2000) : str}');
         } catch (_) {}
         try {
-          _dumpFfmpegLogs(id, session.getSessionId());
+          final sid = session.getSessionId();
+          if (sid != null) _dumpFfmpegLogs(id, sid);
         } catch (_) {}
       } else {
-        _ffmpegLogRing.remove(session.getSessionId());
+        try {
+          final sid = session.getSessionId();
+          if (sid != null) _ffmpegLogRing.remove(sid);
+        } catch (_) {}
       }
       final entry = _activeStreams[id];
       if (entry != null) {
