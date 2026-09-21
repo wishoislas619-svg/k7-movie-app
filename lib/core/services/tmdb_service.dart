@@ -30,6 +30,30 @@ class TmdbService {
     return null;
   }
 
+  /// Duración real de una película (TMDB `runtime`, en minutos).
+  /// Se usa como duración autoritativa mientras un torrent progresivo aún
+  /// está incompleto: el probe del player sobre un stream parcial puede
+  /// reportar una duración corta y falsa (p. ej. 1:56 en vez de 1:55:41).
+  /// Devuelve null si no hay runtime o falla la petición.
+  static Future<Duration?> getMovieRuntime(String tmdbId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/movie/$tmdbId?api_key=$_apiKey&language=es-MX'),
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final runtime = data['runtime'];
+        if (runtime is num && runtime > 0) {
+          return Duration(minutes: runtime.toInt());
+        }
+      }
+    } catch (e) {
+      print('TMDB Runtime Error: $e');
+    }
+    return null;
+  }
+
   static Future<List<Map<String, dynamic>>> searchMovies(String query) async {
     try {
       final uri = Uri.parse(
