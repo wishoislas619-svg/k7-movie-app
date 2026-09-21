@@ -192,6 +192,10 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   }
 
   Widget _buildLoginCard() {
+    // En horizontal: dos columnas para aprovechar el ancho (izquierda =
+    // credenciales + entrar/crear; derecha = Google + recuperaciones).
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
     return EnergyFlowBorder(
       borderRadius: 24,
       borderWidth: 1.5,
@@ -212,149 +216,199 @@ class _LoginPageState extends ConsumerState<LoginPage> {
               ),
             ),
             const SizedBox(height: 16),
-            
-            // Username/Email Field
-            TextField(
-              controller: _emailController,
-              keyboardType: TextInputType.emailAddress,
-              style: const TextStyle(color: Colors.white),
-              decoration: _buildInputDecoration('NOMBRE DE USUARIO O CORREO', Icons.person_outline),
-            ),
-            const SizedBox(height: 16),
-            
-            // Password Field
-            TextField(
-              controller: _passwordController,
-              obscureText: _obscurePassword,
-              style: const TextStyle(color: Colors.white),
-              decoration: _buildInputDecoration('CONTRASEÑA', Icons.lock_outline).copyWith(
-                suffixIcon: IconButton(
-                  icon: Icon(_obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined, color: Colors.white24, size: 20),
-                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                ),
-              ),
-            ),
-            const SizedBox(height: 24),
-            
-            // Entrar Button
-            Container(
-              width: double.infinity,
-              height: 55,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF00A3FF).withOpacity(0.3),
-                    blurRadius: 15,
-                    offset: const Offset(-5, 0),
-                  ),
-                  BoxShadow(
-                    color: const Color(0xFFD400FF).withOpacity(0.3),
-                    blurRadius: 15,
-                    offset: const Offset(5, 0),
-                  )
-                ],
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: _isLoading ? null : _login,
-                  borderRadius: BorderRadius.circular(12),
-                  child: Center(
-                    child: _isLoading
-                      ? const CircularProgressIndicator(color: Colors.white)
-                      : const Text(
-                          'ENTRAR',
-                          style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 2),
-                        ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            
-            // Crear Cuenta Button
-            Container(
-              width: double.infinity,
-              height: 55,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                color: Colors.white.withOpacity(0.03),
-                border: Border.all(color: Colors.white.withOpacity(0.1)),
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterPage()));
-                  },
-                  borderRadius: BorderRadius.circular(12),
-                  child: const Center(
-                    child: Text(
-                      'CREAR CUENTA',
-                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 2),
+            if (isLandscape)
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Izquierda: credenciales + entrar/crear.
+                  Expanded(
+                    child: Column(
+                      children: [
+                        _buildEmailField(),
+                        const SizedBox(height: 16),
+                        _buildPasswordField(),
+                        const SizedBox(height: 24),
+                        _buildEnterButton(),
+                        const SizedBox(height: 12),
+                        _buildCreateAccountButton(),
+                      ],
                     ),
                   ),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 12),
-
-            // Iniciar Sesión con Google
-            Container(
-              width: double.infinity,
-              height: 55,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                color: Colors.white,
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: _isLoading ? null : _loginWithGoogle,
-                  borderRadius: BorderRadius.circular(12),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Text(
-                        'CONTINUAR CON GOOGLE',
-                        style: TextStyle(color: Colors.black, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1),
-                      ),
-                      const SizedBox(width: 12),
-                      Image.network(
-                        'https://static.vecteezy.com/system/resources/previews/022/613/027/non_2x/google-icon-logo-symbol-free-png.png',
-                        height: 24,
-                      ),
-                    ],
+                  const SizedBox(width: 20),
+                  // Derecha: Google + recuperaciones.
+                  Expanded(
+                    child: Column(
+                      children: [
+                        _buildGoogleButton(),
+                        const SizedBox(height: 20),
+                        _buildForgotPasswordLink(),
+                        const SizedBox(height: 10),
+                        _buildLostDeviceLink(),
+                      ],
+                    ),
                   ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            
-            // Forgot Password
-            TextButton(
-              onPressed: () => _showForgotPasswordDialog(),
-              child: const Text('¿OLVIDASTE TU CONTRASEÑA?', style: TextStyle(color: Colors.white38, fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
-            ),
-            
-            const SizedBox(height: 10),
-            
-            // Perdiste tu dispositivo
-            TextButton(
-              onPressed: () => _showRecoveryDialog(),
-              child: const Text('¿PERDISTE TU DISPOSITIVO?', style: TextStyle(color: Color(0xFF00A3FF), fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
-            )
+                ],
+              )
+            else ...[
+              _buildEmailField(),
+              const SizedBox(height: 16),
+              _buildPasswordField(),
+              const SizedBox(height: 24),
+              _buildEnterButton(),
+              const SizedBox(height: 12),
+              _buildCreateAccountButton(),
+              const SizedBox(height: 12),
+              _buildGoogleButton(),
+              const SizedBox(height: 20),
+              _buildForgotPasswordLink(),
+              const SizedBox(height: 10),
+              _buildLostDeviceLink(),
+            ],
           ],
         ),
       );
     }
+
+  Widget _buildEmailField() {
+    return TextField(
+      controller: _emailController,
+      keyboardType: TextInputType.emailAddress,
+      style: const TextStyle(color: Colors.white),
+      decoration: _buildInputDecoration('NOMBRE DE USUARIO O CORREO', Icons.person_outline),
+    );
+  }
+
+  Widget _buildPasswordField() {
+    return TextField(
+      controller: _passwordController,
+      obscureText: _obscurePassword,
+      style: const TextStyle(color: Colors.white),
+      decoration: _buildInputDecoration('CONTRASEÑA', Icons.lock_outline).copyWith(
+        suffixIcon: IconButton(
+          icon: Icon(_obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined, color: Colors.white24, size: 20),
+          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEnterButton() {
+    return Container(
+      width: double.infinity,
+      height: 55,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF00A3FF).withOpacity(0.3),
+            blurRadius: 15,
+            offset: const Offset(-5, 0),
+          ),
+          BoxShadow(
+            color: const Color(0xFFD400FF).withOpacity(0.3),
+            blurRadius: 15,
+            offset: const Offset(5, 0),
+          )
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: _isLoading ? null : _login,
+          borderRadius: BorderRadius.circular(12),
+          child: Center(
+            child: _isLoading
+              ? const CircularProgressIndicator(color: Colors.white)
+              : const Text(
+                  'ENTRAR',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 2),
+                ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCreateAccountButton() {
+    return Container(
+      width: double.infinity,
+      height: 55,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.white.withOpacity(0.03),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterPage()));
+          },
+          borderRadius: BorderRadius.circular(12),
+          child: const Center(
+            child: Text(
+              'CREAR CUENTA',
+              style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 2),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGoogleButton() {
+    return Container(
+      width: double.infinity,
+      height: 55,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.white,
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: _isLoading ? null : _loginWithGoogle,
+          borderRadius: BorderRadius.circular(12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Flexible(
+                child: Text(
+                  'CONTINUAR CON GOOGLE',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: Colors.black, fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Image.network(
+                'https://static.vecteezy.com/system/resources/previews/022/613/027/non_2x/google-icon-logo-symbol-free-png.png',
+                height: 24,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildForgotPasswordLink() {
+    return TextButton(
+      onPressed: () => _showForgotPasswordDialog(),
+      child: const Text('¿OLVIDASTE TU CONTRASEÑA?', style: TextStyle(color: Colors.white38, fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
+    );
+  }
+
+  Widget _buildLostDeviceLink() {
+    return TextButton(
+      onPressed: () => _showRecoveryDialog(),
+      child: const Text('¿PERDISTE TU DISPOSITIVO?', style: TextStyle(color: Color(0xFF00A3FF), fontSize: 10, letterSpacing: 1.5, fontWeight: FontWeight.bold)),
+    );
+  }
 
   void _showForgotPasswordDialog() {
     showDialog(

@@ -365,48 +365,97 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
 
   @override
   Widget build(BuildContext context) {
+    // Solo series muestra barra superior, y únicamente con las tabs de
+    // temporada (sin título repetido). La flecha va flotante sobre el fondo.
+    final showSeasonTabs = widget.isSeries &&
+        !widget.isEpisodeMode &&
+        _seriesTabsReady &&
+        _seasons.isNotEmpty;
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: Text(
-          widget.movieName,
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-        bottom: widget.isSeries && _seriesTabsReady && _seasons.isNotEmpty
-            ? TabBar(
-                controller: _tabController,
-                isScrollable: true,
-                labelColor: const Color(0xFF00A3FF),
-                unselectedLabelColor: Colors.white54,
-                onTap: (i) {
-                  final seasonNumber =
-                      (_seasons[i]['season_number'] as int?) ?? i + 1;
-                  _loadEpisodes(seasonNumber);
-                },
-                tabs: [
-                  for (final s in _seasons)
-                    Tab(text: 'T${s['season_number']}')
-                ],
-              )
-            : null,
-      ),
+      appBar: showSeasonTabs
+          ? PreferredSize(
+              preferredSize: const Size.fromHeight(kTextTabBarHeight),
+              child: Material(
+                color: Colors.black,
+                child: TabBar(
+                  controller: _tabController,
+                  isScrollable: true,
+                  labelColor: const Color(0xFF00A3FF),
+                  unselectedLabelColor: Colors.white54,
+                  onTap: (i) {
+                    final seasonNumber =
+                        (_seasons[i]['season_number'] as int?) ?? i + 1;
+                    _loadEpisodes(seasonNumber);
+                  },
+                  tabs: [
+                    for (final s in _seasons)
+                      Tab(text: 'T${s['season_number']}')
+                  ],
+                ),
+              ),
+            )
+          : null,
       body: _resolving
           ? const Center(
               child: CircularProgressIndicator(color: Color(0xFF00A3FF)))
-          : _buildBody(),
+          : Stack(
+              children: [
+                _buildBody(),
+                // Flecha de retroceso siempre visible, flotante en la esquina
+                // superior derecha sobre el fondo (a la izquierda taparía el
+                // póster). No gasta barra negra.
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: SafeArea(
+                    bottom: false,
+                    left: false,
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 6, top: 6),
+                      child: Material(
+                        color: Colors.black.withValues(alpha: 0.45),
+                        shape: const CircleBorder(),
+                        child: InkWell(
+                          customBorder: const CircleBorder(),
+                          onTap: () => Navigator.maybePop(context),
+                          child: const Padding(
+                            padding: EdgeInsets.all(8),
+                            child: Icon(
+                              Icons.arrow_back,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
     );
   }
 
   Widget _buildBody() {
     if (_imdbId == null) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'No se pudo identificar la película en IMDb. Asegúrate de tener conectados tus addons.',
-            style: TextStyle(color: Colors.white38),
-            textAlign: TextAlign.center,
+      return SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minHeight: MediaQuery.of(context).size.height -
+                kToolbarHeight -
+                MediaQuery.of(context).padding.top,
+          ),
+          child: const Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                'No se pudo identificar la película en IMDb. Asegúrate de tener conectados tus addons.',
+                style: TextStyle(color: Colors.white38),
+                textAlign: TextAlign.center,
+              ),
+            ),
           ),
         ),
       );
@@ -414,23 +463,44 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
 
     final addons = ref.watch(addonsProvider).valueOrNull ?? [];
 
-    return Column(
-      children: [
-        _buildHeader(addons),
-        const Divider(color: Colors.white10),
-        Expanded(
-          child: widget.isEpisodeMode
-              ? _buildStreamsSection(addons)
-              : widget.isSeries
-              ? (!_seriesTabsReady
-                    ? const Center(
-                        child: CircularProgressIndicator(
-                            color: Color(0xFF00A3FF)),
-                      )
-                    : _buildEpisodesList())
-              : _buildStreamsSection(addons),
+    // El encabezado (fondo/póster/título) vive en un sliver: se desplaza
+    // con el scroll vertical y libera todo el alto para los enlaces
+    // (clave en horizontal). Las tabs y listas del body no se tocan.
+    return NestedScrollView(
+      headerSliverBuilder: (context, innerBoxIsScrolled) => [
+        SliverToBoxAdapter(child: _buildHeader(addons)),
+        const SliverToBoxAdapter(
+          child: Divider(color: Colors.white10),
         ),
       ],
+      body: widget.isEpisodeMode
+          ? _buildStreamsSection(addons)
+          : widget.isSeries
+          ? (!_seriesTabsReady
+                ? _buildBodyMessage(
+                    const CircularProgressIndicator(
+                        color: Color(0xFF00A3FF)),
+                  )
+                : _buildEpisodesList())
+          : _buildStreamsSection(addons),
+    );
+  }
+
+  /// Mensaje/estado centrado que hace scroll si no cabe en el alto
+  /// disponible (en horizontal el header deja poco espacio al body y un
+  /// Center pelado revienta con RenderFlex overflow).
+  Widget _buildBodyMessage(Widget child) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: ConstrainedBox(
+            constraints:
+                BoxConstraints(minHeight: constraints.maxHeight),
+            child: Center(child: child),
+          ),
+        );
+      },
     );
   }
 
@@ -723,8 +793,8 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
 
   Widget _buildStreamsSection(List<InstalledAddon> addons) {
     if (addons.isEmpty) {
-      return Center(
-        child: Padding(
+      return _buildBodyMessage(
+        Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -748,13 +818,13 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     }
 
     if (_loadingStreams) {
-      return const Center(
-        child: CircularProgressIndicator(color: Color(0xFF00A3FF)),
+      return _buildBodyMessage(
+        const CircularProgressIndicator(color: Color(0xFF00A3FF)),
       );
     }
     if (_streamsError != null) {
-      return Center(
-        child: Padding(
+      return _buildBodyMessage(
+        Padding(
           padding: const EdgeInsets.all(24),
           child: Text(_streamsError!,
               style: const TextStyle(color: Colors.redAccent),
@@ -765,13 +835,13 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
 
     final streams = _streamsByEpisode[_activeEpisodeNumber ?? 0] ?? [];
     if (streams.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
+      return _buildBodyMessage(
+        const Padding(
+          padding: EdgeInsets.all(24),
           child: Text(
             'No se encontraron streams para esta película.\n'
             'Prueba con otro addon o configura un servicio debrid en Torrentio.',
-            style: const TextStyle(color: Colors.white38),
+            style: TextStyle(color: Colors.white38),
             textAlign: TextAlign.center,
           ),
         ),
@@ -800,8 +870,8 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
 
     Widget buildList(List<TorrentStream> list, String emptyMsg) {
       if (list.isEmpty) {
-        return Center(
-          child: Padding(
+        return _buildBodyMessage(
+          Padding(
             padding: const EdgeInsets.all(24),
             child: Text(emptyMsg, style: const TextStyle(color: Colors.white38), textAlign: TextAlign.center),
           ),

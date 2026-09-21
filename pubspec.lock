@@ -779,10 +779,9 @@ packages:
   libtorrent_flutter:
     dependency: "direct main"
     description:
-      name: libtorrent_flutter
-      sha256: fd954704312c6990294e7bcb40ed5bcf6c9edf8976a547649de32100e0523199
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/libtorrent_flutter"
+      relative: true
+    source: path
     version: "2.0.0"
   lints:
     dependency: transitive
@@ -1568,10 +1567,9 @@ packages:
   video_player_media_kit:
     dependency: "direct main"
     description:
-      name: video_player_media_kit
-      sha256: "66c5f30e2700f4528154320e708f89f4a80075b2451bebc6fef73a15d63a3fca"
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/video_player_media_kit"
+      relative: true
+    source: path
     version: "2.0.0"
   video_player_platform_interface:
     dependency: transitive
