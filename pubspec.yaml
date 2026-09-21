@@ -81,6 +81,8 @@ dependencies:
   # Vendorizado en packages/ (ver nota arriba).
   libtorrent_flutter:
     path: packages/libtorrent_flutter
+  # Tráilers YouTube → stream directo para el reproductor propio.
+  youtube_explode_dart: ^3.1.0
 
 dev_dependencies:
   flutter_test:

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:uuid/uuid.dart';
@@ -78,19 +79,77 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   int? _activeEpisodeNumber;
   late TabController _sourceTabController;
 
+  // Tráiler (4ta tab): carga perezosa al abrirla por primera vez.
+  bool _trailerLoaded = false;
+  bool _loadingTrailer = false;
+  bool _resolvingTrailer = false;
+  Map<String, String>? _trailer; // {'key', 'name'}
+  Map<String, String?>? _director; // {'name', 'photo'}
+  List<Map<String, String?>> _cast = []; // {'name', 'character', 'photo'}
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 1, vsync: this);
-    _sourceTabController = TabController(length: 3, vsync: this);
+    // Tráiler es la primera tab y arranca seleccionada (dispara su carga).
+    _sourceTabController = TabController(length: 4, vsync: this);
+    _sourceTabController.addListener(_onSourceTabChanged);
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _onSourceTabChanged());
     _resolveImdb();
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    _sourceTabController.removeListener(_onSourceTabChanged);
     _sourceTabController.dispose();
     super.dispose();
+  }
+
+  /// Carga perezosa de la tab Tráiler (videos + créditos TMDB).
+  void _onSourceTabChanged() {
+    if (_sourceTabController.index == 0 &&
+        !_trailerLoaded &&
+        !_loadingTrailer) {
+      _loadTrailerTab();
+    }
+  }
+
+  Future<void> _loadTrailerTab() async {
+    setState(() => _loadingTrailer = true);
+    try {
+      final results = await Future.wait([
+        TmdbService.getTrailer(widget.tmdbId, isSeries: widget.isSeries),
+        TmdbService.getCredits(widget.tmdbId, isSeries: widget.isSeries),
+      ]);
+      if (!mounted) return;
+      final credits = results[1] as Map<String, dynamic>;
+      setState(() {
+        _trailer = results[0] as Map<String, String>?;
+        final d = credits['director'];
+        _director = d == null
+            ? null
+            : {'name': d['name']?.toString(), 'photo': d['photo']?.toString()};
+        _cast = ((credits['cast'] as List?) ?? [])
+            .whereType<Map>()
+            .map((c) => {
+                  'name': c['name']?.toString(),
+                  'character': c['character']?.toString(),
+                  'photo': c['photo']?.toString(),
+                })
+            .toList();
+        _trailerLoaded = true;
+        _loadingTrailer = false;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _trailerLoaded = true;
+          _loadingTrailer = false;
+        });
+      }
+    }
   }
 
   bool _isLatamStream(TorrentStream s) {
@@ -504,6 +563,33 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     );
   }
 
+  /// CTA para instalar addons (se usa en las tabs de fuentes cuando no hay
+  /// ninguno instalado; la tab Tráiler muestra su contenido igual).
+  Widget _buildNoAddonsCta() {
+    return _buildBodyMessage(
+      Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.extension_off,
+                color: Colors.white24, size: 48),
+            const SizedBox(height: 16),
+            const Text('No tienes addons instalados.',
+                style: TextStyle(color: Colors.white38)),
+            const SizedBox(height: 12),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF00A3FF)),
+              onPressed: () => _openAddons(),
+              child: const Text('Ir a Addons'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildHeader(List<InstalledAddon> addons) {
     final backdrop = _backdrop;
     final isLandscape = ResponsiveLayout.isLandscape(context);
@@ -687,6 +773,22 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                             style: const TextStyle(
                                 color: Colors.white38, fontSize: 12),
                           ),
+                          const SizedBox(width: 8),
+                          // + para agregar addons sin salir de la pantalla
+                          // (al volver se recargan los enlaces solos).
+                          Material(
+                            color: const Color(0xFF00A3FF),
+                            shape: const CircleBorder(),
+                            child: InkWell(
+                              customBorder: const CircleBorder(),
+                              onTap: _openAddons,
+                              child: const Padding(
+                                padding: EdgeInsets.all(5),
+                                child: Icon(Icons.add,
+                                    color: Colors.white, size: 14),
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ],
@@ -792,31 +894,6 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   }
 
   Widget _buildStreamsSection(List<InstalledAddon> addons) {
-    if (addons.isEmpty) {
-      return _buildBodyMessage(
-        Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.extension_off,
-                  color: Colors.white24, size: 48),
-              const SizedBox(height: 16),
-              const Text('No tienes addons instalados.',
-                  style: TextStyle(color: Colors.white38)),
-              const SizedBox(height: 12),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF00A3FF)),
-                onPressed: () => _openAddons(),
-                child: const Text('Ir a Addons'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
     if (_loadingStreams) {
       return _buildBodyMessage(
         const CircularProgressIndicator(color: Color(0xFF00A3FF)),
@@ -834,19 +911,6 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     }
 
     final streams = _streamsByEpisode[_activeEpisodeNumber ?? 0] ?? [];
-    if (streams.isEmpty) {
-      return _buildBodyMessage(
-        const Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'No se encontraron streams para esta película.\n'
-            'Prueba con otro addon o configura un servicio debrid en Torrentio.',
-            style: TextStyle(color: Colors.white38),
-            textAlign: TextAlign.center,
-          ),
-        ),
-      );
-    }
 
     // Agrupar por fuente para tabs Torrentio / Latam / Otros
     final epKey = _activeEpisodeNumber ?? 0;
@@ -870,6 +934,9 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
 
     Widget buildList(List<TorrentStream> list, String emptyMsg) {
       if (list.isEmpty) {
+        // Sin addons: CTA para instalar; con addons pero sin resultados:
+        // mensaje de la fuente.
+        if (addons.isEmpty) return _buildNoAddonsCta();
         return _buildBodyMessage(
           Padding(
             padding: const EdgeInsets.all(24),
@@ -902,6 +969,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
             indicatorWeight: 2,
             labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
             tabs: [
+              const Tab(text: 'Tráiler'),
               Tab(text: 'Torrentio (${torrentio.length})'),
               Tab(text: 'Latam (${latam.length})'),
               Tab(text: 'Otros (${otros.length})'),
@@ -913,6 +981,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
           child: TabBarView(
             controller: _sourceTabController,
             children: [
+              _buildTrailerTab(),
               buildList(torrentio, 'Sin enlaces de Torrentio.'),
               buildList(latam, 'Sin enlaces de Latam.'),
               buildList(otros, 'Sin enlaces en Otros.'),
@@ -921,6 +990,322 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
         ),
       ],
     );
+  }
+
+  /// Cuarta tab: tráiler (YouTube embebido en reproductor interno) +
+  /// dirección y elenco con fotos (TMDB). Carga perezosa.
+  Widget _buildTrailerTab() {
+    if (_loadingTrailer) {
+      return _buildBodyMessage(
+        const CircularProgressIndicator(color: Color(0xFF00A3FF)),
+      );
+    }
+    return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_trailer != null) ...[
+            _buildTrailerCard(),
+            Center(
+              child: TextButton.icon(
+                onPressed: () => launchUrl(
+                  Uri.parse(
+                      'https://www.youtube.com/watch?v=${_trailer!['key']}'),
+                  mode: LaunchMode.externalApplication,
+                ),
+                icon: const Icon(Icons.open_in_new,
+                    color: Colors.white38, size: 14),
+                label: const Text(
+                  'Abrir en YouTube',
+                  style: TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+              ),
+            ),
+          ] else
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: const Color(0xFF141414),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: const Text(
+                'No se encontró tráiler para este título.',
+                style: TextStyle(color: Colors.white38),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          if (_director != null) ...[
+            const SizedBox(height: 20),
+            _buildTrailerSectionTitle('DIRECCIÓN'),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                _buildPersonPhoto(_director!['photo'], size: 64),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _director!['name'] ?? 'Desconocido',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      const Text(
+                        'Director',
+                        style: TextStyle(
+                            color: Color(0xFF00A3FF), fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (_cast.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            _buildTrailerSectionTitle('ELENCO'),
+            const SizedBox(height: 10),
+            SizedBox(
+              height: 168,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount: _cast.length,
+                itemBuilder: (context, index) {
+                  final c = _cast[index];
+                  return Container(
+                    width: 92,
+                    margin: const EdgeInsets.only(right: 12),
+                    child: Column(
+                      children: [
+                        _buildPersonPhoto(c['photo'], size: 80),
+                        const SizedBox(height: 6),
+                        Text(
+                          c['name'] ?? '',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12),
+                        ),
+                        Text(
+                          c['character'] ?? '',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrailerSectionTitle(String title) {
+    return Row(
+      children: [
+        Container(
+          width: 3,
+          height: 18,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF00A3FF), Color(0xFFD400FF)],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          title,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 1.5,
+            color: Colors.white,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPersonPhoto(String? url, {required double size}) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: const Color(0xFF1A1A1A),
+        border: Border.all(color: Colors.white10),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: (url == null || url.isEmpty)
+          ? const Icon(Icons.person, color: Colors.white24, size: 32)
+          : Image.network(
+              url,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => const Icon(
+                  Icons.person, color: Colors.white24, size: 32),
+            ),
+    );
+  }
+
+  Widget _buildTrailerCard() {
+    final key = _trailer!['key']!;
+    return GestureDetector(
+      onTap: _resolvingTrailer ? null : () => _playTrailer(key),
+      child: EnergyFlowBorder(
+        borderRadius: 12,
+        borderWidth: 1.2,
+        backgroundColor: const Color(0xFF141414),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Stack(
+                alignment: Alignment.center,
+                children: [
+                  AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: Image.network(
+                      'https://i.ytimg.com/vi/$key/hqdefault.jpg',
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      errorBuilder: (_, __, ___) => const ColoredBox(
+                        color: Color(0xFF1A1A1A),
+                        child: Icon(Icons.movie_outlined,
+                            color: Colors.white24, size: 40),
+                      ),
+                    ),
+                  ),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00A3FF).withValues(alpha: 0.9),
+                    shape: BoxShape.circle,
+                  ),
+                  child: _resolvingTrailer
+                      ? const SizedBox(
+                          width: 32,
+                          height: 32,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 3,
+                          ),
+                        )
+                      : const Icon(Icons.play_arrow,
+                          color: Colors.white, size: 32),
+                ),
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _trailer!['name'] ?? 'Tráiler',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Text(
+                      'VER TRÁILER',
+                      style: TextStyle(
+                        color: Color(0xFF00A3FF),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Resuelve el tráiler de YouTube a stream directo (muxed, con audio)
+  /// y lo reproduce en el reproductor propio (algo 5 = http directo).
+  /// Si falla (video restringido), se usa el botón externo de YouTube.
+  Future<void> _playTrailer(String key) async {
+    if (_resolvingTrailer) return;
+    setState(() => _resolvingTrailer = true);
+    try {
+      final yt = YoutubeExplode();
+      try {
+        final manifest = await yt.videos.streamsClient
+            .getManifest(key)
+            .timeout(const Duration(seconds: 20));
+        final muxed = manifest.muxed;
+        if (muxed.isEmpty) throw 'sin streams muxed';
+        final best = muxed.withHighestBitrate();
+        final url = best.url.toString();
+        print('🎬 [TRAILER] stream directo: ${best.qualityLabel} $url');
+        if (!mounted) return;
+        final option = VideoOption(
+          id: _imdbId ?? '',
+          movieId: widget.tmdbId,
+          serverImagePath: widget.poster,
+          resolution: best.qualityLabel,
+          videoUrl: url,
+          language: 'Tráiler',
+          extractionAlgorithm: 5,
+        );
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => VideoPlayerPage(
+              movieName: 'Tráiler · ${widget.movieName}',
+              videoOptions: [option],
+              mediaId: widget.tmdbId,
+              mediaType: widget.isSeries ? 'series' : 'movie',
+              imagePath: widget.poster,
+              extractionAlgorithm: 5,
+              skipAd: true,
+            ),
+          ),
+        );
+      } finally {
+        yt.close();
+      }
+    } catch (e) {
+      print('❌ [TRAILER] no se pudo resolver: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'No se pudo abrir el tráiler aquí. Usa el botón de YouTube.'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _resolvingTrailer = false);
+    }
   }
 
   /// Vuelve a cargar los streams (refresh con pull-to-refresh).

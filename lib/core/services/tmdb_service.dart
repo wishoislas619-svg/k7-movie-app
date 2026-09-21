@@ -54,6 +54,114 @@ class TmdbService {
     return null;
   }
 
+  /// Key de YouTube del tráiler oficial (pelis `movie`, series `tv`).
+  /// Prioriza: Trailer oficial YouTube en español → Trailer YouTube
+  /// cualquiera → Teaser YouTube. Reintenta en inglés si no hay nada en
+  /// español. Devuelve null si no hay video utilizable.
+  static Future<Map<String, String>?> getTrailer(
+    String tmdbId, {
+    bool isSeries = false,
+  }) async {
+    try {
+      final kind = isSeries ? 'tv' : 'movie';
+      for (final lang in ['es-MX', 'en-US']) {
+        final response = await http.get(
+          Uri.parse('$_baseUrl/$kind/$tmdbId/videos?api_key=$_apiKey&language=$lang'),
+        ).timeout(const Duration(seconds: 10));
+        if (response.statusCode != 200) continue;
+        final results =
+            (json.decode(response.body)['results'] as List? ?? [])
+                .whereType<Map<String, dynamic>>()
+                .where((v) => v['site'] == 'YouTube' && v['key'] != null)
+                .toList();
+        if (results.isEmpty) continue;
+        Map<String, dynamic>? pick;
+        // 1. Trailer oficial en español.
+        pick = results.where((v) =>
+            v['type'] == 'Trailer' &&
+            (v['official'] == true) &&
+            (v['iso_639_1'] == 'es')).isNotEmpty
+            ? results.firstWhere((v) =>
+                v['type'] == 'Trailer' &&
+                (v['official'] == true) &&
+                (v['iso_639_1'] == 'es'))
+            : null;
+        // 2. Trailer oficial cualquiera.
+        pick ??= results.where((v) =>
+            v['type'] == 'Trailer' && (v['official'] == true)).isNotEmpty
+            ? results.firstWhere((v) =>
+                v['type'] == 'Trailer' && (v['official'] == true))
+            : null;
+        // 3. Cualquier Trailer.
+        pick ??= results.where((v) => v['type'] == 'Trailer').isNotEmpty
+            ? results.firstWhere((v) => v['type'] == 'Trailer')
+            : null;
+        // 4. Teaser como último recurso.
+        pick ??= results.where((v) => v['type'] == 'Teaser').isNotEmpty
+            ? results.firstWhere((v) => v['type'] == 'Teaser')
+            : null;
+        if (pick != null) {
+          return {
+            'key': pick['key'] as String,
+            'name': (pick['name'] as String?) ?? 'Tráiler',
+          };
+        }
+      }
+    } catch (e) {
+      print('TMDB Trailer Error: $e');
+    }
+    return null;
+  }
+
+  /// Director + elenco (top 12 con foto) de peli/serie.
+  /// Devuelve {'director': {'name':, 'photo':}? , 'cast': [{'name':, 'character':, 'photo':}]}.
+  /// `photo` es URL completa o null.
+  static Future<Map<String, dynamic>> getCredits(
+    String tmdbId, {
+    bool isSeries = false,
+  }) async {
+    try {
+      final kind = isSeries ? 'tv' : 'movie';
+      final response = await http.get(
+        Uri.parse('$_baseUrl/$kind/$tmdbId/credits?api_key=$_apiKey&language=es-MX'),
+      ).timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        Map<String, String?>? director;
+        final crew = (data['crew'] as List? ?? []).whereType<Map<String, dynamic>>();
+        for (final c in crew) {
+          if (c['job'] == 'Director') {
+            final path = c['profile_path'] as String?;
+            director = {
+              'name': (c['name'] as String?) ?? '',
+              'photo': path == null
+                  ? null
+                  : 'https://image.tmdb.org/t/p/w185$path',
+            };
+            break;
+          }
+        }
+        final cast = (data['cast'] as List? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .take(12)
+            .map((c) {
+          final path = c['profile_path'] as String?;
+          return {
+            'name': (c['name'] as String?) ?? '',
+            'character': (c['character'] as String?) ?? '',
+            'photo': path == null
+                ? null
+                : 'https://image.tmdb.org/t/p/w185$path',
+          };
+        }).toList();
+        return {'director': director, 'cast': cast};
+      }
+    } catch (e) {
+      print('TMDB Credits Error: $e');
+    }
+    return {'director': null, 'cast': <Map<String, String?>>[]};
+  }
+
   static Future<List<Map<String, dynamic>>> searchMovies(String query) async {
     try {
       final uri = Uri.parse(
