@@ -9,6 +9,7 @@ import 'movie_options_page.dart';
 import '../../../player/data/datasources/video_service.dart';
 import '../../../../providers.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
+import 'package:movie_app/shared/widgets/tv_focus_wrapper.dart';
 import 'package:movie_app/features/movies/presentation/widgets/cast_button_overlay.dart';
 import 'package:movie_app/shared/utils/responsive_layout.dart';
 
@@ -332,8 +333,10 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                   ],
 
                   // 3. Play Movie Button (Gradient)
-                  GestureDetector(
+                  // TvFocusWrapper: botón principal alcanzable con el remoto.
+                  TvFocusWrapper(
                     onTap: _playMovie,
+                    borderRadius: 16,
                     child: Container(
                       width: double.infinity,
                       height: 56,
@@ -391,8 +394,9 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                           textAlign: TextAlign.left,
                         ),
                         if (currentDescription.length > 70)
-                          GestureDetector(
+                          TvFocusWrapper(
                             onTap: () => setState(() => _isDescriptionExpanded = !_isDescriptionExpanded),
+                            borderRadius: 8,
                             child: Padding(
                               padding: const EdgeInsets.only(top: 8.0),
                               child: Text(
@@ -441,7 +445,8 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                       itemCount: relatedMovies.length,
                       itemBuilder: (context, index) {
                         final relMovie = relatedMovies[index];
-                        return GestureDetector(
+                        // TvFocusWrapper: recomendada navegable con el remoto.
+                        return TvFocusWrapper(
                           onTap: () {
                             Navigator.pushReplacement(
                               context,
@@ -450,6 +455,7 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
                               ),
                             );
                           },
+                          borderRadius: 12,
                           child: Container(
                             width: 130,
                             margin: const EdgeInsets.only(right: 15),
@@ -497,8 +503,10 @@ class _MovieDetailsPageState extends ConsumerState<MovieDetailsPage> {
 }
 
   Widget _buildRoundButton(IconData icon, VoidCallback onTap) {
-    return GestureDetector(
+    // TvFocusWrapper: botones redondos (descargar, cast, fav...) con remoto.
+    return TvFocusWrapper(
       onTap: onTap,
+      borderRadius: 30,
       child: Container(
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(

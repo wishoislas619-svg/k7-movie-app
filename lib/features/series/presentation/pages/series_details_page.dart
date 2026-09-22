@@ -24,6 +24,7 @@ import 'package:uuid/uuid.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:movie_app/core/services/ad_service.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
+import 'package:movie_app/shared/widgets/tv_focus_wrapper.dart';
 import 'package:movie_app/shared/utils/responsive_layout.dart';
 import 'dart:async';
 
@@ -697,8 +698,10 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
   }
 
   Widget _buildRoundButton(IconData icon, VoidCallback onTap) {
-    return GestureDetector(
+    // TvFocusWrapper: botones redondos navegables con el remoto.
+    return TvFocusWrapper(
       onTap: onTap,
+      borderRadius: 30,
       child: Container(
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
@@ -1090,11 +1093,12 @@ class _SeriesDetailsPageState extends ConsumerState<SeriesDetailsPage> {
                                 ),
                               ),
                               if (currentDescription.length > 100)
-                                GestureDetector(
+                                TvFocusWrapper(
                                   onTap: () => setState(
                                     () => _isDescriptionExpanded =
                                         !_isDescriptionExpanded,
                                   ),
+                                  borderRadius: 8,
                                   child: Padding(
                                     padding: const EdgeInsets.only(top: 8.0),
                                     child: Text(

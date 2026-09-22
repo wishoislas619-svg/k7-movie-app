@@ -117,6 +117,16 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
 
   @override
   Widget build(BuildContext context) {
+    // Modo lite: se oculta TV en vivo → quedan 4 pantallas. La lista de
+    // páginas y la del nav comparten orden e índices.
+    final tabPages = <Widget>[
+      RepaintBoundary(child: _buildMoviesView()),
+      const RepaintBoundary(child: SeriesGridPage()),
+      if (!AppConfig.liteMode)
+        const RepaintBoundary(child: TvChannelsPage()),
+      const RepaintBoundary(child: DownloadsPage()),
+      const RepaintBoundary(child: ProfilePage()),
+    ];
     return Scaffold(
       resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
@@ -126,13 +136,7 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
           setState(() => _currentTabIndex = index);
         },
         physics: const ClampingScrollPhysics(),
-        children: [
-          RepaintBoundary(child: _buildMoviesView()),
-          const RepaintBoundary(child: SeriesGridPage()),
-          const RepaintBoundary(child: TvChannelsPage()),
-          const RepaintBoundary(child: DownloadsPage()),
-          const RepaintBoundary(child: ProfilePage()),
-        ],
+        children: tabPages,
       ),
       bottomNavigationBar: _buildBottomNav(),
     );
@@ -353,35 +357,39 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
                                       items: _horrorClassics,
                                     ),
                                 ],
-                                _buildMovieSection(
-                                  context,
-                                  'RECIÉN AGREGADAS',
-                                  filteredMovies
-                                      .where((m) => true)
-                                      .toList()
-                                    ..sort(
-                                      (a, b) =>
-                                          b.createdAt.compareTo(a.createdAt),
+                                // Modo lite: se ocultan las secciones manuales de
+                                // la base (Recién agregadas + categorías).
+                                if (!AppConfig.liteMode)
+                                  _buildMovieSection(
+                                    context,
+                                    'RECIÉN AGREGADAS',
+                                    filteredMovies
+                                        .where((m) => true)
+                                        .toList()
+                                      ..sort(
+                                        (a, b) => b.createdAt
+                                            .compareTo(a.createdAt),
+                                      ),
+                                    category: Category(
+                                      id: 'recent',
+                                      name: 'Recién agregadas',
                                     ),
-                                  category: Category(
-                                    id: 'recent',
-                                    name: 'Recién agregadas',
                                   ),
-                                ),
                               ],
-                              ...categories.map((cat) {
-                                final catMovies = filteredMovies
-                                    .where((m) => m.categoryId == cat.id)
-                                    .toList();
-                                if (catMovies.isEmpty)
-                                  return const SizedBox.shrink();
-                                return _buildMovieSection(
-                                  context,
-                                  cat.name.toUpperCase(),
-                                  catMovies,
-                                  category: cat,
-                                );
-                              }),
+                              if (!AppConfig.liteMode)
+                                ...categories.map((cat) {
+                                  final catMovies = filteredMovies
+                                      .where((m) => m.categoryId == cat.id)
+                                      .toList();
+                                  if (catMovies.isEmpty)
+                                    return const SizedBox.shrink();
+                                  return _buildMovieSection(
+                                    context,
+                                    cat.name.toUpperCase(),
+                                    catMovies,
+                                    category: cat,
+                                  );
+                                }),
                             ]),
                           ),
                         ),
@@ -479,80 +487,83 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
               style: TextStyle(color: Colors.white38, fontSize: 12),
             ),
             const SizedBox(height: 20),
-            const Text(
-              'Categoría',
-              style: TextStyle(
-                color: Colors.white70,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
+            // Modo lite: sin selector de categorías manuales.
+            if (!AppConfig.liteMode) ...[
+              const Text(
+                'Categoría',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            EnergyFlowBorder(
-              borderRadius: 12,
-              borderWidth: 1.2,
-              backgroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String?>(
-                  value: _selectedCategoryFilter,
-                  isExpanded: true,
-                  dropdownColor: Colors.black,
-                  borderRadius: BorderRadius.circular(14),
-                  icon: const Icon(
-                    Icons.filter_list,
-                    color: Color(0xFF00A3FF),
-                  ),
-                  menuMaxHeight: 320,
-                  itemHeight: 64,
-                  selectedItemBuilder: (BuildContext context) {
-                    return [
-                      const Align(
-                        alignment: Alignment.centerLeft,
+              const SizedBox(height: 8),
+              EnergyFlowBorder(
+                borderRadius: 12,
+                borderWidth: 1.2,
+                backgroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String?>(
+                    value: _selectedCategoryFilter,
+                    isExpanded: true,
+                    dropdownColor: Colors.black,
+                    borderRadius: BorderRadius.circular(14),
+                    icon: const Icon(
+                      Icons.filter_list,
+                      color: Color(0xFF00A3FF),
+                    ),
+                    menuMaxHeight: 320,
+                    itemHeight: 64,
+                    selectedItemBuilder: (BuildContext context) {
+                      return [
+                        const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'Todas',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ),
+                        ...categories.map(
+                          (c) => Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              c.name,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ];
+                    },
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
                         child: Text(
                           'Todas',
-                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(color: Colors.white),
                         ),
                       ),
                       ...categories.map(
-                        (c) => Align(
-                          alignment: Alignment.centerLeft,
+                        (c) => DropdownMenuItem(
+                          value: c.id,
                           child: Text(
                             c.name,
+                            maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(color: Colors.white),
                           ),
                         ),
                       ),
-                    ];
-                  },
-                  items: [
-                    const DropdownMenuItem(
-                      value: null,
-                      child: Text(
-                        'Todas',
-                        style: TextStyle(color: Colors.white),
-                      ),
-                    ),
-                    ...categories.map(
-                      (c) => DropdownMenuItem(
-                        value: c.id,
-                        child: Text(
-                          c.name,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      ),
-                    ),
-                  ],
-                  onChanged: (val) =>
-                      setState(() => _selectedCategoryFilter = val),
+                    ],
+                    onChanged: (val) =>
+                        setState(() => _selectedCategoryFilter = val),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
+              const SizedBox(height: 8),
+            ],
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading:
@@ -571,18 +582,20 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
                 );
               },
             ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.search, color: Colors.white70),
-              title: const Text(
-                'Buscar películas',
-                style: TextStyle(color: Colors.white),
+            // Modo lite: sin búsqueda local (los pósters usan el inteligente).
+            if (!AppConfig.liteMode)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.search, color: Colors.white70),
+                title: const Text(
+                  'Buscar películas',
+                  style: TextStyle(color: Colors.white),
+                ),
+                onTap: () {
+                  Navigator.pop(context);
+                  setState(() => _isSearching = true);
+                },
               ),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() => _isSearching = true);
-              },
-            ),
             Consumer(
               builder: (context, ref, _) {
                 final role =
@@ -685,6 +698,16 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
   Widget _buildCarouselItem(Movie movie) {
     return TvFocusWrapper(
       onTap: () {
+        // Modo lite: el carrusel (tendencia) busca en el inteligente.
+        if (AppConfig.liteMode) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => SmartSearchPage(initialQuery: movie.name),
+            ),
+          );
+          return;
+        }
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => MovieDetailsPage(movie: movie)),
@@ -787,6 +810,17 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
                                 ),
                                 child: ElevatedButton.icon(
                                   onPressed: () {
+                                    // Modo lite: buscar en el inteligente.
+                                    if (AppConfig.liteMode) {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => SmartSearchPage(
+                                              initialQuery: movie.name),
+                                        ),
+                                      );
+                                      return;
+                                    }
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(
@@ -833,6 +867,18 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
   Future<void> _openSmartItem(Map<String, dynamic> m) async {
     StorageService.saveSearchEntry(m);
     if (!mounted) return;
+    // Modo lite: buscar el título en el buscador inteligente.
+    if (AppConfig.liteMode) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SmartSearchPage(
+            initialQuery: m['name'] as String? ?? '',
+          ),
+        ),
+      );
+      return;
+    }
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -900,8 +946,11 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
               final m = items[index];
               final image = m['image'] as String? ?? '';
               final name = m['name'] as String? ?? '';
-              return GestureDetector(
+              // TvFocusWrapper: el póster es alcanzable con las flechas del
+              // control remoto (un GestureDetector pelado lo saltaría).
+              return TvFocusWrapper(
                 onTap: () => _openSmartItem(m),
+                borderRadius: 12,
                 child: Container(
                   width: 120,
                   margin: const EdgeInsets.only(right: 12),
@@ -1341,9 +1390,13 @@ class _MovieGridPageState extends ConsumerState<MovieGridPage>
               children: [
                 _navItem(isVip, 0, Icons.movie_creation_outlined, 'PELÍCULAS'),
                 _navItem(isVip, 1, Icons.live_tv_outlined, 'SERIES'),
-                _navItem(isVip, 2, Icons.tv_outlined, 'TV VIVO'),
-                _navItem(isVip, 3, Icons.download_rounded, 'DESCARGAS'),
-                _navItem(isVip, 4, Icons.person_outline, 'PERFIL'),
+                // Modo lite: sin TV en vivo → los índices se recorren.
+                if (!AppConfig.liteMode)
+                  _navItem(isVip, 2, Icons.tv_outlined, 'TV VIVO'),
+                _navItem(isVip, AppConfig.liteMode ? 2 : 3,
+                    Icons.download_rounded, 'DESCARGAS'),
+                _navItem(isVip, AppConfig.liteMode ? 3 : 4,
+                    Icons.person_outline, 'PERFIL'),
               ],
             ),
           ),

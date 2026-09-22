@@ -13,6 +13,7 @@ import 'package:movie_app/features/addons/presentation/pages/smart_search_page.d
 import 'package:movie_app/features/addons/presentation/pages/stream_list_page.dart';
 import 'package:movie_app/core/services/tmdb_service.dart';
 import 'package:movie_app/core/services/storage_service.dart';
+import 'package:movie_app/core/constants/app_constants.dart';
 import 'series_category_page.dart';
 import '../../../../shared/widgets/marquee_text.dart';
 import '../../../../shared/widgets/tv_focus_wrapper.dart';
@@ -227,7 +228,10 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                                     items: _horrorClassics,
                                   ),
                               ],
-                              if (filteredSeries.isNotEmpty) ...[
+                              // Modo lite: se ocultan las secciones manuales
+                              // de la base (Recién agregadas + categorías).
+                              if (!AppConfig.liteMode &&
+                                  filteredSeries.isNotEmpty) ...[
                                 _buildSeriesSection(
                                   context, 
                                   'RECIÉN AGREGADAS', 
@@ -235,16 +239,17 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                                   category: SeriesCategory(id: 'recent', name: 'Recién agregadas'),
                                 ),
                               ],
-                              ...categories.map((cat) {
-                                final catSeries = filteredSeries.where((m) => m.categoryId == cat.id).toList();
-                                if (catSeries.isEmpty) return const SizedBox.shrink();
-                                return _buildSeriesSection(
-                                  context, 
-                                  cat.name.toUpperCase(), 
-                                  catSeries,
-                                  category: cat
-                                );
-                              }),
+                              if (!AppConfig.liteMode)
+                                ...categories.map((cat) {
+                                  final catSeries = filteredSeries.where((m) => m.categoryId == cat.id).toList();
+                                  if (catSeries.isEmpty) return const SizedBox.shrink();
+                                  return _buildSeriesSection(
+                                    context, 
+                                    cat.name.toUpperCase(), 
+                                    catSeries,
+                                    category: cat
+                                  );
+                                }),
                             ]),
                           ),
                         ),
@@ -327,80 +332,83 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
               style: TextStyle(color: Colors.white38, fontSize: 12),
             ),
             const SizedBox(height: 20),
-            const Text(
-              'Categoría',
-              style: TextStyle(
-                color: Colors.white70,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
+            // Modo lite: sin selector de categorías manuales.
+            if (!AppConfig.liteMode) ...[
+              const Text(
+                'Categoría',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            EnergyFlowBorder(
-              borderRadius: 12,
-              borderWidth: 1.2,
-              backgroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String?>(
-                  value: _selectedCategoryFilter,
-                  isExpanded: true,
-                  dropdownColor: Colors.black,
-                  borderRadius: BorderRadius.circular(14),
-                  icon: const Icon(
-                    Icons.filter_list,
-                    color: Color(0xFFD400FF),
-                  ),
-                  menuMaxHeight: 320,
-                  itemHeight: 64,
-                  selectedItemBuilder: (BuildContext context) {
-                    return [
-                      const Align(
-                        alignment: Alignment.centerLeft,
+              const SizedBox(height: 8),
+              EnergyFlowBorder(
+                borderRadius: 12,
+                borderWidth: 1.2,
+                backgroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String?>(
+                    value: _selectedCategoryFilter,
+                    isExpanded: true,
+                    dropdownColor: Colors.black,
+                    borderRadius: BorderRadius.circular(14),
+                    icon: const Icon(
+                      Icons.filter_list,
+                      color: Color(0xFFD400FF),
+                    ),
+                    menuMaxHeight: 320,
+                    itemHeight: 64,
+                    selectedItemBuilder: (BuildContext context) {
+                      return [
+                        const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            'Todas',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ),
+                        ...categories.map(
+                          (c) => Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              c.name,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ];
+                    },
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
                         child: Text(
                           'Todas',
-                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(color: Colors.white),
                         ),
                       ),
                       ...categories.map(
-                        (c) => Align(
-                          alignment: Alignment.centerLeft,
+                        (c) => DropdownMenuItem(
+                          value: c.id,
                           child: Text(
                             c.name,
+                            maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(color: Colors.white),
                           ),
                         ),
                       ),
-                    ];
-                  },
-                  items: [
-                    const DropdownMenuItem(
-                      value: null,
-                      child: Text(
-                        'Todas',
-                        style: TextStyle(color: Colors.white),
-                      ),
-                    ),
-                    ...categories.map(
-                      (c) => DropdownMenuItem(
-                        value: c.id,
-                        child: Text(
-                          c.name,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      ),
-                    ),
-                  ],
-                  onChanged: (val) =>
-                      setState(() => _selectedCategoryFilter = val),
+                    ],
+                    onChanged: (val) =>
+                        setState(() => _selectedCategoryFilter = val),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
+              const SizedBox(height: 8),
+            ],
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading:
@@ -419,18 +427,20 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                 );
               },
             ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.search, color: Colors.white70),
-              title: const Text(
-                'Buscar series',
-                style: TextStyle(color: Colors.white),
+            // Modo lite: sin búsqueda local (los pósters usan el inteligente).
+            if (!AppConfig.liteMode)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.search, color: Colors.white70),
+                title: const Text(
+                  'Buscar series',
+                  style: TextStyle(color: Colors.white),
+                ),
+                onTap: () {
+                  Navigator.pop(context);
+                  setState(() => _isSearching = true);
+                },
               ),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() => _isSearching = true);
-              },
-            ),
           ],
         ),
       ),
@@ -476,6 +486,16 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
   Widget _buildCarouselItem(Series series) {
     return TvFocusWrapper(
       onTap: () {
+        // Modo lite: el carrusel (tendencia) busca en el inteligente.
+        if (AppConfig.liteMode) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => SmartSearchPage(initialQuery: series.name),
+            ),
+          );
+          return;
+        }
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
@@ -559,6 +579,17 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
                               ),
                               child: ElevatedButton.icon(
                                 onPressed: () {
+                                  // Modo lite: buscar en el inteligente.
+                                  if (AppConfig.liteMode) {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => SmartSearchPage(
+                                            initialQuery: series.name),
+                                      ),
+                                    );
+                                    return;
+                                  }
                                   Navigator.push(
                                     context,
                                     MaterialPageRoute(builder: (_) => SeriesDetailsPage(series: series)),
@@ -593,6 +624,18 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
   Future<void> _openSmartItem(Map<String, dynamic> s) async {
     StorageService.saveSearchEntry(s);
     if (!mounted) return;
+    // Modo lite: buscar el título en el buscador inteligente.
+    if (AppConfig.liteMode) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SmartSearchPage(
+            initialQuery: s['name'] as String? ?? '',
+          ),
+        ),
+      );
+      return;
+    }
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -660,8 +703,10 @@ class _SeriesGridPageState extends ConsumerState<SeriesGridPage> {
               final s = items[index];
               final image = s['image'] as String? ?? '';
               final name = s['name'] as String? ?? '';
-              return GestureDetector(
+              // TvFocusWrapper: alcanzable con flechas del control remoto.
+              return TvFocusWrapper(
                 onTap: () => _openSmartItem(s),
+                borderRadius: 12,
                 child: Container(
                   width: 120,
                   margin: const EdgeInsets.only(right: 12),

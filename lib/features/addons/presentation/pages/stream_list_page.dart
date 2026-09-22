@@ -1,6 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:uuid/uuid.dart';
@@ -82,7 +83,8 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
   // Tráiler (4ta tab): carga perezosa al abrirla por primera vez.
   bool _trailerLoaded = false;
   bool _loadingTrailer = false;
-  bool _resolvingTrailer = false;
+  YoutubePlayerController? _ytController;
+  StreamSubscription? _ytSubscription;
   Map<String, String>? _trailer; // {'key', 'name'}
   Map<String, String?>? _director; // {'name', 'photo'}
   List<Map<String, String?>> _cast = []; // {'name', 'character', 'photo'}
@@ -104,6 +106,8 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     _tabController.dispose();
     _sourceTabController.removeListener(_onSourceTabChanged);
     _sourceTabController.dispose();
+    _ytSubscription?.cancel();
+    _ytController?.close();
     super.dispose();
   }
 
@@ -125,8 +129,24 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       ]);
       if (!mounted) return;
       final credits = results[1] as Map<String, dynamic>;
+      final trailer = results[0] as Map<String, String>?;
       setState(() {
-        _trailer = results[0] as Map<String, String>?;
+        _trailer = trailer;
+        if (trailer != null) {
+          _ytController = YoutubePlayerController.fromVideoId(
+            videoId: trailer['key']!,
+            autoPlay: false,
+          );
+          _ytSubscription ??= _ytController!.stream.listen((value) {
+            if (value.playerState == PlayerState.ended) {
+              _ytController?.cueVideoById(
+                videoId: _ytController!.metadata.videoId,
+              );
+            }
+          });
+        } else {
+          _ytController = null;
+        }
         final d = credits['director'];
         _director = d == null
             ? null
@@ -434,23 +454,48 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       backgroundColor: Colors.black,
       appBar: showSeasonTabs
           ? PreferredSize(
-              preferredSize: const Size.fromHeight(kTextTabBarHeight),
-              child: Material(
+              preferredSize: const Size.fromHeight(kTextTabBarHeight + 4),
+              child: Container(
                 color: Colors.black,
-                child: TabBar(
-                  controller: _tabController,
-                  isScrollable: true,
-                  labelColor: const Color(0xFF00A3FF),
-                  unselectedLabelColor: Colors.white54,
-                  onTap: (i) {
-                    final seasonNumber =
-                        (_seasons[i]['season_number'] as int?) ?? i + 1;
-                    _loadEpisodes(seasonNumber);
-                  },
-                  tabs: [
-                    for (final s in _seasons)
-                      Tab(text: 'T${s['season_number']}')
-                  ],
+                child: SafeArea(
+                  bottom: false,
+                  top: true,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                    child: EnergyFlowBorder(
+                      borderRadius: 10,
+                      borderWidth: 1.2,
+                      backgroundColor: const Color(0xFF0E0E0E),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TabBar(
+                              controller: _tabController,
+                              isScrollable: true,
+                              indicatorColor: const Color(0xFF00A3FF),
+                              indicatorWeight: 2,
+                              indicatorSize: TabBarIndicatorSize.label,
+                              labelColor: const Color(0xFF00A3FF),
+                              unselectedLabelColor: Colors.white54,
+                              labelStyle: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13),
+                              onTap: (i) {
+                                final seasonNumber =
+                                    (_seasons[i]['season_number'] as int?) ??
+                                        i + 1;
+                                _loadEpisodes(seasonNumber);
+                              },
+                              tabs: [
+                                for (final s in _seasons)
+                                  Tab(text: 'T${s['season_number']}')
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ),
             )
@@ -992,9 +1037,8 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     );
   }
 
-  /// Cuarta tab: tráiler (YouTube embebido en reproductor interno) +
-  /// dirección y elenco con fotos (TMDB). Carga perezosa.
-  Widget _buildTrailerTab() {
+  /// Cuarta tab: tráiler (YouTube embebido) + dirección y elenco con fotos (TMDB).
+Widget _buildTrailerTab() {
     if (_loadingTrailer) {
       return _buildBodyMessage(
         const CircularProgressIndicator(color: Color(0xFF00A3FF)),
@@ -1006,24 +1050,18 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (_trailer != null) ...[
-            _buildTrailerCard(),
-            Center(
-              child: TextButton.icon(
-                onPressed: () => launchUrl(
-                  Uri.parse(
-                      'https://www.youtube.com/watch?v=${_trailer!['key']}'),
-                  mode: LaunchMode.externalApplication,
-                ),
-                icon: const Icon(Icons.open_in_new,
-                    color: Colors.white38, size: 14),
-                label: const Text(
-                  'Abrir en YouTube',
-                  style: TextStyle(color: Colors.white38, fontSize: 12),
+          if (_trailer != null && _ytController != null) ...[
+            SizedBox(
+              width: double.infinity,
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: YoutubePlayer(
+                  controller: _ytController!,
+                  autoHideDuration: const Duration(seconds: 3),
                 ),
               ),
             ),
-          ] else
+          ] else if (_trailer == null) ...[
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(20),
@@ -1038,6 +1076,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
                 textAlign: TextAlign.center,
               ),
             ),
+          ],
           if (_director != null) ...[
             const SizedBox(height: 20),
             _buildTrailerSectionTitle('DIRECCIÓN'),
@@ -1164,150 +1203,7 @@ class _StreamListPageState extends ConsumerState<StreamListPage>
     );
   }
 
-  Widget _buildTrailerCard() {
-    final key = _trailer!['key']!;
-    return GestureDetector(
-      onTap: _resolvingTrailer ? null : () => _playTrailer(key),
-      child: EnergyFlowBorder(
-        borderRadius: 12,
-        borderWidth: 1.2,
-        backgroundColor: const Color(0xFF141414),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(10),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Stack(
-                alignment: Alignment.center,
-                children: [
-                  AspectRatio(
-                    aspectRatio: 16 / 9,
-                    child: Image.network(
-                      'https://i.ytimg.com/vi/$key/hqdefault.jpg',
-                      fit: BoxFit.cover,
-                      width: double.infinity,
-                      errorBuilder: (_, __, ___) => const ColoredBox(
-                        color: Color(0xFF1A1A1A),
-                        child: Icon(Icons.movie_outlined,
-                            color: Colors.white24, size: 40),
-                      ),
-                    ),
-                  ),
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF00A3FF).withValues(alpha: 0.9),
-                    shape: BoxShape.circle,
-                  ),
-                  child: _resolvingTrailer
-                      ? const SizedBox(
-                          width: 32,
-                          height: 32,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 3,
-                          ),
-                        )
-                      : const Icon(Icons.play_arrow,
-                          color: Colors.white, size: 32),
-                ),
-                ],
-              ),
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        _trailer!['name'] ?? 'Tráiler',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      'VER TRÁILER',
-                      style: TextStyle(
-                        color: Color(0xFF00A3FF),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                        letterSpacing: 1,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Resuelve el tráiler de YouTube a stream directo (muxed, con audio)
-  /// y lo reproduce en el reproductor propio (algo 5 = http directo).
-  /// Si falla (video restringido), se usa el botón externo de YouTube.
-  Future<void> _playTrailer(String key) async {
-    if (_resolvingTrailer) return;
-    setState(() => _resolvingTrailer = true);
-    try {
-      final yt = YoutubeExplode();
-      try {
-        final manifest = await yt.videos.streamsClient
-            .getManifest(key)
-            .timeout(const Duration(seconds: 20));
-        final muxed = manifest.muxed;
-        if (muxed.isEmpty) throw 'sin streams muxed';
-        final best = muxed.withHighestBitrate();
-        final url = best.url.toString();
-        print('🎬 [TRAILER] stream directo: ${best.qualityLabel} $url');
-        if (!mounted) return;
-        final option = VideoOption(
-          id: _imdbId ?? '',
-          movieId: widget.tmdbId,
-          serverImagePath: widget.poster,
-          resolution: best.qualityLabel,
-          videoUrl: url,
-          language: 'Tráiler',
-          extractionAlgorithm: 5,
-        );
-        await Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => VideoPlayerPage(
-              movieName: 'Tráiler · ${widget.movieName}',
-              videoOptions: [option],
-              mediaId: widget.tmdbId,
-              mediaType: widget.isSeries ? 'series' : 'movie',
-              imagePath: widget.poster,
-              extractionAlgorithm: 5,
-              skipAd: true,
-            ),
-          ),
-        );
-      } finally {
-        yt.close();
-      }
-    } catch (e) {
-      print('❌ [TRAILER] no se pudo resolver: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'No se pudo abrir el tráiler aquí. Usa el botón de YouTube.'),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _resolvingTrailer = false);
-    }
-  }
-
+  /// Tarjeta preview del tráiler con miniatura de YouTube.
   /// Vuelve a cargar los streams (refresh con pull-to-refresh).
   Future<void> _refreshStreams() async {
     if (_imdbId == null) return;

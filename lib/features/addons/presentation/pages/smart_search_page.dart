@@ -5,9 +5,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/services/storage_service.dart';
 import '../../../../core/services/tmdb_service.dart';
 import '../../../addons/presentation/pages/stream_list_page.dart';
+import '../../../../shared/widgets/tv_focus_wrapper.dart';
 
 class SmartSearchPage extends ConsumerStatefulWidget {
-  const SmartSearchPage({super.key});
+  const SmartSearchPage({super.key, this.initialQuery});
+
+  /// Búsqueda con la que arranca (p. ej. desde un póster en modo lite).
+  final String? initialQuery;
 
   @override
   ConsumerState<SmartSearchPage> createState() => _SmartSearchPageState();
@@ -30,6 +34,13 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage>
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     _loadHistory();
+    // Arranque con búsqueda precargada (modo lite desde pósters).
+    final q = widget.initialQuery?.trim() ?? '';
+    if (q.isNotEmpty) {
+      _controller.text = q;
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _search(q));
+    }
   }
 
   @override
@@ -207,10 +218,14 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage>
                   16,
                   16,
                   16,
-                  MediaQuery.of(context).padding.bottom + 72,
+                  MediaQuery.of(context).viewInsets.bottom + 72,
                 ),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount:
+                      MediaQuery.of(context).orientation ==
+                              Orientation.landscape
+                          ? 6
+                          : 3,
                   childAspectRatio: 0.58,
                   crossAxisSpacing: 10,
                   mainAxisSpacing: 10,
@@ -251,42 +266,77 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage>
         _results.where((r) => r['mediaType'] == 'movie').toList();
     final series =
         _results.where((r) => r['mediaType'] == 'series').toList();
-    return Column(
-      children: [
-        Container(
-          margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFF141414),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: TabBar(
-            controller: _tabController,
-            indicatorColor: const Color(0xFF00A3FF),
-            indicatorSize: TabBarIndicatorSize.tab,
-            labelColor: const Color(0xFF00A3FF),
-            unselectedLabelColor: Colors.white54,
-            labelStyle: const TextStyle(
-                fontWeight: FontWeight.bold, fontSize: 13),
-            tabs: [
-              Tab(text: 'Películas (${movies.length})'),
-              Tab(text: 'Series (${series.length})'),
-            ],
-          ),
-        ),
-        Expanded(
-          child: TabBarView(
-            controller: _tabController,
-            children: [
-              _resultsGrid(movies),
-              _resultsGrid(series),
-            ],
-          ),
-        ),
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Teclado abierto en horizontal: queda muy poco alto (~30px).
+        // Modo compacto con scroll para que nada se desborde.
+        if (constraints.maxHeight < 220) {
+          return SingleChildScrollView(
+            child: Column(
+              children: [
+                _tabsHeader(movies, series),
+                SizedBox(
+                  height: 420,
+                  child: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      _resultsGrid(movies, compact: true),
+                      _resultsGrid(series, compact: true),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+        return Column(
+          children: [
+            _tabsHeader(movies, series),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  _resultsGrid(movies),
+                  _resultsGrid(series),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  Widget _resultsGrid(List<Map<String, dynamic>> items) {
+  /// Cabecera de pestañas Películas/Series (altura fija 48).
+  Widget _tabsHeader(
+      List<Map<String, dynamic>> movies, List<Map<String, dynamic>> series) {
+    return SizedBox(
+      height: 48,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF141414),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: TabBar(
+          controller: _tabController,
+          indicatorColor: const Color(0xFF00A3FF),
+          indicatorSize: TabBarIndicatorSize.tab,
+          labelColor: const Color(0xFF00A3FF),
+          unselectedLabelColor: Colors.white54,
+          labelStyle:
+              const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+          tabs: [
+            Tab(text: 'Películas (${movies.length})'),
+            Tab(text: 'Series (${series.length})'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _resultsGrid(List<Map<String, dynamic>> items,
+      {bool compact = false}) {
     if (items.isEmpty) {
       return const Center(
         child: Text('Sin resultados para esta categoría.',
@@ -294,14 +344,19 @@ class _SmartSearchPageState extends ConsumerState<SmartSearchPage>
       );
     }
     return GridView.builder(
-      padding: EdgeInsets.fromLTRB(
-        16,
-        16,
-        16,
-        MediaQuery.of(context).padding.bottom + 72,
-      ),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
+      shrinkWrap: compact,
+      physics: compact ? const NeverScrollableScrollPhysics() : null,
+padding: EdgeInsets.fromLTRB(
+         16,
+         16,
+         16,
+         MediaQuery.of(context).viewInsets.bottom + 72,
+       ),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount:
+            MediaQuery.of(context).orientation == Orientation.landscape
+                ? 6
+                : 3,
         childAspectRatio: 0.58,
         crossAxisSpacing: 10,
         mainAxisSpacing: 10,
@@ -327,8 +382,10 @@ class _MovieCard extends StatelessWidget {
     final year = movie['year'] as String? ?? '';
     final rating = (movie['rating'] as num?)?.toDouble() ?? 0;
 
-    return GestureDetector(
+    // TvFocusWrapper: resultado alcanzable con flechas del control remoto.
+    return TvFocusWrapper(
       onTap: onTap,
+      borderRadius: 12,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

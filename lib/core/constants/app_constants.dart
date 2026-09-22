@@ -14,3 +14,13 @@ class AppConstants {
   // Configuración de almacenamiento (Decidido por el programador)
   static const bool secureSave = false;
 }
+
+/// Bandera maestra de presentación (requiere recompilar al cambiarla).
+/// - true: modo simplificado → oculta las categorías manuales de la base,
+///   oculta la pantalla de TV en vivo (quedan 4 tabs), oculta el botón de
+///   instalación rápida de Torrentio, y los pósters de tendencia/carrusel
+///   buscan el título en el buscador inteligente en vez de ir a detalles.
+/// - false: funcionamiento actual completo. Nada se borra, solo se oculta.
+class AppConfig {
+  static const bool liteMode = false;
+}

@@ -128,6 +128,52 @@ class MediaKitVideoPlayer extends VideoPlayerPlatform {
   /// if it doesn't exist (e.g. already disposed).
   Player? playerFor(int textureId) => _players[textureId];
 
+  /// {@macro video_player_platform_interface.VideoPlayerPlatform.getAudioTracks}
+  @override
+  Future<List<VideoAudioTrack>> getAudioTracks(int playerId) async {
+    final player = _players[playerId];
+    if (player == null) return const [];
+    try {
+      final state = player.state;
+      return state.tracks.audio.map((a) => VideoAudioTrack(
+            id: a.id,
+            label: a.title ?? '',
+            language: a.language ?? '',
+            isSelected: a.id == state.track.audio.id,
+            bitrate: a.bitrate,
+            channelCount: a.audiochannels,
+            codec: a.codec,
+            sampleRate: a.samplerate,
+          )).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// {@macro video_player_platform_interface.VideoPlayerPlatform.isAudioTrackSupportAvailable}
+  @override
+  bool isAudioTrackSupportAvailable() => true;
+
+  /// {@macro video_player_platform_interface.VideoPlayerPlatform.selectAudioTrack}
+  @override
+  Future<void> selectAudioTrack(int playerId, String trackId) async {
+    final player = _players[playerId];
+    if (player == null) return;
+    try {
+      // Buscar el AudioTrack con el id indicado; si es 'auto' o no se encuentra,
+      // seleccionar el track automático del player.
+      if (trackId == 'auto') {
+        await player.setAudioTrack(AudioTrack.auto());
+        return;
+      }
+      final audioTrack = player.state.tracks.audio
+          .firstWhere((a) => a.id == trackId, orElse: () => AudioTrack.auto());
+      await player.setAudioTrack(audioTrack);
+    } catch (_) {
+      rethrow;
+    }
+  }
+
   /// Returns a Stream of [VideoEventType]s.
   @override
   Stream<VideoEvent> videoEventsFor(int textureId) {

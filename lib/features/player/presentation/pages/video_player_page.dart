@@ -43,6 +43,7 @@ import 'package:movie_app/features/cast/services/cast_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:movie_app/features/cast/services/media_proxy_service.dart';
 import 'package:movie_app/shared/widgets/energy_flow_border.dart';
+import 'package:movie_app/shared/widgets/tv_focus_wrapper.dart';
 import '../../../addons/data/datasources/torrent_streaming_service.dart';
 
 class SubtitleInfo {
@@ -192,6 +193,62 @@ class _VideoPlayerPageState extends ConsumerState<VideoPlayerPage>
   Timer? _labelHideTimer;
   final GlobalKey _videoPlayerKey = GlobalKey();
   double _videoScale = 1.0;
+  // Modo de aspecto del video (estilo VLC): 0 Ajustar, 1 Pantalla,
+  // 2 forzar 16:9, 3 forzar 4:3, 4 Estirar. Útil cuando el stream
+  // (p. ej. http directo / algo 5) reporta un ratio incorrecto.
+  int _fitMode = 0;
+  static const List<String> _fitLabels = [
+    'Ajustar',
+    'Pantalla',
+    '16:9',
+    '4:3',
+    'Estirar',
+    'Cine',
+  ];
+  // Zoom que elimina las bandas de letterbox quemadas del cine 2.39:1.
+  // 125% validado en dispositivo: recorta justo las bandas sin comerse
+  // imagen de más (el 1.34 exacto recortaría también imagen).
+  static const double _cineZoom = 1.25;
+
+  double get _nativeVideoWidth {
+    final s = _controller?.value.size ?? Size.zero;
+    return s.width > 0 ? s.width : 16.0;
+  }
+
+  double get _nativeVideoHeight {
+    final s = _controller?.value.size ?? Size.zero;
+    return s.height > 0 ? s.height : 9.0;
+  }
+
+  /// Ratio de la caja que contiene el video según el modo.
+  double _displayAspectRatio(BuildContext context) {
+    final nat = _controller?.value.aspectRatio ?? 16 / 9;
+    switch (_fitMode) {
+      case 1: // Pantalla: caja = pantalla, recorta lo que sobre.
+      case 4: // Estirar: caja = pantalla, deforma sin recortar.
+        final s = MediaQuery.of(context).size;
+        if (s.height > 0) return s.width / s.height;
+        return nat;
+      case 2:
+        return 16 / 9;
+      case 3:
+        return 4 / 3;
+      default:
+        return nat; // 0 Ajustar: máximo tamaño sin recortar.
+    }
+  }
+
+  /// Cómo se dibuja la textura dentro de la caja.
+  BoxFit _displayFit() {
+    switch (_fitMode) {
+      case 0:
+        return BoxFit.contain;
+      case 4:
+        return BoxFit.fill;
+      default:
+        return BoxFit.cover;
+    }
+  }
   final TransformationController _transformController = TransformationController();
   bool _isInPipMode = false;
 
@@ -3043,7 +3100,7 @@ if (widget.videoOptions.isNotEmpty) {
                         SizedBox.expand(
                           child: Center(
                             child: AspectRatio(
-                              aspectRatio: _controller!.value.aspectRatio,
+                              aspectRatio: _displayAspectRatio(context),
                               child: Stack(
                               alignment: Alignment.bottomCenter,
                               children: [
@@ -3055,6 +3112,10 @@ if (widget.videoOptions.isNotEmpty) {
                                     clipBehavior: Clip.none,
                                     minScale: 0.8,
                                     maxScale: 6.0,
+                                    onInteractionUpdate: (_) {
+                                      // Pellizco en curso: no ocultar controles.
+                                      _startHideTimer();
+                                    },
                                     onInteractionEnd: (details) {
                                       // Sincronizar slider con el zoom de pellizco
                                       final scale = _transformController.value.getMaxScaleOnAxis();
@@ -3067,9 +3128,16 @@ if (widget.videoOptions.isNotEmpty) {
                                     },
                                     child: _isInPipMode
                                         ? const SizedBox.shrink()
-                                        : VideoPlayer(
-                                            _controller!,
-                                            key: _videoPlayerKey,
+                                        : FittedBox(
+                                            fit: _displayFit(),
+                                            child: SizedBox(
+                                              width: _nativeVideoWidth,
+                                              height: _nativeVideoHeight,
+                                              child: VideoPlayer(
+                                                _controller!,
+                                                key: _videoPlayerKey,
+                                              ),
+                                            ),
                                           ),
                                   ),
                                 ),
@@ -4697,7 +4765,11 @@ if (widget.videoOptions.isNotEmpty) {
                         label: '${(_videoScale * 100).toInt()}%',
                         onChanged: (v) {
                           setState(() => _videoScale = v);
+                          // Mantener controles visibles mientras se ajusta;
+                          // el conteo de 4s arranca al soltar (onChangeEnd).
+                          _startHideTimer();
                         },
+                        onChangeEnd: (_) => _startHideTimer(),
                       ),
                     ),
                   ),
@@ -4707,6 +4779,7 @@ if (widget.videoOptions.isNotEmpty) {
                     onTap: () {
                       setState(() => _videoScale = 1.0);
                       _transformController.value = Matrix4.identity();
+                      _startHideTimer();
                     },
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -4717,6 +4790,56 @@ if (widget.videoOptions.isNotEmpty) {
                       child: Text(
                         '${(_videoScale * 100).toInt()}%',
                         style: const TextStyle(color: Colors.white70, fontSize: 11),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // TvFocusWrapper: modo de aspecto navegable con remoto.
+                  // Cicla Ajustar → Pantalla → 16:9 → 4:3 → Estirar.
+                  TvFocusWrapper(
+                    onTap: () {
+                      final next = (_fitMode + 1) % _fitLabels.length;
+                      // Cada modo arranca con zoom limpio (100%), salvo Cine
+                      // que aplica su preset. Así el zoom no se arrastra de
+                      // un modo a otro (p. ej. Cine → Pantalla).
+                      final double zoom =
+                          next == _fitLabels.indexOf('Cine') ? _cineZoom : 1.0;
+                      // TODO-DEBUG-ASPECT: quitar este log cuando se confirme el fix.
+                      debugPrint(
+                          '[ASPECT] modo ${_fitLabels[_fitMode]} → ${_fitLabels[next]} | '
+                          'zoom=$zoom | '
+                          'nativo=${_nativeVideoWidth.toStringAsFixed(0)}x${_nativeVideoHeight.toStringAsFixed(0)} | '
+                          'caja=${_displayAspectRatio(context).toStringAsFixed(3)} | '
+                          'fit=${_displayFit()} | '
+                          'pantalla=${MediaQuery.of(context).size}');
+                      setState(() {
+                        _fitMode = next;
+                        _videoScale = zoom;
+                        _transformController.value = Matrix4.identity();
+                      });
+                      _startHideTimer();
+                    },
+                    borderRadius: 12,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _fitMode == 0
+                            ? Colors.white12
+                            : const Color(0xFF00A3FF).withOpacity(0.35),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.aspect_ratio,
+                              color: Colors.white70, size: 12),
+                          const SizedBox(width: 4),
+                          Text(
+                            _fitLabels[_fitMode],
+                            style: const TextStyle(
+                                color: Colors.white70, fontSize: 11),
+                          ),
+                        ],
                       ),
                     ),
                   ),

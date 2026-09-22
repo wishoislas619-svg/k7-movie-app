@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/widgets/energy_flow_border.dart';
 import '../../domain/entities/addon.dart';
 import '../providers/addons_provider.dart';
@@ -237,28 +238,30 @@ class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
               ),
             ),
             const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Color(0xFF00A3FF)),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
+            // Modo lite: se oculta la instalación rápida de Torrentio.
+            if (!AppConfig.liteMode)
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFF00A3FF)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  onPressed: _installing
+                      ? null
+                      : () => _installManifest(_presetManifest),
+                  icon: _installing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.download_done),
+                  label: const Text('Instalar rápido (por defecto)',
+                      style: TextStyle(color: Color(0xFF00A3FF))),
                 ),
-                onPressed: _installing
-                    ? null
-                    : () => _installManifest(_presetManifest),
-                icon: _installing
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white),
-                      )
-                    : const Icon(Icons.download_done),
-                label: const Text('Instalar rápido (por defecto)',
-                    style: TextStyle(color: Color(0xFF00A3FF))),
               ),
-            ),
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
