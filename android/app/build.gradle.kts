@@ -4,7 +4,6 @@ import java.io.FileInputStream
 plugins {
     id("com.android.application")
     id("kotlin-android")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
@@ -12,6 +11,10 @@ android {
     namespace = "com.luis.movieapp.movie_app"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -25,19 +28,30 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.luis.movieapp.movie_app"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    flavorDimensions("store")
+    productFlavors {
+        create("googleplay") {
+            dimension = "store"
+            resValue("string", "app_name", "K7 Movie")
+            buildConfigField("boolean", "HAS_UNITY_ADS", "true")
+        }
+        create("amazon") {
+            dimension = "store"
+            resValue("string", "app_name", "K7 Movie")
+            buildConfigField("boolean", "HAS_UNITY_ADS", "false")
+        }
+    }
+
     val keystoreProperties = Properties()
     val keystorePropertiesFile = rootProject.file("key.properties")
-    
+
     if (keystorePropertiesFile.exists()) {
         println("--- [SIGNING] Cargando key.properties desde: ${keystorePropertiesFile.absolutePath} ---")
         keystoreProperties.load(FileInputStream(keystorePropertiesFile))
@@ -65,10 +79,14 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
         getByName("release") {
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = signingConfigs.getByName("release") 
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }

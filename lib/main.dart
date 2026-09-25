@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,11 +19,6 @@ import 'features/player/presentation/pages/video_player_page.dart';
 import 'features/movies/presentation/pages/splash_page.dart';
 import 'core/services/update_service.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'core/services/notification_service.dart';
-import 'core/services/foreground_service.dart';
-import 'shared/widgets/virtual_cursor_overlay.dart';
-import 'features/auth/domain/entities/user.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:unity_ads_plugin/unity_ads_plugin.dart';
 import 'dart:io';
@@ -31,17 +27,17 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'features/cast/presentation/pages/cast_remote_page.dart';
 import 'features/cast/services/cast_service.dart';
+import 'core/services/notification_service.dart';
+import 'core/services/foreground_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'features/auth/domain/entities/user.dart';
+import 'shared/widgets/virtual_cursor_overlay.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // media_kit como backend de video_player (usado para reproducir archivos
-  // locales descargados de torrents sin depender del servidor HTTP de libtorrent).
-  // En Android desactivamos la construcción de subtítulos manual; activamos las
-  // librerías de vídeo nativas. iOS/macOS/Windows/Linux quedan en el backend
-  // por defecto de video_player (AvFoundation/ExoPlayer) para no alterar el resto.
   try {
     VideoPlayerMediaKit.ensureInitialized(
       android: true,
@@ -55,16 +51,14 @@ void main() async {
   }
 
   WakelockPlus.enable();
-  
-  // Habilitar todas las orientaciones por defecto en toda la app
+
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
   ]);
-  
-  // Cargamos Solo lo CRÍTICO para ver la primera pantalla
+
   try {
     await dotenv.load(fileName: ".env");
     await SupabaseService.initialize();
@@ -72,64 +66,137 @@ void main() async {
     debugPrint("Error crítico en arranque: $e");
   }
 
-  // Servicios secundarios: Se lanzan "en paralelo" sin bloquear el dibujo de la App
   unawaited(NotificationService.init().catchError((e) => debugPrint("Error Notify: $e")));
   unawaited(ForegroundService.init().catchError((e) => debugPrint("Error Foreground: $e")));
-  
-  // Solicitar permisos de batería/optimización para que el proxy y cast
-  // sigan funcionando en segundo plano o con pantalla apagada
   unawaited(_requestBatteryOptimizationPermission());
-  unawaited(MobileAds.instance.initialize().then((_) {
-    MobileAds.instance.updateRequestConfiguration(
-      RequestConfiguration(testDeviceIds: [
-        "D4401ED3C883864E683E2DD7DD51098B",
-        "52ed6a0e-d948-41d1-b035-3ed4dbd701cf"
-      ]),
-    );
-  }).catchError((e) => debugPrint("Error Ads: $e")));
+  unawaited(Permission.notification.request().catchError((e) => debugPrint("Error notif: $e")));
 
-  unawaited(UnityAds.init(
-    gameId: Platform.isAndroid ? '6074470' : '6074471',
-    testMode: false,
-    onComplete: () => debugPrint('Unity Ads Init Complete'),
-    onFailed: (error, message) => debugPrint('Unity Ads Init Failed: $error $message'),
-  ));
+  // Nota: UMP + MobileAds + Unity se inicializan en AuthWrapper (post-runApp),
+  // porque el formulario nativo de consentimiento necesita el engine listo.
+  runApp(
+    const ProviderScope(
+      child: MyApp(),
+    ),
+  );
+}
 
-  // ✅ ESCANEAR Y SOLICITAR PERMISOS DE AHORRO DE BATERÍA
-  // Esto permite que el proxy local y el cast sigan funcionando incluso
-  // si la pantalla está apagada o la app está en segundo plano
-    // Verificación de estado de batería (el aviso se mostrará mediante el diálogo en MyApp)
-    try {
-      await Permission.ignoreBatteryOptimizations.status;
-    } catch (e) {
-      debugPrint("Error verificando estado batería: $e");
-    }
-    
-    
-    // Solicitar acceso a notificaciones (Android 13+)
-    try {
-      if (await Permission.notification.isDenied) {
-        await Permission.notification.request();
-      }
-    } catch (e) {
-      debugPrint("Error solicitando permiso notificaciones: $e");
+/// Muestra el diálogo de consentimiento UMP solo si es necesario (una sola vez).
+/// El SDK de UMP guarda la decisión (aceptar/rechazar) entre sesiones:
+/// después de requestConsentInfoUpdate, si getConsentStatus() != required,
+/// ya hubo decisión y NO se vuelve a mostrar el formulario.
+/// Retorna canRequestAds() para decidir inicialización de ads.
+Future<bool> _initializeUMPConsent() async {
+  debugPrint('[UMPCOMPONENT] Inicializando UMP...');
+  const decidedKey = 'ump_consent_decided_v1';
+  const canRequestKey = 'ump_can_request_ads_v1';
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(decidedKey) == true) {
+      final bool stored = prefs.getBool(canRequestKey) ?? true;
+      debugPrint('[UMPCOMPONENT] Decisión local previa, no se muestra diálogo. canRequest=$stored');
+      return stored;
     }
 
-    runApp(
-      const ProviderScope(
-        child: MyApp(),
+    Future<void> remember(bool canRequest) async {
+      await prefs.setBool(decidedKey, true);
+      await prefs.setBool(canRequestKey, canRequest);
+    }
+
+    final consentInfo = ConsentInformation.instance;
+
+    // Paso 1: requestConsentInfoUpdate (void + callbacks).
+    // En debug se fuerza geografía EEA + test device para probar el diálogo;
+    // en release se usa la región real del dispositivo.
+    FormError? updateError;
+    final completer1 = Completer<void>();
+    consentInfo.requestConsentInfoUpdate(
+      ConsentRequestParameters(
+        consentDebugSettings: kDebugMode
+            ? ConsentDebugSettings(
+                debugGeography: DebugGeography.debugGeographyEea,
+                testIdentifiers: ['D4401ED3C883864E683E2DD7DD51098B'],
+              )
+            : null,
       ),
+      () => completer1.complete(),
+      (FormError error) {
+        updateError = error;
+        completer1.complete();
+      },
     );
+    await completer1.future;
+    if (updateError != null) {
+      debugPrint('[UMPCOMPONENT] Error code=${updateError!.errorCode}, msg=${updateError!.message}');
+      return false;
+    }
+    debugPrint('[UMPCOMPONENT] requestConsentInfoUpdate success');
+
+    // Paso 1b: si el usuario ya decidió (aceptó o rechazó), no mostrar de nuevo.
+    final ConsentStatus status = await consentInfo.getConsentStatus();
+    debugPrint('[UMPCOMPONENT] consentStatus=$status');
+    if (status != ConsentStatus.required) {
+      final bool canRequest = await consentInfo.canRequestAds();
+      debugPrint('[UMPCOMPONENT] Ya había decisión previa, no se muestra diálogo. canRequestAds=$canRequest');
+      await remember(canRequest);
+      return canRequest;
+    }
+
+    // Paso 2: isConsentFormAvailable (async normal)
+    final bool available = await consentInfo.isConsentFormAvailable();
+    debugPrint('[UMPCOMPONENT] isConsentFormAvailable: $available');
+    if (!available) {
+      final bool canRequest = await consentInfo.canRequestAds();
+      await remember(canRequest);
+      return canRequest;
+    }
+
+    // Paso 3: loadConsentForm (void + callbacks)
+    late ConsentForm form;
+    final completer3 = Completer<void>();
+    ConsentForm.loadConsentForm(
+      (f) {
+        form = f;
+        completer3.complete();
+      },
+      (FormError error) {
+        debugPrint('[UMPCOMPONENT] loadConsentForm error: ${error.message}');
+        completer3.completeError(error);
+      },
+    );
+    await completer3.future;
+    debugPrint('[UMPCOMPONENT] loadConsentForm success');
+
+    // Paso 4: show (void + callbacks). Al cerrar, el SDK persiste la decisión.
+    final completer4 = Completer<void>();
+    form.show((FormError? error) {
+      if (error != null) {
+        debugPrint('[UMPCOMPONENT] show error: code=${error.errorCode}, msg=${error.message}');
+      } else {
+        debugPrint('[UMPCOMPONENT] Formulario cerrado ✓');
+      }
+      completer4.complete();
+    });
+    await completer4.future;
+
+    // Paso 5: releer estado persistido y decidir ads según decisión recordada.
+    final ConsentStatus afterStatus = await consentInfo.getConsentStatus();
+    final bool canRequestAfter = await consentInfo.canRequestAds();
+    debugPrint('[UMPCOMPONENT] afterStatus=$afterStatus canRequestAds=$canRequestAfter');
+    await remember(canRequestAfter);
+
+    return canRequestAfter;
+  } catch (e, stack) {
+    debugPrint('[UMPCOMPONENT] Excepción UMP: $e\n$stack');
+    return false;
+  }
 }
 
 /// Solicita al usuario que desactive la optimización de batería para la app.
-/// En Android, esto requiere un intent especial y el usuario debe aprobarlo manualmente.
 Future<void> _requestBatteryOptimizationPermission() async {
   if (!Platform.isAndroid) return;
   try {
     final androidInfo = await DeviceInfoPlugin().androidInfo;
     if (androidInfo.version.sdkInt >= 23) {
-      // Solo verificamos el estado, el diálogo se encargará de la solicitud
       await Permission.ignoreBatteryOptimizations.status;
     }
   } catch (e) {
@@ -157,9 +224,7 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Native PiP mode handles backgrounding automatically
-  }
+  void didChangeAppLifecycleState(AppLifecycleState state) {}
 
   @override
   Widget build(BuildContext context) {
@@ -185,13 +250,7 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
                   },
                   onReturn: () async {
                     final state = ref.read(floatingPlayerProvider.notifier).state;
-                    // Cerrar el overlay de sistema si está activo
-  
-                    // Limpiar el estado flotante
                     ref.read(floatingPlayerProvider.notifier).state = FloatingPlayerState(isActive: false);
-                    
-                    // Navegar de vuelta REINICIANDO la reproducción desde el timestamp
-                    // Usamos pushAndRemoveUntil para limpiar el stack de navegación
                     navigatorKey.currentState?.pushAndRemoveUntil(
                       MaterialPageRoute(
                         builder: (_) => VideoPlayerPage(
@@ -202,14 +261,12 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
                           imagePath: state.imagePath ?? '',
                           episodeId: state.episodeId,
                           startPosition: state.currentPosition,
-                          // NO pasamos initialController -> reinicia scraping limpio
                         ),
                       ),
                       (route) => route.isFirst,
                     );
                   },
                 ),
-              // Floating Cast Bubble
               _CastBubble(),
             ],
           ),
@@ -219,7 +276,6 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
   }
 }
 
-// Listener que detecta cualquier toque del usuario para resetear el timer de inactividad
 class _ActivityDetector extends ConsumerWidget {
   final Widget child;
   const _ActivityDetector({required this.child});
@@ -229,7 +285,6 @@ class _ActivityDetector extends ConsumerWidget {
     return Listener(
       behavior: HitTestBehavior.translucent,
       onPointerDown: (_) {
-        // Cada toque reinicia el contador de inactividad en Supabase
         ref.read(authStateProvider.notifier).refreshActivity();
       },
       child: child,
@@ -246,21 +301,62 @@ class AuthWrapper extends ConsumerStatefulWidget {
 
 class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingObserver {
   bool _initialized = false;
+  bool _consentDone = false;
   StreamSubscription? _statusSubscription;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Auto-login: intenta restaurar la sesión del usuario anterior al abrir la app
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await ref.read(authStateProvider.notifier).checkStatus();
       if (mounted) {
         setState(() => _initialized = true);
-        // Verificar actualizaciones en GitHub de forma asíncrona
         _checkUpdates();
       }
     });
+    // UMP + Ads post-runApp: el diálogo nativo necesita el engine listo.
+    // Con timeout para no dejar la app en negro si UMP no responde.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      bool consentGiven = false;
+      try {
+        consentGiven = await _initializeUMPConsent()
+            .timeout(const Duration(seconds: 20), onTimeout: () {
+          debugPrint('[UMPCOMPONENT] Timeout, se continúa sin consentimiento');
+          return false;
+        });
+      } catch (e) {
+        debugPrint('[UMPCOMPONENT] Error en AuthWrapper: $e');
+      }
+      await _initAds(consentGiven);
+      if (mounted) setState(() => _consentDone = true);
+    });
+  }
+
+  Future<void> _initAds(bool consentGiven) async {
+    try {
+      await MobileAds.instance.initialize();
+      MobileAds.instance.updateRequestConfiguration(
+        RequestConfiguration(
+          testDeviceIds: [
+            "D4401ED3C883864E683E2DD7DD51098B",
+            "52ed6a0e-d948-41d1-b035-3ed4dbd701cf"
+          ],
+          tagForUnderAgeOfConsent: consentGiven ? 0 : 1,
+        ),
+      );
+    } catch (e) {
+      debugPrint("Error Ads: $e");
+    }
+    const bool hasUnityAds = bool.fromEnvironment('HAS_UNITY_ADS', defaultValue: true);
+    if (consentGiven && hasUnityAds) {
+      unawaited(UnityAds.init(
+        gameId: Platform.isAndroid ? '6074470' : '6074471',
+        testMode: false,
+        onComplete: () => debugPrint('Unity Ads Init Complete'),
+        onFailed: (error, message) => debugPrint('Unity Ads Init Failed: $error $message'),
+      ));
+    }
   }
 
   Future<void> _checkUpdates() async {
@@ -298,7 +394,6 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
         }
       }
     });
-
     ref.read(authStateProvider.notifier).updateOnlineStatus(true);
   }
 
@@ -312,10 +407,7 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
             borderRadius: BorderRadius.circular(20),
             side: const BorderSide(color: Color(0xFF00A3FF), width: 0.5)),
         title: const Text('ALERTA DE SESIÓN',
-            style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.5)),
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
         content: Text(
           'Otro dispositivo ($deviceId) está intentando iniciar sesión con tu cuenta.\n\n¿Autorizas el acceso? Tu sesión actual se cerrará.',
           style: const TextStyle(color: Colors.white70),
@@ -338,13 +430,10 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
   Future<void> _respondToRequest(bool approved) async {
     final user = ref.read(authStateProvider);
     if (user == null) return;
-
     await SupabaseService.client.from('profiles').update({
       'login_request_status': approved ? 'approved' : 'denied',
     }).eq('id', user.id);
-
     if (mounted) Navigator.of(context).pop();
-
     if (approved) {
       await ref.read(authStateProvider.notifier).logout();
     }
@@ -355,7 +444,6 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
     final splashDone = ref.watch(splashDoneProvider);
     final user = ref.watch(authStateProvider);
 
-    // Activar el listener reactivamente
     ref.listen<User?>(authStateProvider, (previous, next) {
       if (next != null && previous == null) {
         _setupPresenceListener(next);
@@ -370,7 +458,9 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
       );
     }
 
-    if (!_initialized) {
+    // El diálogo UMP aparece sobre el splash/contenido; se espera a que
+    // termine consentimiento + init de ads antes de entrar (con timeout).
+    if (!_consentDone || !_initialized) {
       return const Scaffold(
         backgroundColor: Colors.black,
         body: Center(child: CircularProgressIndicator(color: Color(0xFF00A3FF))),
@@ -381,7 +471,6 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
       return const LoginPage();
     }
 
-    // Envolver con el detector de actividad
     if (user.role == AppConstants.roleAdmin) {
       return _ActivityDetector(child: const AdminDashboard());
     }
@@ -390,15 +479,12 @@ class _AuthWrapperState extends ConsumerState<AuthWrapper> with WidgetsBindingOb
   }
 }
 
-/// Floating bubble that appears when a Cast session is active.
-/// Tapping it opens the CastRemotePage.
 class _CastBubble extends StatefulWidget {
   @override
   State<_CastBubble> createState() => _CastBubbleState();
 }
 
-class _CastBubbleState extends State<_CastBubble>
-    with TickerProviderStateMixin {
+class _CastBubbleState extends State<_CastBubble> with TickerProviderStateMixin {
   final _castService = CastService();
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
@@ -419,17 +505,9 @@ class _CastBubbleState extends State<_CastBubble>
   @override
   void initState() {
     super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1500),
-    )..repeat(reverse: true);
-    _pulseAnimation = Tween<double>(begin: 0.9, end: 1.0).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-    _gradientController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 8),
-    )..repeat();
+    _pulseController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1500))..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.9, end: 1.0).animate(CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut));
+    _gradientController = AnimationController(vsync: this, duration: const Duration(seconds: 8))..repeat();
     _castService.addListener(_onCastChanged);
   }
 
@@ -456,10 +534,7 @@ class _CastBubbleState extends State<_CastBubble>
     final frac = t - t.floor();
     final a = _tornasolPairs[index];
     final b = _tornasolPairs[(index + 1) % _tornasolPairs.length];
-    return [
-      _lerpColor(a[0], b[0], frac),
-      _lerpColor(a[1], b[1], frac),
-    ];
+    return [_lerpColor(a[0], b[0], frac), _lerpColor(a[1], b[1], frac)];
   }
 
   Color _currentShadowColor() {
@@ -509,8 +584,7 @@ class _CastBubbleState extends State<_CastBubble>
             child: Transform.scale(
               scale: _pulseAnimation.value,
               child: Container(
-                width: 56,
-                height: 56,
+                width: 56, height: 56,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   gradient: LinearGradient(
@@ -526,11 +600,7 @@ class _CastBubbleState extends State<_CastBubble>
                     ),
                   ],
                 ),
-                child: const Icon(
-                  Icons.cast_rounded,
-                  color: Colors.white,
-                  size: 28,
-                ),
+                child: const Icon(Icons.cast_rounded, color: Colors.white, size: 28),
               ),
             ),
           );
@@ -539,4 +609,3 @@ class _CastBubbleState extends State<_CastBubble>
     );
   }
 }
-

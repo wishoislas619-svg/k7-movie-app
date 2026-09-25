@@ -16,8 +16,17 @@ class AddonsManagerPage extends ConsumerStatefulWidget {
 class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
   final TextEditingController _urlController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _latamUrlController = TextEditingController();
   bool _installing = false;
   String? _error;
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    _nameController.dispose();
+    _latamUrlController.dispose();
+    super.dispose();
+  }
 
   static const String _presetManifest =
       'https://torrentio.strem.fun/manifest.json';
@@ -53,6 +62,45 @@ class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
       return '${manifestUri.scheme}://${manifestUri.host}$base/configure';
     }
     return manifest.replaceFirst(RegExp(r'/manifest\.json/?$'), '/configure');
+  }
+
+  /// El enlace del correo es válido si es una URL http(s) terminada en .json.
+  bool get _isLatamLinkValid {
+    final text = _latamUrlController.text.trim().toLowerCase();
+    if (text.isEmpty) return false;
+    final uri = Uri.tryParse(text);
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      return false;
+    }
+    final path = uri.path.toLowerCase();
+    return path.endsWith('.json') || path.endsWith('.json/');
+  }
+
+  /// Instala el Addon Latam con el enlace pegado del correo,
+  /// siempre con el nombre predeterminado 'Addon Latam'.
+  Future<void> _installLatamFromEmail() async {
+    final url = _latamUrlController.text.trim();
+    if (!_isLatamLinkValid || _installing) return;
+    setState(() {
+      _installing = true;
+      _error = null;
+    });
+    try {
+      await ref.read(addonsProvider.notifier).install(
+            name: 'Addon Latam',
+            manifestUrl: url,
+          );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Addon Latam instalado correctamente')),
+        );
+        _latamUrlController.clear();
+      }
+    } catch (e) {
+      setState(() => _error = 'Error al instalar: $e');
+    } finally {
+      if (mounted) setState(() => _installing = false);
+    }
   }
 
   Future<void> _installManifest(String manifestUrl) async {
@@ -321,6 +369,53 @@ class _AddonsManagerPageState extends ConsumerState<AddonsManagerPage> {
                     style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ),
+            const SizedBox(height: 16),
+            const Text(
+              '¿Ya recibiste tu enlace por correo? Pégalo aquí para instalarlo:',
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _latamUrlController,
+              style: const TextStyle(color: Colors.white),
+              keyboardType: TextInputType.url,
+              onChanged: (_) => setState(() {}),
+              decoration:
+                  _inputDecoration('Pega tu enlace (termina en .json)'),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF00FF87),
+                  foregroundColor: Colors.black,
+                  disabledBackgroundColor: const Color(0xFF2A2A2A),
+                  disabledForegroundColor: Colors.white38,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                onPressed: (_isLatamLinkValid && !_installing)
+                    ? _installLatamFromEmail
+                    : null,
+                icon: _installing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.black),
+                      )
+                    : const Icon(Icons.download),
+                label: const Text('Instalar mi Addon Latam',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(_error!,
+                    style:
+                        const TextStyle(color: Colors.redAccent, fontSize: 12)),
+              ),
           ],
         ),
       ),
